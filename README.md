@@ -3,6 +3,8 @@
 ## AVISO
 Não leve esse repositório a sério, foi uma demonstração de como criar código low-level com IA de modo a mostrar as falhas e problemas existentes. O código quebrou no final quando foi solicitada a criação de um sistema de arquivos simples, portanto isso aqui vale para melhorias e avaliação da qualidade de código!!! 
 
+## Descrição
+
 Projeto mínimo de bootloader x86 em dois estágios:
 
 - **Stage 1 (`boot/stage1.asm`)**: boot sector BIOS (512 bytes), carrega o stage 2 da mídia e entra em protected mode (32-bit).
