@@ -19,7 +19,8 @@ SECTOR_SIZE := 512
 BOOT_BIN := $(BUILD_DIR)/boot.bin
 STAGE2_OBJ := $(BUILD_DIR)/stage2.o
 STAGE2_ISR_OBJ := $(BUILD_DIR)/isr.o
-USERLAND_OBJ := $(BUILD_DIR)/userland.o
+USERLAND_SRCS := $(shell find $(USERLAND_DIR) -name '*.c')
+USERLAND_OBJS := $(patsubst $(USERLAND_DIR)/%.c,$(BUILD_DIR)/%.o,$(USERLAND_SRCS))
 USERLAND_ELF := $(BUILD_DIR)/userland.elf
 USERLAND_BIN := $(BUILD_DIR)/userland.bin
 USERLAND_BLOB_OBJ := $(BUILD_DIR)/userland_blob.o
@@ -27,7 +28,7 @@ STAGE2_ELF := $(BUILD_DIR)/stage2.elf
 STAGE2_BIN := $(BUILD_DIR)/stage2.bin
 IMAGE := $(BUILD_DIR)/boot.img
 
-CFLAGS := -m32 -Os -ffreestanding -fno-pic -fno-pie -fno-stack-protector -fno-builtin -nostdlib -Wall -Wextra -Werror -I$(INCLUDE_DIR)
+CFLAGS := -m32 -Os -ffreestanding -fno-pic -fno-pie -fno-stack-protector -fno-builtin -nostdlib -Wall -Wextra -Werror -I$(INCLUDE_DIR) -I$(USERLAND_DIR) -I$(USERLAND_DIR)/modules
 LDFLAGS_STAGE2 := -m elf_i386 -T $(LINKER_DIR)/stage2.ld -nostdlib
 LDFLAGS_USERLAND := -m elf_i386 -T $(LINKER_DIR)/userland.ld -nostdlib
 
@@ -62,11 +63,13 @@ $(STAGE2_OBJ): $(STAGE2_DIR)/stage2.c $(INCLUDE_DIR)/userland_api.h | $(BUILD_DI
 $(STAGE2_ISR_OBJ): $(STAGE2_DIR)/isr.asm | $(BUILD_DIR)
 	$(AS) -f elf32 $< -o $@
 
-$(USERLAND_OBJ): $(USERLAND_DIR)/userland.c $(INCLUDE_DIR)/userland_api.h | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
+$(USERLAND_OBJS): $(INCLUDE_DIR)/userland_api.h | $(BUILD_DIR)
+	mkdir -p $(dir $@)
+	# compile any C source under userland directory matching the object path
+	$(CC) $(CFLAGS) -c $(USERLAND_DIR)/$(patsubst $(BUILD_DIR)/%,%,$(subst .o,.c,$@)) -o $@
 
-$(USERLAND_ELF): $(USERLAND_OBJ) $(LINKER_DIR)/userland.ld
-	$(LD) $(LDFLAGS_USERLAND) $(USERLAND_OBJ) -o $@
+$(USERLAND_ELF): $(USERLAND_OBJS) $(LINKER_DIR)/userland.ld
+	$(LD) $(LDFLAGS_USERLAND) $(USERLAND_OBJS) -o $@
 
 $(USERLAND_BIN): $(USERLAND_ELF)
 	$(OBJCOPY) -O binary $< $@

@@ -10,9 +10,19 @@ Projeto mínimo de bootloader x86 em dois estágios:
 - **Stage 1 (`boot/stage1.asm`)**: boot sector BIOS (512 bytes), carrega o stage 2 da mídia e entra em protected mode (32-bit).
 - **Stage 2 (`stage2/stage2.c`)**: kernel mínimo em C com framebuffer VGA, IDT/PIC, IRQ0 (timer), IRQ1 (teclado), IRQ12 (mouse) e syscall ABI (`int 0x80`).
 - **Stage 2 ASM (`stage2/isr.asm`)**: stubs de interrupção e syscall.
-- **Userland (`userland/userland.c`)**: desktop simples com barra de tarefas, menu de aplicativos e apps Terminal + Relógio com VFS em memória.
+- **Userland**: небольшой conjunto de programas e bibliotecas escritos em C que rodam em ring3. Em vez de um único binário monolítico, a "userland" agora contém vários módulos:
+  - **bibliotecas/utilitários** (`syscalls.[hc]`, `utils.[hc]`, `fs.[hc]`, `terminal.[hc]`, `ui.[hc]`)
+  - **programas** construídos como parte do blob: `console`, `shell`, `busybox` e `desktop`.
+  - O `console` é o driver de modo-texto usado pelo shell.
+  - O `shell` é um prompt interativo com histórico, parser de argumentos e implementação de `read_line`.
+  - `busybox` é um dispatcher single‑binary que fornece vários comandos internos (pwd, ls, cd, mkdir, touch, rm, cat, echo, clear, uname, help, exit, startx, history, etc.).
+  - `desktop` contém a antiga interface gráfica que pode ser invocada com `startx`.
+
+De forma padrão o sistema inicializa em um console de texto, roda o shell e espera comandos. O comando `startx` faz a transição para o modo gráfico chamando `desktop_main()`.
 
 ## Estrutura
+
+A estrutura de diretórios agora reflete o particionamento em módulos:
 
 ```text
 .
@@ -124,21 +134,23 @@ Isso gera:
 make run
 ```
 
-Você deve ver:
+Na versão atual o kernel inicializa o console de texto e imediatamente lança o shell.
+O fluxo típico é:
 
-- barra de tarefas na parte de baixo,
-- botão `START`,
-- menu de aplicativos,
-- app `TERMINAL` (shell interativo),
-- app `RELOGIO` (atualização em tempo real),
-- botões `X` para fechar janelas.
+1. Você será recebido por um prompt `user@vibeos:/some/path $`.
+2. Digite comandos suportados (use `help` para lista completa).
+3. `startx` alterna para o desktop gráfico que já existia antes — o comportamento é idêntico ao descrito abaixo, com barra de tarefas, menu `START`, aplicativo Terminal e Relógio.
+
+> Se o `make run` falhar por falta de `qemu` veja a seção de pré‑requisitos mais acima.
 
 ## Como a userland funciona neste projeto
 
-1. O build gera `userland.bin` de forma independente (linkado para `0x20000`).
-2. O `stage2` (kernel) embute esse binário na própria imagem.
-3. Em runtime, o kernel copia a userland para `0x20000` e chama `userland_entry`.
-4. A userland usa syscalls via `int 0x80` definidas em `include/userland_api.h`.
+O processo de build permanece basicamente igual, mas a userland agora é composta de múltiplos módulos compilados juntos:
+
+1. O `Makefile` coleta todos os `.c` sob `userland/` e seus subdiretórios; o linker produz `userland.bin` posicionado em `0x20000`.
+2. O kernel (`stage2`) embute o `userland.bin` dentro do seu próprio binário.
+3. Em runtime, o kernel copia o blob para `0x20000` e chama `userland_entry`, que por sua vez inicializa o sistema de arquivos simples e, em seguida, chama `console_init()` e `shell_main()`.
+4. A comunicação entre userland e kernel continua sendo feita via syscalls definidas em `include/userland_api.h`.
 
 ## Interface Gráfica na userland
 
@@ -182,23 +194,18 @@ Você deve ver:
 
 ## App Terminal (shell via syscall)
 
-- O app Terminal roda dentro da userland.
-- Entrada de teclado vem de `SYSCALL_INPUT_KEY`.
-- Renderização de janela/texto usa `SYSCALL_GFX_RECT` e `SYSCALL_GFX_TEXT`.
-- Comandos atuais:
-  - `HELP`
-  - `PWD`
-  - `LS [dir]`
-  - `CD <dir>`
-  - `MKDIR <dir>`
-  - `TOUCH <arquivo>`
-  - `RM <arquivo|dir>`
-  - `CAT <arquivo>`
-  - `WRITE <arquivo> <texto>`
-  - `APPEND <arquivo> <texto>`
-  - `CLEAR`
-  - `UNAME`
-  - `EXIT`
+- O shell roda dentro da userland mas, diferentemente da versão antiga, ele opera no console de texto (não usa janelas).
+- Entrada de teclado é capturada através de `SYSCALL_INPUT_KEY`.
+- O parser de argumentos suporta strings entre aspas e histórico de linhas (com `up`/`down` se implementado).
+- Um componente busybox dispatcha os seguintes comandos internos:
+  - `help` — lista todos os comandos disponíveis
+  - `pwd`, `ls`, `cd`, `mkdir`, `touch`, `rm`, `cat`
+  - `echo`, `clear`, `uname`
+  - `exit` — encerra o shell
+  - `startx` — alterna para o modo gráfico chamando `desktop_main()`
+  - `history` — imprime o histórico de comandos registrados
+
+(O suporte a `write`/`append` foi removido para simplificação, já que o filesystem é in-memory.)
 
 ## Sistema de Arquivos (VFS)
 
@@ -206,11 +213,12 @@ Você deve ver:
 - Operações de leitura/escrita suportadas no shell.
 - Suporte a caminhos relativos e absolutos (ex.: `/home/user`, `../docs`).
 - Diretório atual controlado por `CD` e exibido no prompt.
-- Arquivos e diretórios iniciais:
-  - `/home`
-  - `/home/user`
-  - `/docs`
-  - `/README`
+- Estrutura inicial criada por `fs_init()`:
+  - `/` (raiz)
+  - `/bin` (onde o blob `busybox` reside)
+  - `/home` e `/home/user`
+  - `/tmp`
+  - `/dev` (caixa–preta, apenas para demonstração)
 - Implementação atual é **em memória** (não persistente após reboot).
 
 ## Debug com GDB
