@@ -11,6 +11,7 @@ ORG 0x7C00
 
 %define CODE_SEG 0x08
 %define DATA_SEG 0x10
+%define VESA_INFO_ADDR 0x500  ; Fixed address for VESA info struct
 
 start:
     cli
@@ -25,8 +26,14 @@ start:
     call load_stage2
     jc disk_error
 
+    ; Try VESA 0x101 (640x480x8), fallback to VGA 13h
+    call init_vesa_mode
+    cmp word [VESA_INFO_ADDR], 0
+    jne vesa_ok
+    ; Fallback to VGA 13h
     mov ax, 0x0013
     int 0x10
+vesa_ok:
 
     cli
     call enable_a20
@@ -106,6 +113,81 @@ enable_a20:
     in al, 0x92
     or al, 0x02
     out 0x92, al
+    ret
+
+; VESA mode initialization (real mode)
+; Tries to set VESA mode 0x101 (640x480x8)
+; Stores result at 0x500 as struct:
+;   offset 0: uint16_t mode
+;   offset 2: uint32_t fb_addr
+;   offset 6: uint16_t pitch
+;   offset 8: uint16_t width
+;   offset 10: uint16_t height
+;   offset 12: uint8_t bpp
+init_vesa_mode:
+    pusha
+    push es
+
+    ; Initialize struct at 0x500 to all zeros
+    xor ax, ax
+    mov es, ax
+    mov di, VESA_INFO_ADDR
+    mov cx, 16
+    rep stosb
+
+    ; Get VESA controller info
+    mov ax, 0x4F00
+    mov di, 0x600  ; temporary buffer
+    xor cx, cx
+    int 0x10
+    cmp ax, 0x004F
+    jne init_vesa_fail
+
+    ; Try mode 0x101
+    mov ax, 0x4F01
+    mov cx, 0x0101
+    mov di, 0x700  ; temporary buffer
+    int 0x10
+    cmp ax, 0x004F
+    jne init_vesa_fail
+
+    ; Set mode 0x101 with linear fb
+    mov ax, 0x4F02
+    mov bx, 0x4101  ; mode + linear fb bit
+    int 0x10
+    cmp ax, 0x004F
+    jne init_vesa_fail
+
+    ; Success: store info at 0x500
+    xor ax, ax
+    mov es, ax
+
+    mov word [VESA_INFO_ADDR + 0], 0x0101  ; mode
+    
+    mov ax, word [0x700 + 16]  ; LFB low word
+    mov dx, word [0x700 + 18]  ; LFB high word
+    mov [VESA_INFO_ADDR + 2], ax
+    mov [VESA_INFO_ADDR + 4], dx
+    
+    mov ax, word [0x700 + 10]  ; pitch
+    mov [VESA_INFO_ADDR + 6], ax
+    
+    mov ax, word [0x700 + 12]  ; width
+    mov [VESA_INFO_ADDR + 8], ax
+    
+    mov ax, word [0x700 + 14]  ; height
+    mov [VESA_INFO_ADDR + 10], ax
+    
+    mov byte [VESA_INFO_ADDR + 12], 8  ; bpp
+
+    jmp init_vesa_done
+
+init_vesa_fail:
+    ; Struct stays zeroed
+
+init_vesa_done:
+    pop es
+    popa
     ret
 
 boot_drive db 0

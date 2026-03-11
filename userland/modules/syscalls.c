@@ -36,3 +36,6 @@ void sys_sleep(void) {
 uint32_t sys_ticks(void) {
     return (uint32_t)syscall5(SYSCALL_TIME_TICKS, 0, 0, 0, 0, 0);
 }
+int sys_gfx_info(struct video_mode *mode) {
+    return syscall5(SYSCALL_GFX_INFO, (int)(uintptr_t)mode, 0, 0, 0, 0);
+}

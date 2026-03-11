@@ -10,13 +10,22 @@ enum syscall_id {
     SYSCALL_INPUT_MOUSE = 4,
     SYSCALL_INPUT_KEY = 5,
     SYSCALL_SLEEP = 6,
-    SYSCALL_TIME_TICKS = 7
+    SYSCALL_TIME_TICKS = 7,
+    SYSCALL_GFX_INFO = 8
 };
 
 struct mouse_state {
     int x;
     int y;
     uint8_t buttons;
+};
+
+struct video_mode {
+    uint32_t fb_addr;
+    uint32_t width;
+    uint32_t height;
+    uint32_t pitch;
+    uint8_t bpp;
 };
 
 typedef void (*userland_entry_t)(void);

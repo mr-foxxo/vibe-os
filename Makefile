@@ -13,12 +13,22 @@ USERLAND_DIR := userland
 LINKER_DIR := linker
 INCLUDE_DIR := include
 
-STAGE2_SECTORS := 32
+# keep a generous sector allocation for growing kernel modules
+STAGE2_SECTORS := 40
 SECTOR_SIZE := 512
 
 BOOT_BIN := $(BUILD_DIR)/boot.bin
-STAGE2_OBJ := $(BUILD_DIR)/stage2.o
-STAGE2_ISR_OBJ := $(BUILD_DIR)/isr.o
+STAGE2_SRCS := $(shell find $(STAGE2_DIR) -maxdepth 1 -name '*.c')
+# gather all C files in kernel directory recursively
+KERNEL_SRCS := $(shell find kernel -name '*.c')
+
+STAGE2_OBJS := $(patsubst $(STAGE2_DIR)/%.c,$(BUILD_DIR)/stage2_%.o,$(STAGE2_SRCS))
+KERNEL_OBJS := $(patsubst kernel/%.c,$(BUILD_DIR)/kernel_%.o,$(KERNEL_SRCS))
+# legacy stage2 interrupt stubs are now provided by kernel_asm/isr.asm
+# keep the file for reference but do not compile it into the final image
+STAGE2_ISR_OBJ :=
+KERNEL_ASM_SRCS := $(shell find kernel_asm -name '*.asm')
+KERNEL_ASM_OBJS := $(patsubst kernel_asm/%.asm,$(BUILD_DIR)/kernel_asm_%.o,$(KERNEL_ASM_SRCS))
 USERLAND_SRCS := $(shell find $(USERLAND_DIR) -name '*.c')
 USERLAND_OBJS := $(patsubst $(USERLAND_DIR)/%.c,$(BUILD_DIR)/%.o,$(USERLAND_SRCS))
 USERLAND_ELF := $(BUILD_DIR)/userland.elf
@@ -28,12 +38,9 @@ STAGE2_ELF := $(BUILD_DIR)/stage2.elf
 STAGE2_BIN := $(BUILD_DIR)/stage2.bin
 IMAGE := $(BUILD_DIR)/boot.img
 
-CFLAGS := -m32 -Os -ffreestanding -fno-pic -fno-pie -fno-stack-protector -fno-builtin -nostdlib -Wall -Wextra -Werror -I$(INCLUDE_DIR) -I$(USERLAND_DIR) -I$(USERLAND_DIR)/modules
+CFLAGS := -m32 -Os -ffreestanding -fno-pic -fno-pie -fno-stack-protector -fno-builtin -nostdlib -Wall -Wextra -Werror -Iuserland -Iuserland/include -Iuserland/modules/include -Iuserland/applications/include -I$(INCLUDE_DIR) -I$(STAGE2_DIR)/include -Ikernel/include
 LDFLAGS_STAGE2 := -m elf_i386 -T $(LINKER_DIR)/stage2.ld -nostdlib
 LDFLAGS_USERLAND := -m elf_i386 -T $(LINKER_DIR)/userland.ld -nostdlib
-
-.PHONY: all run debug clean check-tools
-REQUIRED_TOOLS := $(AS) $(CC) $(LD) $(OBJCOPY) $(QEMU)
 
 all: $(IMAGE)
 
@@ -57,10 +64,18 @@ $(BOOT_BIN): $(BOOT_DIR)/stage1.asm | $(BUILD_DIR)
 		exit 1; \
 	fi
 
-$(STAGE2_OBJ): $(STAGE2_DIR)/stage2.c $(INCLUDE_DIR)/userland_api.h | $(BUILD_DIR)
+$(STAGE2_OBJS): $(BUILD_DIR)/stage2_%.o: $(STAGE2_DIR)/%.c $(INCLUDE_DIR)/userland_api.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(STAGE2_ISR_OBJ): $(STAGE2_DIR)/isr.asm | $(BUILD_DIR)
+$(KERNEL_OBJS): $(BUILD_DIR)/kernel_%.o: kernel/%.c $(INCLUDE_DIR)/userland_api.h | $(BUILD_DIR)
+	mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# no longer building stage2/isr.asm; kernel_asm/isr.asm supplies IRQ/exn stubs
+#$(STAGE2_ISR_OBJ): $(STAGE2_DIR)/isr.asm | $(BUILD_DIR)
+#	$(AS) -f elf32 $< -o $@
+
+$(KERNEL_ASM_OBJS): $(BUILD_DIR)/kernel_asm_%.o: kernel_asm/%.asm | $(BUILD_DIR)
 	$(AS) -f elf32 $< -o $@
 
 $(USERLAND_OBJS): $(INCLUDE_DIR)/userland_api.h | $(BUILD_DIR)
@@ -77,8 +92,8 @@ $(USERLAND_BIN): $(USERLAND_ELF)
 $(USERLAND_BLOB_OBJ): $(USERLAND_BIN)
 	cd $(BUILD_DIR) && $(LD) -m elf_i386 -r -b binary userland.bin -o userland_blob.o
 
-$(STAGE2_ELF): $(STAGE2_OBJ) $(STAGE2_ISR_OBJ) $(USERLAND_BLOB_OBJ) $(LINKER_DIR)/stage2.ld
-	$(LD) $(LDFLAGS_STAGE2) $(STAGE2_OBJ) $(STAGE2_ISR_OBJ) $(USERLAND_BLOB_OBJ) -o $@
+$(STAGE2_ELF): $(STAGE2_OBJS) $(KERNEL_OBJS) $(KERNEL_ASM_OBJS) $(USERLAND_BLOB_OBJ) $(LINKER_DIR)/stage2.ld
+	$(LD) $(LDFLAGS_STAGE2) $(STAGE2_OBJS) $(KERNEL_OBJS) $(KERNEL_ASM_OBJS) $(USERLAND_BLOB_OBJ) -o $@
 
 $(STAGE2_BIN): $(STAGE2_ELF)
 	$(OBJCOPY) -O binary $< $@
