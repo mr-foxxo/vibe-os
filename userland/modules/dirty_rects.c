@@ -1,5 +1,5 @@
-#include "dirty_rects.h"
-#include "syscalls.h"
+#include <userland/modules/include/dirty_rects.h>
+#include <userland/modules/include/syscalls.h>
 
 static struct rect g_dirty_rects[MAX_DIRTY_RECTS];
 static int g_dirty_count = 0;

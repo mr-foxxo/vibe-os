@@ -1,8 +1,8 @@
-#include "shell.h"
-#include "console.h"
-#include "busybox.h"
-#include "fs.h"
-#include "utils.h"  /* for str_copy_limited */
+#include <userland/modules/include/shell.h>
+#include <userland/modules/include/console.h>
+#include <userland/modules/include/busybox.h>
+#include <userland/modules/include/fs.h>
+#include <userland/modules/include/utils.h>  /* for str_copy_limited */
 
 #define LINE_MAX 128
 #define ARG_MAX 16

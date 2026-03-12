@@ -1,6 +1,6 @@
-#include "taskmgr.h"
-#include "ui.h"
-#include "syscalls.h"
+#include <userland/applications/include/taskmgr.h>
+#include <userland/modules/include/ui.h>
+#include <userland/modules/include/syscalls.h>
 
 static const struct rect DEFAULT_TASKMGR_WINDOW = {30, 30, 260, 160};
 

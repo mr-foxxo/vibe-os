@@ -14,13 +14,15 @@ LINKER_DIR := linker
 INCLUDE_DIR := include
 
 # keep a generous sector allocation for growing kernel modules
-STAGE2_SECTORS := 40
+STAGE2_SECTORS := 50  # increased to accommodate expanded kernel
 SECTOR_SIZE := 512
 
 BOOT_BIN := $(BUILD_DIR)/boot.bin
 STAGE2_SRCS := $(shell find $(STAGE2_DIR) -maxdepth 1 -name '*.c')
 # gather all C files in kernel directory recursively
 KERNEL_SRCS := $(shell find kernel -name '*.c')
+# additional directories compiled by the kernel build
+# (find already covers new paths under kernel/ so no further change required)
 
 STAGE2_OBJS := $(patsubst $(STAGE2_DIR)/%.c,$(BUILD_DIR)/stage2_%.o,$(STAGE2_SRCS))
 KERNEL_OBJS := $(patsubst kernel/%.c,$(BUILD_DIR)/kernel_%.o,$(KERNEL_SRCS))
@@ -38,7 +40,7 @@ STAGE2_ELF := $(BUILD_DIR)/stage2.elf
 STAGE2_BIN := $(BUILD_DIR)/stage2.bin
 IMAGE := $(BUILD_DIR)/boot.img
 
-CFLAGS := -m32 -Os -ffreestanding -fno-pic -fno-pie -fno-stack-protector -fno-builtin -nostdlib -Wall -Wextra -Werror -Iuserland -Iuserland/include -Iuserland/modules/include -Iuserland/applications/include -I$(INCLUDE_DIR) -I$(STAGE2_DIR)/include -Ikernel/include
+CFLAGS := -m32 -Os -ffreestanding -fno-pic -fno-pie -fno-stack-protector -fno-builtin -nostdlib -Wall -Wextra -Werror -Iheaders -Iuserland
 LDFLAGS_STAGE2 := -m elf_i386 -T $(LINKER_DIR)/stage2.ld -nostdlib
 LDFLAGS_USERLAND := -m elf_i386 -T $(LINKER_DIR)/userland.ld -nostdlib
 
@@ -64,10 +66,10 @@ $(BOOT_BIN): $(BOOT_DIR)/stage1.asm | $(BUILD_DIR)
 		exit 1; \
 	fi
 
-$(STAGE2_OBJS): $(BUILD_DIR)/stage2_%.o: $(STAGE2_DIR)/%.c $(INCLUDE_DIR)/userland_api.h | $(BUILD_DIR)
+$(STAGE2_OBJS): $(BUILD_DIR)/stage2_%.o: $(STAGE2_DIR)/%.c headers/include/userland_api.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(KERNEL_OBJS): $(BUILD_DIR)/kernel_%.o: kernel/%.c $(INCLUDE_DIR)/userland_api.h | $(BUILD_DIR)
+$(KERNEL_OBJS): $(BUILD_DIR)/kernel_%.o: kernel/%.c headers/include/userland_api.h | $(BUILD_DIR)
 	mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -78,7 +80,7 @@ $(KERNEL_OBJS): $(BUILD_DIR)/kernel_%.o: kernel/%.c $(INCLUDE_DIR)/userland_api.
 $(KERNEL_ASM_OBJS): $(BUILD_DIR)/kernel_asm_%.o: kernel_asm/%.asm | $(BUILD_DIR)
 	$(AS) -f elf32 $< -o $@
 
-$(USERLAND_OBJS): $(INCLUDE_DIR)/userland_api.h | $(BUILD_DIR)
+$(USERLAND_OBJS): headers/include/userland_api.h | $(BUILD_DIR)
 	mkdir -p $(dir $@)
 	# compile any C source under userland directory matching the object path
 	$(CC) $(CFLAGS) -c $(USERLAND_DIR)/$(patsubst $(BUILD_DIR)/%,%,$(subst .o,.c,$@)) -o $@

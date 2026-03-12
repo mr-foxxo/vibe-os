@@ -1,5 +1,5 @@
-#include "fs.h"
-#include "utils.h" // for str_* functions
+#include <userland/modules/include/fs.h>
+#include <userland/modules/include/utils.h> // for str_* functions
 
 struct fs_node g_fs_nodes[FS_MAX_NODES];
 int g_fs_root = -1;

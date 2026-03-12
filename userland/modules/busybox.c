@@ -1,8 +1,8 @@
-#include "busybox.h"
-#include "console.h"
-#include "fs.h"
-#include "shell.h" /* for history print */
-#include "ui.h"    /* for startx */
+#include <userland/modules/include/busybox.h>
+#include <userland/modules/include/console.h>
+#include <userland/modules/include/fs.h>
+#include <userland/modules/include/shell.h> /* for history print */
+#include <userland/modules/include/ui.h>    /* for startx */
 #include <stddef.h> /* for size_t */
 
 /* minimal string compare so we don't depend on libc */

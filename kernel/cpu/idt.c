@@ -1,6 +1,6 @@
 #include <stdint.h>
-#include "kernel.h"
-#include "interrupt.h"
+#include <kernel/kernel.h>
+#include <kernel/interrupt.h>
 
 #define IDT_ENTRIES 256
 #define IRQ0_VECTOR 0x20

@@ -1,6 +1,6 @@
-#include "clock.h"
-#include "ui.h"
-#include "syscalls.h"
+#include <userland/applications/include/clock.h>
+#include <userland/modules/include/ui.h>
+#include <userland/modules/include/syscalls.h>
 
 static const struct rect DEFAULT_CLOCK_WINDOW = {212, 28, 98, 68};
 

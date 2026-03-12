@@ -1,9 +1,9 @@
-#include "ui.h"
-#include "syscalls.h"
-#include "terminal.h"
-#include "dirty_rects.h"
-#include "ui_clip.h"
-#include "ui_cursor.h"
+#include <userland/modules/include/ui.h>
+#include <userland/modules/include/syscalls.h>
+#include <userland/modules/include/terminal.h>
+#include <userland/modules/include/dirty_rects.h>
+#include <userland/modules/include/ui_clip.h>
+#include <userland/modules/include/ui_cursor.h>
 
 /* Global screen resolution vars - initialized at startup */
 uint32_t SCREEN_WIDTH = 320;

@@ -1,10 +1,10 @@
 #include <stdint.h>
 
-#include "userland_api.h"
-#include "console.h"
-#include "shell.h"
-#include "fs.h"
-#include "syscalls.h"
+#include <include/userland_api.h>
+#include <userland/modules/include/console.h>
+#include <userland/modules/include/shell.h>
+#include <userland/modules/include/fs.h>
+#include <userland/modules/include/syscalls.h>
 
 __attribute__((section(".entry"))) void userland_entry(void) {
     /* initialize filesystem first, shell will rely on it */

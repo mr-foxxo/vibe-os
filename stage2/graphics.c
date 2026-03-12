@@ -1,5 +1,5 @@
-#include "graphics.h"
-#include "video.h"
+#include <stage2/include/graphics.h>
+#include <stage2/include/video.h>
 
 static char uppercase_char(char c) {
     if (c >= 'a' && c <= 'z') {

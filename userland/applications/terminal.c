@@ -1,6 +1,6 @@
-#include "terminal.h"
-#include "syscalls.h"
-#include "ui.h"
+#include <userland/modules/include/terminal.h>
+#include <userland/modules/include/syscalls.h>
+#include <userland/modules/include/ui.h>
 
 /* default geometry used when a new terminal is spawned */
 static const struct rect DEFAULT_TERMINAL_WINDOW = {10, 24, 196, 150};

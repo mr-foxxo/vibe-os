@@ -1,4 +1,4 @@
-#include "syscalls.h"
+#include <userland/modules/include/syscalls.h>
 
 static inline int syscall5(int num, int a, int b, int c, int d, int e) {
     int ret;
@@ -38,4 +38,16 @@ uint32_t sys_ticks(void) {
 }
 int sys_gfx_info(struct video_mode *mode) {
     return syscall5(SYSCALL_GFX_INFO, (int)(uintptr_t)mode, 0, 0, 0, 0);
+}
+
+int sys_getpid(void) {
+    return syscall5(SYSCALL_GETPID, 0, 0, 0, 0, 0);
+}
+
+void sys_yield(void) {
+    (void)syscall5(SYSCALL_YIELD, 0, 0, 0, 0, 0);
+}
+
+void sys_write_debug(const char *msg) {
+    (void)syscall5(SYSCALL_WRITE_DEBUG, (int)(uintptr_t)msg, 0, 0, 0, 0);
 }

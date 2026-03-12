@@ -1,11 +1,17 @@
-#include "syscalls.h"
-#include "types.h"
-#include "video.h"
-#include "graphics.h"
-#include "keyboard.h"
-#include "mouse.h"
-#include "timer.h"
-#include "../include/userland_api.h"
+#include <stage2/include/syscalls.h>
+#include <stage2/include/types.h>
+#include <stage2/include/video.h>
+#include <stage2/include/graphics.h>
+#include <stage2/include/keyboard.h>
+#include <stage2/include/mouse.h>
+#include <stage2/include/timer.h>
+#include <include/userland_api.h>
+
+/* forward declarations for symbols provided by kernel proper */
+#include <kernel/process.h>  /* for process_t */
+process_t *scheduler_current(void);
+void yield(void);
+void kernel_debug_puts(const char *str);
 
 extern void irq_save(void);
 extern void irq_restore(uint32_t flags);
@@ -61,6 +67,23 @@ void syscall_dispatch(struct syscall_regs *regs) {
                 out->pitch = mode->pitch;
                 out->bpp = mode->bpp;
             }
+            regs->eax = 0;
+            break;
+        }
+
+        case SYSCALL_GETPID:
+            regs->eax = (uint32_t)(scheduler_current() ? scheduler_current()->pid : 0);
+            break;
+
+        case SYSCALL_YIELD:
+            yield();
+            regs->eax = 0;
+            break;
+
+        case SYSCALL_WRITE_DEBUG: {
+            const char *msg = (const char *)(uintptr_t)regs->ebx;
+            if (msg)
+                kernel_debug_puts(msg);
             regs->eax = 0;
             break;
         }

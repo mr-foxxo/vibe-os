@@ -1,5 +1,5 @@
-#include "common.h"
-#include "io.h"
+#include <stage2/modules/common.h>
+#include <stage2/include/io.h>
 
 static volatile uint8_t *const VGA_FB = (uint8_t *)0xA0000;
 

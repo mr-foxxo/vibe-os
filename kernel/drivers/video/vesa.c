@@ -1,4 +1,4 @@
-#include "video.h"
+#include <kernel/drivers/video/video.h>
 
 /* read information placed by the bootloader */
 #pragma GCC diagnostic push

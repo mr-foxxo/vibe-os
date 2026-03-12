@@ -1,4 +1,4 @@
-#include "video.h"      /* legacy prototypes */
+#include <stage2/include/video.h>      /* legacy prototypes */
 
 /* wrappers around new kernel video driver; keep names so existing code compiles */
 

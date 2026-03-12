@@ -1,4 +1,4 @@
-#include "kernel.h"  /* found via -Ikernel/include */
+#include <kernel/kernel.h>  /* found via -Ikernel/include */
 
 /* stub entrypoint remains for compatibility; it simply forwards
    to the new kernel code while we incrementally migrate functionality */

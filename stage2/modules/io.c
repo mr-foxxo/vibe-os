@@ -1,4 +1,4 @@
-#include "common.h"
+#include <stage2/modules/common.h>
 
 static uint8_t inb(uint16_t port) {
     uint8_t value;

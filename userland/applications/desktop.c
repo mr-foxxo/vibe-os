@@ -1,11 +1,11 @@
-#include "ui.h"
-#include "syscalls.h"
-#include "apps.h"
-#include "terminal.h"
-#include "clock.h"
-#include "filemanager.h"
-#include "taskmgr.h"
-#include "utils.h" /* for point_in_rect */
+#include <userland/modules/include/ui.h>
+#include <userland/modules/include/syscalls.h>
+#include <userland/applications/include/apps.h>
+#include <userland/modules/include/terminal.h>
+#include <userland/applications/include/clock.h>
+#include <userland/applications/include/filemanager.h>
+#include <userland/applications/include/taskmgr.h>
+#include <userland/modules/include/utils.h> /* for point_in_rect */
 
 /* state pools */
 static struct window g_windows[MAX_WINDOWS];

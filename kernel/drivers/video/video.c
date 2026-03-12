@@ -1,4 +1,4 @@
-#include "video.h"
+#include <kernel/drivers/video/video.h>
 #include <stddef.h>
 
 /* internal state */

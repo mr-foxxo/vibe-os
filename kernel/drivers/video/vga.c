@@ -1,4 +1,4 @@
-#include "video.h"
+#include <kernel/drivers/video/video.h>
 
 int vga_init(struct video_mode *mode) {
     mode->fb_addr = 0xA0000;

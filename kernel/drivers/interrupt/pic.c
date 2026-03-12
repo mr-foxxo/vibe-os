@@ -1,6 +1,6 @@
 #include <stdint.h>
-#include "interrupt.h"
-#include "io.h"  /* use stage2/io for ports */
+#include <kernel/interrupt.h>
+#include <stage2/include/io.h>  /* use stage2/io for ports */
 
 static void pic_remap(void) {
     const uint8_t mask_master = 0xFF;

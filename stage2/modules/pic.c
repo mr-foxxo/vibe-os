@@ -1,5 +1,5 @@
-#include "common.h"
-#include "io.h"
+#include <stage2/modules/common.h>
+#include <stage2/include/io.h>
 
 static void pic_send_eoi(uint8_t irq_line) {
     if (irq_line >= 8) {

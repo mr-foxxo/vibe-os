@@ -1,7 +1,7 @@
 /* compatibility shim: delegate to new kernel interrupt subsystem */
 
 #include <stdint.h>
-#include "irq.h"
+#include <stage2/include/irq.h>
 
 /* prototypes of the new kernel implementations */
 extern void kernel_idt_init(void);

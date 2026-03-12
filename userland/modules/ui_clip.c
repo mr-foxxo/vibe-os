@@ -1,5 +1,5 @@
-#include "ui_clip.h"
-#include "ui.h"
+#include <userland/modules/include/ui_clip.h>
+#include <userland/modules/include/ui.h>
 
 #define CLIP_STACK_DEPTH 16
 

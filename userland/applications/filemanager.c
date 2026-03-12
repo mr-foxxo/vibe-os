@@ -1,7 +1,7 @@
-#include "filemanager.h"
-#include "syscalls.h"
-#include "ui.h"
-#include "fs.h"
+#include <userland/applications/include/filemanager.h>
+#include <userland/modules/include/syscalls.h>
+#include <userland/modules/include/ui.h>
+#include <userland/modules/include/fs.h>
 
 static const struct rect DEFAULT_FILEMGR_WINDOW = {20, 20, 280, 140};
 

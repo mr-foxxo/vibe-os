@@ -5,42 +5,92 @@ Não leve esse repositório a sério, foi uma demonstração de como criar códi
 
 ## Descrição
 
-Projeto mínimo de bootloader x86 em dois estágios:
+Projeto mínimo de bootloader x86 em dois estágios com arquitetura modular:
 
 - **Stage 1 (`boot/stage1.asm`)**: boot sector BIOS (512 bytes), carrega o stage 2 da mídia e entra em protected mode (32-bit).
-- **Stage 2 (`stage2/stage2.c`)**: kernel mínimo em C com framebuffer VGA, IDT/PIC, IRQ0 (timer), IRQ1 (teclado), IRQ12 (mouse) e syscall ABI (`int 0x80`).
-- **Stage 2 ASM (`stage2/isr.asm`)**: stubs de interrupção e syscall.
-- **Userland**: небольшой conjunto de programas e bibliotecas escritos em C que rodam em ring3. Em vez de um único binário monolítico, a "userland" agora contém vários módulos:
-  - **bibliotecas/utilitários** (`syscalls.[hc]`, `utils.[hc]`, `fs.[hc]`, `terminal.[hc]`, `ui.[hc]`)
-  - **programas** construídos como parte do blob: `console`, `shell`, `busybox` e `desktop`.
-  - O `console` é o driver de modo-texto usado pelo shell.
-  - O `shell` é um prompt interativo com histórico, parser de argumentos e implementação de `read_line`.
-  - `busybox` é um dispatcher single‑binary que fornece vários comandos internos (pwd, ls, cd, mkdir, touch, rm, cat, echo, clear, uname, help, exit, startx, history, etc.).
-  - `desktop` contém a antiga interface gráfica que pode ser invocada com `startx`.
+- **Stage 2 (`stage2/`)**: kernel em C com framebuffer VGA, IDT/PIC, IRQ0 (timer), IRQ1 (teclado), IRQ12 (mouse) e ABI de syscall (`int 0x80`).
+- **Kernel (`kernel/`)**: subsistema de kernel modularizado com:
+  - Driver manager e drivers específicos (video, input, timer, interrupt)
+  - Executivo (ELF loader)
+  - Gerenciador de memória (paging, heap, physical memory)
+  - Processador e scheduler
+  - IPC (Inter-Process Communication)
+  - Sistema de arquivos (VFS)
+- **Userland**: módulos e aplicações em C rodam em ring3:
+  - **bibliotecas/utilitários** (`syscalls`, `utils`, `fs`, `terminal`, `ui`, etc.)
+  - **Aplicações** construídas no blob: `console`, `shell`, `busybox`, `desktop`, `filemanager`, `taskmgr`, `clock`.
+  - **Console**: driver de modo-texto usado pelo shell.
+  - **Shell**: prompt interativo com histórico e parser de argumentos.
+  - **busybox**: dispatcher single-binary com comandos internos (`pwd`, `ls`, `cd`, `mkdir`, `touch`, `rm`, `cat`, `echo`, `clear`, `uname`, `help`, `exit`, `startx`, `history`).
+  - **desktop**: interface gráfica invocada com `startx`.
 
-De forma padrão o sistema inicializa em um console de texto, roda o shell e espera comandos. O comando `startx` faz a transição para o modo gráfico chamando `desktop_main()`.
+De forma padrão o sistema inicializa em console de texto, roda o shell e espera comandos.
 
 ## Estrutura
 
-A estrutura de diretórios agora reflete o particionamento em módulos:
+A estrutura de diretórios reflete a arquitetura modular com headers centralizados:
 
 ```text
 .
 ├── boot/
-│   └── stage1.asm
-├── include/
-│   └── userland_api.h
+│   └── stage1.asm              # Boot sector (BIOS)
+├── headers/                    # CENTRALIZADO: todos os headers
+│   ├── include/
+│   │   └── userland_api.h      # Definições de syscalls
+│   ├── kernel/                 # Headers do kernel
+│   │   ├── cpu/
+│   │   ├── drivers/            # video, input, interrupt, timer, debug
+│   │   ├── exec/               # ELF loader
+│   │   ├── fs/                 # Filesystem
+│   │   ├── ipc/                # Inter-process communication
+│   │   ├── memory/             # heap, paging, physmem
+│   │   ├── process/            # Process management
+│   │   └── *.h                 # Headers de topo (kernel.h, hal.h, etc.)
+│   ├── stage2/                 # Headers do stage2
+│   │   ├── include/            # graphics, io, irq, keyboard, mouse, syscalls, timer, types, userland, video
+│   │   └── modules/            # common.h
+│   └── userland/               # Headers de userland
+│       ├── applications/       # apps, clock, filemanager, taskmgr
+│       └── modules/            # busybox, console, fs, shell, ui, utils, syscalls, etc.
+├── kernel/                     # Implementação: apenas .c (headers em headers/kernel/)
+│   ├── cpu/
+│   ├── drivers/
+│   ├── exec/
+│   ├── fs/
+│   ├── ipc/
+│   ├── memory/
+│   ├── process/
+│   ├── entry.c
+│   ├── hal.c
+│   ├── panic.c
+│   └── syscall.c
+├── kernel_asm/                 # Assembly do kernel
+│   ├── context_switch.asm
+│   └── isr.asm
+├── stage2/                     # Implementação: apenas .c (headers em headers/stage2/)
+│   ├── *.c                     # Implementações (mouse, timer, graphics, syscalls, etc.)
+│   └── isr.asm                 # Stubs de interrupção
+├── userland/                   # Implementação: apenas .c (headers em headers/userland/)
+│   ├── userland.c
+│   ├── applications/           # desktop, terminal, clock, filemanager, taskmgr
+│   └── modules/                # console, shell, busybox, ui, fs, etc.
 ├── linker/
 │   ├── stage2.ld
 │   └── userland.ld
-├── stage2/
-│   ├── isr.asm
-│   └── stage2.c
-├── userland/
-│   └── userland.c
 ├── Makefile
 └── README.md
 ```
+
+### Organização de Headers
+
+Todos os arquivos `.h` (headers) foram centralizados em `headers/` mantendo hierarquia por subsistema:
+
+- **`headers/kernel/`**: 19 headers - Kernel e seus módulos
+- **`headers/stage2/`**: 12 headers - Boot e fase 2
+- **`headers/userland/`**: 15 headers - Aplicações e bibliotecas
+- **`headers/include/`**: 1 header - APIs comuns (userland_api.h)
+
+**Total: 46 headers organizados por subsistema**
 
 ## Pré-requisitos
 

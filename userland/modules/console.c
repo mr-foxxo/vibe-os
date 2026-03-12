@@ -1,5 +1,5 @@
-#include "console.h"
-#include "syscalls.h"
+#include <userland/modules/include/console.h>
+#include <userland/modules/include/syscalls.h>
 
 #define CON_COLS 80
 #define CON_ROWS 25

@@ -1,4 +1,4 @@
-#include "io.h"
+#include <stage2/include/io.h>
 
 uint8_t inb(uint16_t port) {
     uint8_t value;

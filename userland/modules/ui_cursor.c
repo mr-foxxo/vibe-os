@@ -1,5 +1,5 @@
-#include "ui_cursor.h"
-#include "syscalls.h"
+#include <userland/modules/include/ui_cursor.h>
+#include <userland/modules/include/syscalls.h>
 
 #define CURSOR_WIDTH 7
 #define CURSOR_HEIGHT 7
