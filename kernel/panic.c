@@ -1,9 +1,13 @@
 #include <kernel/kernel.h>
+#include <kernel/drivers/video/video.h>
 
 void kernel_panic(const char *msg) {
-    /* stub: in future will disable interrupts, clear screen, print message, halt */
-    (void)msg;
-    for (;;) {
-        __asm__ volatile("hlt");
+    kernel_text_clear();
+    kernel_text_puts("KERNEL PANIC:\n");
+    if (msg) {
+        kernel_text_puts(msg);
+        kernel_text_putc('\n');
     }
+    for (;;)
+        __asm__ volatile("hlt");
 }

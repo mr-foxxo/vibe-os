@@ -41,4 +41,10 @@ void kernel_gfx_rect(int x, int y, int w, int h, uint8_t color);
 void kernel_gfx_clear(uint8_t color);
 void kernel_gfx_draw_text(int x, int y, const char *text, uint8_t color);
 
+/* VGA Text mode helpers */
+void kernel_text_init(void);
+void kernel_text_putc(char c);
+void kernel_text_puts(const char *s);
+void kernel_text_clear(void);
+
 #endif /* KERNEL_DRIVERS_VIDEO_H */

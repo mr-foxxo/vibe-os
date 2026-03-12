@@ -1,6 +1,6 @@
 #include <kernel/drivers/input/input.h>
-#include <stage2/include/io.h>
-#include <stage2/include/video.h>
+#include <kernel/hal/io.h>
+#include <kernel/drivers/video/video.h>
 #include <kernel/interrupt.h>
 
 struct mouse_state {
@@ -85,7 +85,7 @@ void kernel_mouse_init(void) {
     g_kernel_mouse_packet_index = 0u;
     g_kernel_mouse_ready = 1u;
     
-    struct video_mode *mode = video_get_mode();
+    struct video_mode *mode = kernel_video_get_mode();
     g_kernel_mouse.x = (int)(mode->width / 2u);
     g_kernel_mouse.y = (int)(mode->height / 2u);
     g_kernel_mouse.buttons = 0u;
@@ -117,7 +117,7 @@ void kernel_mouse_read(int8_t *x, int8_t *y, uint8_t *buttons) {
 
 void kernel_mouse_irq_handler(void) {
     const uint8_t data = inb(0x60);
-    struct video_mode *mode = video_get_mode();
+    struct video_mode *mode = kernel_video_get_mode();
 
     if (!g_kernel_mouse_ready) {
         kernel_pic_send_eoi(12);

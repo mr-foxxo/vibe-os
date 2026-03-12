@@ -5,7 +5,7 @@ SECTIONS
 {
     . = 0x10000;
 
-    .text : ALIGN(4096)
+    .text : ALIGN(4)
     {
         KEEP(*(.entry))
         *(.text*)
@@ -14,18 +14,22 @@ SECTIONS
     .rodata : ALIGN(4)
     {
         *(.rodata*)
+        /* keep embedded userland blob in read-only area to avoid accidental writes */
+        *userland_blob.o(.data)
     }
 
     .data : ALIGN(4)
     {
-        *(.data*)
+        EXCLUDE_FILE (*userland_blob.o) *(.data*)
     }
 
-    .bss : ALIGN(4)
-    {
-        *(.bss*)
-        *(COMMON)
-    }
+.bss : ALIGN(4)
+{
+    __bss_start = .;
+    *(.bss*)
+    *(COMMON)
+    __bss_end = .;
+}
 
     /DISCARD/ :
     {

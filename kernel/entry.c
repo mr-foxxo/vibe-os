@@ -3,89 +3,68 @@
 #include <kernel/scheduler.h>
 #include <kernel/driver_manager.h>
 #include <kernel/memory/memory_init.h>  /* kernel/memory via CFLAGS */
+#include <kernel/memory/heap.h>
+#include <kernel/fs.h>
+#include <kernel/hal.h>
+#include <kernel/cpu/cpu.h>
+#include <kernel/drivers/debug/debug.h>
+#include <kernel/drivers/video/video.h>
+#include <kernel/drivers/timer/timer.h>
+#include <kernel/drivers/input/input.h>
+#include <kernel/userland.h>
+#include <stdint.h>
 
-/* early kernel entry; mirrors original stage2 initialization.  Eventually
-   this function will orchestrate the new modular subsystems. */
-
-/* bring in existing stage2 APIs for the moment */
-#include <stage2/include/video.h>   /* from stage2/include via CFLAGS */
-#include <stage2/include/timer.h>
-#include <stage2/include/keyboard.h>
-#include <stage2/include/mouse.h>
-#include <stage2/include/userland.h>
-
-/* simple VGA text mode output for boot debugging */
-static void vga_text_putc(char c) {
-    static int x = 0, y = 0;
-    volatile uint16_t *video_mem = (uint16_t *)0xB8000;
-    
-    if (c == '\n') {
-        y++;
-        x = 0;
-        if (y >= 25) y = 0;
-        return;
+__attribute__((noreturn, section(".entry"))) void kernel_entry(void) {
+    /* zero kernel BSS */
+    extern uint8_t __bss_start[];
+    extern uint8_t __bss_end[];
+    for (uint8_t *p = __bss_start; p < __bss_end; ++p) {
+        *p = 0;
     }
-    
-    if (x >= 80) {
-        x = 0;
-        y++;
-    }
-    if (y >= 25) y = 0;
-    
-    int offset = y * 80 + x;
-    video_mem[offset] = (0x0F << 8) | (uint8_t)c;
-    x++;
-}
+    /* Initialize text mode for console output */
+    kernel_text_init();
 
-static void vga_text_puts(const char *str) {
-    for (const char *p = str; *p; p++) {
-        vga_text_putc(*p);
-    }
-}
+    kernel_text_puts("VIBE OS Booting...\n");
+    kernel_debug_init(); /* registers debug driver */
+    hal_init();
+    cpu_init();
+    gdt_init();
 
-__attribute__((noreturn)) void kernel_entry(void) {
-    /* clear screen first */
-    volatile uint16_t *video_mem = (uint16_t *)0xB8000;
-    for (int i = 0; i < 80 * 25; i++) {
-        video_mem[i] = (0x0F << 8) | ' ';
-    }
-    
-    vga_text_puts("VIBE OS Booting...\nInitializing video...\n");
-    
-    /* initialize the screen (vesa or vga) */
-    video_init();
+    kernel_text_puts("Initializing video...\n");
+    kernel_video_init(); /* VESA with VGA fallback */
+    kernel_text_puts("Video OK\n");
 
-    vga_text_puts("Video OK\n");
-
-    /* setup interrupt subsystem */
+    kernel_text_puts("Setting up interrupts...\n");
     kernel_idt_init();
     kernel_pic_init();
+    kernel_text_puts("Interrupts OK\n");
 
-    vga_text_puts("Interrupts OK\n");
+    kernel_text_puts("Starting timers/input...\n");
+    kernel_timer_init(100);
+    kernel_keyboard_init();
+    kernel_mouse_init();
+    kernel_irq_enable();
+    kernel_text_puts("IRQ OK\n");
 
-    /* continue using legacy timer/keyboard for now */
-    timer_init(100u);
-    keyboard_init();
-
-    /* mouse follows keyboard in existing code */
-    mouse_init();
-
-    kernel_irq_enable();  /* unmask lines via new pic code */
-
-    vga_text_puts("IRQ OK\n");
-
-    /* initialize memory subsystem before anything that might need allocation */
+    kernel_text_puts("Initializing memory...\n");
     memory_subsystem_init();
+    kernel_mm_init(0x500000u, 0x100000u); /* 1 MiB simple heap */
+    kernel_text_puts("Memory OK\n");
 
-    vga_text_puts("Memory OK\n");
-
-    /* setup new subsystems */
+    kernel_text_puts("Initializing scheduler/driver manager...\n");
     scheduler_init();
-    driver_manager_init();
+    driver_manager_init(); /* second call to debug init performs HW setup */
+    kernel_text_puts("Scheduler OK\n");
 
-    vga_text_puts("Starting userland...\n");
+    kernel_text_puts("Initializing VFS...\n");
+    vfs_init();
+    kernel_text_puts("VFS OK\n");
 
-    /* hand off to userland blob */
+    kernel_text_puts("Initializing syscalls...\n");
+    syscall_init();
+    kernel_text_puts("Syscalls OK\n");
+
+    kernel_text_puts("Starting userland...\n");
     userland_run();
 
     for (;;) {

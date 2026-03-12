@@ -35,7 +35,7 @@ struct idt_ptr {
     uint32_t base;
 } __attribute__((packed));
 
-/* Syscall registers */
+/* Syscall registers laid out exactly as pushed by `pusha` (edi at top of stack) */
 struct syscall_regs {
     uint32_t edi;
     uint32_t esi;

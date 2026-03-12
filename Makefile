@@ -8,14 +8,12 @@ QEMU := qemu-system-i386
 
 BUILD_DIR := build
 BOOT_DIR := boot
-STAGE2_DIR := stage2
 USERLAND_DIR := userland
 LINKER_DIR := linker
 
-# Kernel sources include both kernel/ and stage2/ directories
-KERNEL_SRCS := $(shell find kernel -name '*.c') $(shell find $(STAGE2_DIR) -maxdepth 1 -name '*.c')
-KERNEL_OBJS := $(patsubst kernel/%.c,$(BUILD_DIR)/kernel_%.o,$(shell find kernel -name '*.c')) \
-               $(patsubst $(STAGE2_DIR)/%.c,$(BUILD_DIR)/stage2_%.o,$(shell find $(STAGE2_DIR) -maxdepth 1 -name '*.c'))
+# Kernel sources - kernel only, no stage2
+KERNEL_SRCS := $(shell find kernel -name '*.c')
+KERNEL_OBJS := $(patsubst kernel/%.c,$(BUILD_DIR)/kernel_%.o,$(KERNEL_SRCS))
 
 KERNEL_ASM_SRCS := $(shell find kernel_asm -name '*.asm')
 KERNEL_ASM_OBJS := $(patsubst kernel_asm/%.asm,$(BUILD_DIR)/kernel_asm_%.o,$(KERNEL_ASM_SRCS))
@@ -24,16 +22,13 @@ USERLAND_SRCS := $(shell find $(USERLAND_DIR) -name '*.c')
 USERLAND_OBJS := $(patsubst $(USERLAND_DIR)/%.c,$(BUILD_DIR)/%.o,$(USERLAND_SRCS))
 
 BOOT_BIN := $(BUILD_DIR)/boot.bin
-USERLAND_ELF := $(BUILD_DIR)/userland.elf
-USERLAND_BIN := $(BUILD_DIR)/userland.bin
-USERLAND_BLOB_OBJ := $(BUILD_DIR)/userland_blob.o
 KERNEL_ELF := $(BUILD_DIR)/kernel.elf
 KERNEL_BIN := $(BUILD_DIR)/kernel.bin
 IMAGE := $(BUILD_DIR)/boot.img
 
 CFLAGS := -m32 -Os -ffreestanding -fno-pic -fno-pie -fno-stack-protector -fno-builtin -nostdlib -Wall -Wextra -Werror -Iheaders -Iuserland
-LDFLAGS_KERNEL := -m elf_i386 -T $(LINKER_DIR)/kernel.ld -nostdlib
-LDFLAGS_USERLAND := -m elf_i386 -T $(LINKER_DIR)/userland.ld -nostdlib
+LDFLAGS_KERNEL := -m elf_i386 -T $(LINKER_DIR)/kernel.ld -nostdlib -N
+LDFLAGS_USERLAND := -m elf_i386 -T $(LINKER_DIR)/userland.ld -nostdlib -N
 
 all: $(IMAGE)
 
@@ -61,7 +56,7 @@ $(BUILD_DIR)/kernel_%.o: kernel/%.c headers/include/userland_api.h | $(BUILD_DIR
 	mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/stage2_%.o: $(STAGE2_DIR)/%.c headers/include/userland_api.h | $(BUILD_DIR)
+$(BUILD_DIR)/kernel_shell_%.o: userland/modules/%.c headers/include/userland_api.h | $(BUILD_DIR)
 	mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -72,17 +67,8 @@ $(BUILD_DIR)/%.o: $(USERLAND_DIR)/%.c headers/include/userland_api.h | $(BUILD_D
 	mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(USERLAND_ELF): $(USERLAND_OBJS) $(LINKER_DIR)/userland.ld
-	$(LD) $(LDFLAGS_USERLAND) $(USERLAND_OBJS) -o $@
-
-$(USERLAND_BIN): $(USERLAND_ELF)
-	$(OBJCOPY) -O binary $< $@
-
-$(USERLAND_BLOB_OBJ): $(USERLAND_BIN)
-	cd $(BUILD_DIR) && $(LD) -m elf_i386 -r -b binary userland.bin -o userland_blob.o
-
-$(KERNEL_ELF): $(KERNEL_OBJS) $(KERNEL_ASM_OBJS) $(USERLAND_BLOB_OBJ) $(LINKER_DIR)/kernel.ld
-	$(LD) $(LDFLAGS_KERNEL) $(KERNEL_OBJS) $(KERNEL_ASM_OBJS) $(USERLAND_BLOB_OBJ) -o $@
+$(KERNEL_ELF): $(KERNEL_OBJS) $(KERNEL_ASM_OBJS) $(USERLAND_OBJS) $(LINKER_DIR)/kernel.ld
+	$(LD) $(LDFLAGS_KERNEL) $(KERNEL_OBJS) $(KERNEL_ASM_OBJS) $(USERLAND_OBJS) -o $@
 
 $(KERNEL_BIN): $(KERNEL_ELF)
 	$(OBJCOPY) -O binary $< $@

@@ -1,5 +1,5 @@
 #include <kernel/drivers/debug/debug.h>
-#include <stage2/include/io.h>
+#include <kernel/hal/io.h>
 #include <kernel/driver_manager.h>  /* available via -Ikernel/include */
 #include <stdarg.h>
 #include <stddef.h>

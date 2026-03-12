@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <kernel/kernel.h>
 #include <kernel/interrupt.h>
+#include <kernel/drivers/video/video.h>
 
 #define IDT_ENTRIES 256
 #define IRQ0_VECTOR 0x20
@@ -8,8 +9,7 @@
 #define IRQ12_VECTOR 0x2C
 #define SYSCALL_VECTOR 0x80
 
-/* These symbols are provided by the assembly stubs (included via stage2/isr.asm)
-   and therefore still linked into the kernel image. */
+/* These symbols are provided by the assembly stubs in kernel_asm/isr.asm. */
 extern void irq0_stub(void);
 extern void irq1_stub(void);
 extern void irq12_stub(void);
@@ -74,7 +74,38 @@ void kernel_idt_init(void) {
 
 /* simple handlers that just panic */
 void divide_error_handler(void) { kernel_panic("Divide Error"); }
-void invalid_opcode_handler(void) { kernel_panic("Invalid Opcode"); }
+void invalid_opcode_handler(uint32_t eip) {
+    static const char hex[] = "0123456789ABCDEF";
+    char buf[4][11]; /* eip, cs, bytes[0], bytes[1] */
+
+    /* helper to format 32-bit hex */
+    #define FMT32(val, dst) do { \
+        uint32_t v = (val);       \
+        (dst)[0]='0'; (dst)[1]='x'; \
+        for (int i=0;i<8;i++) (dst)[2+i]=hex[(v>>(28-4*i))&0xF]; \
+        (dst)[10]='\0'; \
+    } while (0)
+
+    uint16_t cs;
+    __asm__ volatile("mov %%cs,%0":"=r"(cs));
+
+    uint8_t b0=*((volatile uint8_t*)eip);
+    uint8_t b1=*((volatile uint8_t*)(eip+1));
+
+    FMT32(eip, buf[0]);
+    FMT32((uint32_t)cs, buf[1]);
+    FMT32((uint32_t)b0, buf[2]);
+    FMT32((uint32_t)b1, buf[3]);
+
+    kernel_text_puts("\n#UD EIP="); kernel_text_puts(buf[0]);
+    kernel_text_puts(" CS=");       kernel_text_puts(buf[1]);
+    kernel_text_puts(" B0=");       kernel_text_puts(buf[2]);
+    kernel_text_puts(" B1=");       kernel_text_puts(buf[3]);
+    kernel_text_puts("\nHalting.");
+    for (;;) __asm__ volatile("hlt");
+
+    #undef FMT32
+}
 void general_protection_handler(void) { kernel_panic("General Protection"); }
 void page_fault_handler(void) { kernel_panic("Page Fault"); }
 void double_fault_handler(void) { kernel_panic("Double Fault"); }

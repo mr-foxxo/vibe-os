@@ -18,4 +18,7 @@ int write(int fd, const void *buf, size_t count);
 /* close a descriptor */
 int close(int fd);
 
+/* initialize the virtual filesystem layer (ramfs backend for now) */
+void vfs_init(void);
+
 #endif /* KERNEL_FS_H */

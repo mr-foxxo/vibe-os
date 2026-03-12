@@ -23,8 +23,10 @@ SECTIONS
 
     .bss : ALIGN(4)
     {
+        __userland_bss_start = .;
         *(.bss*)
         *(COMMON)
+        __userland_bss_end = .;
     }
 
     /DISCARD/ :

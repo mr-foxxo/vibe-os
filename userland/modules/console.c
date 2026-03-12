@@ -1,53 +1,34 @@
 #include <userland/modules/include/console.h>
 #include <userland/modules/include/syscalls.h>
 
-#define CON_COLS 80
-#define CON_ROWS 25
-#define CHAR_WIDTH 6
-#define CHAR_HEIGHT 8
-
-static int s_x = 0;
-static int s_y = 0;
-
-static void newline(void) {
-    s_x = 0;
-    s_y++;
-    if (s_y >= CON_ROWS) {
-        /* simple scroll: clear screen */
-        console_clear();
-        s_y = 0;
-    }
-}
-
 void console_init(void) {
-    s_x = 0;
-    s_y = 0;
-    console_clear();
+    /* syscall 13: clear text mode screen */
+    int ret = 0;
+    __asm__ volatile("int $0x80"
+                     : "=a"(ret)
+                     : "a"(13), "b"(0), "c"(0), "d"(0), "S"(0), "D"(0)
+                     : "memory", "cc");
+    (void)ret;
 }
 
 void console_clear(void) {
-    /* use the graphics clear syscall; black background */
-    sys_clear(0);
+    /* syscall 13: clear text mode screen */
+    int ret = 0;
+    __asm__ volatile("int $0x80"
+                     : "=a"(ret)
+                     : "a"(13), "b"(0), "c"(0), "d"(0), "S"(0), "D"(0)
+                     : "memory", "cc");
+    (void)ret;
 }
 
 void console_putc(char c) {
-    char buf[2] = {0, 0};
-
-    if (c == '\n') {
-        newline();
-        return;
-    }
-    if (c == '\r') {
-        s_x = 0;
-        return;
-    }
-
-    buf[0] = c;
-    sys_text(s_x * CHAR_WIDTH, s_y * CHAR_HEIGHT, 15, buf);
-    s_x++;
-    if (s_x >= CON_COLS) {
-        newline();
-    }
+    /* syscall 12: write char to text mode */
+    int ret = 0;
+    __asm__ volatile("int $0x80"
+                     : "=a"(ret)
+                     : "a"(12), "b"((int)(unsigned char)c), "c"(0), "d"(0), "S"(0), "D"(0)
+                     : "memory", "cc");
+    (void)ret;
 }
 
 void console_write(const char *s) {

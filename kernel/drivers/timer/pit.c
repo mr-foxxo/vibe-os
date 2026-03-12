@@ -1,5 +1,5 @@
 #include <kernel/drivers/timer/timer.h>
-#include <stage2/include/io.h>
+#include <kernel/hal/io.h>
 #include <kernel/interrupt.h>
 
 static volatile uint32_t g_kernel_ticks = 0u;

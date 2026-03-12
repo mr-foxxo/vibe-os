@@ -5,27 +5,22 @@
 static struct video_mode g_mode;
 static volatile uint8_t *g_fb = NULL;
 static uint8_t *g_backbuf = NULL;
-static size_t g_pixel_count = 0;
+static size_t g_buf_size = 0;
 
 /* prototypes for driver implementations */
 int vesa_init(struct video_mode *mode);
 int vga_init(struct video_mode *mode);
 
 void kernel_video_init(void) {
-    /* try VESA first */
-    if (vesa_init(&g_mode) != 0) {
-        /* fallback */
-        vga_init(&g_mode);
-    }
-
+    /* stay in text mode set by BIOS; expose minimal mode info */
+    g_mode.fb_addr = 0xB8000;
+    g_mode.width = 80;
+    g_mode.height = 25;
+    g_mode.pitch = 160; /* 80 cols * 2 bytes */
+    g_mode.bpp = 16;
     g_fb = (volatile uint8_t *)g_mode.fb_addr;
-    g_pixel_count = (size_t)g_mode.width * g_mode.height;
-
-    /* back buffer at fixed address for now */
-    g_backbuf = (uint8_t *)0x10000;
-    for (size_t i = 0; i < g_pixel_count; ++i) {
-        g_backbuf[i] = 0;
-    }
+    g_backbuf = NULL;
+    g_buf_size = 0;
 }
 
 struct video_mode *kernel_video_get_mode(void) {
@@ -41,21 +36,16 @@ uint8_t *kernel_video_get_backbuffer(void) {
 }
 
 size_t kernel_video_get_pixel_count(void) {
-    return g_pixel_count;
+    return g_buf_size;
 }
 
 void kernel_video_clear(uint8_t color) {
-    if (g_backbuf == NULL) return;
-    for (size_t i = 0; i < g_pixel_count; ++i) {
-        g_backbuf[i] = color;
-    }
+    (void)color;
+    /* text mode clear handled by kernel_text_clear */
 }
 
 void kernel_video_flip(void) {
-    if (g_fb == NULL || g_backbuf == NULL) return;
-    for (size_t i = 0; i < g_pixel_count; ++i) {
-        g_fb[i] = g_backbuf[i];
-    }
+    /* nothing to do in text mode */
 }
 
 /* graphics helper internal font & routines copied from stage2 */

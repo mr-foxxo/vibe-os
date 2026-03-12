@@ -1,5 +1,5 @@
 #include <kernel/drivers/input/input.h>
-#include <stage2/include/io.h>
+#include <kernel/hal/io.h>
 #include <kernel/interrupt.h>
 
 #define KBD_QUEUE_SIZE 128

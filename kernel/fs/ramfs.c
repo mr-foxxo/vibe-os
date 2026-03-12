@@ -25,6 +25,12 @@ static ramfs_node_t g_nodes[RAMFS_MAX_FILES];
 static int g_node_count = 0;
 static ramfs_fd_t g_fds[RAMFS_MAX_FDS];
 
+void ramfs_init(void) {
+    memset(g_nodes, 0, sizeof(g_nodes));
+    memset(g_fds, 0, sizeof(g_fds));
+    g_node_count = 0;
+}
+
 /* create a file in the ramfs; returns 0 on success */
 int ramfs_create(const char *name, const void *data, size_t size) {
     if (g_node_count >= RAMFS_MAX_FILES || name == NULL) {

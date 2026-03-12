@@ -3,7 +3,10 @@ ORG 0x7C00
 
 %define KERNEL_SEG 0x1000
 %define KERNEL_OFF 0x0000
-%define KERNEL_SECTORS 32
+; Number of 512-byte sectors to read for the kernel image.
+; Kernel is ~21 KiB now; give headroom.
+; Kernel has grown past 24 KiB; load 96 sectors (48 KiB) to be safe.
+%define KERNEL_SECTORS 96
 
 %define CODE_SEG 0x08
 %define DATA_SEG 0x10
@@ -16,7 +19,7 @@ start:
     mov es,ax
     mov ss,ax
     mov sp,0x7C00
-    sti
+    ; keep interrupts disabled until IDT is set by the kernel
 
     mov [boot_drive],dl
 
@@ -32,11 +35,11 @@ start:
     mov si,msg_loaded
     call print
 
-    cli
     call enable_a20
 
     lgdt [gdt_descriptor]
 
+    cli                 ; ensure IF=0 before entering protected mode
     mov eax,cr0
     or eax,1
     mov cr0,eax
@@ -55,9 +58,9 @@ load_kernel:
     mov es,ax
     xor bx,bx
 
-    mov dh,0
-    mov ch,0
-    mov cl,2
+    mov dh,0          ; head
+    mov ch,0          ; track
+    mov cl,2          ; sector (starts at 2, sector 1 is boot)
 
     mov dl,[boot_drive]
 
@@ -71,8 +74,19 @@ load_kernel:
     jc .fail
 
     add bx,512
-    inc cl
+    inc cl                   ; next sector
 
+    ; advance CHS: if sector > 18, wrap and advance head/track
+    cmp cl,19
+    jl .dec_counter
+    mov cl,1                 ; wrap sector
+    inc dh                   ; next head
+    cmp dh,2
+    jl .dec_counter
+    mov dh,0
+    inc ch                   ; next track
+
+.dec_counter:
     dec si
     jnz .next
 
@@ -165,6 +179,7 @@ BITS 32
 
 pmode:
 
+    cli
     mov ax,DATA_SEG
     mov ds,ax
     mov es,ax
@@ -172,10 +187,10 @@ pmode:
     mov gs,ax
     mov ss,ax
 
-    mov esp,0x80000
+    mov esp,0x70000
 
-    mov eax,0x10000
-    jmp eax
+    ; jump to 32-bit kernel entry at physical 0x10000 (identity mapped)
+    jmp CODE_SEG:0x10000
 
 times 510-($-$$) db 0
 dw 0xAA55
