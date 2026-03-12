@@ -31,10 +31,45 @@ USERLAND_SRCS := \
 	$(USERLAND_DIR)/modules/dirty_rects.c \
 	$(USERLAND_DIR)/modules/ui_clip.c \
 	$(USERLAND_DIR)/modules/ui_cursor.c \
+	$(USERLAND_DIR)/sectorc/sectorc_main.c \
+	$(USERLAND_DIR)/sectorc/sectorc_driver.c \
+	$(USERLAND_DIR)/sectorc/sectorc_port.c \
+	$(USERLAND_DIR)/sectorc/sectorc_runtime.c \
+	$(USERLAND_DIR)/sectorc/sectorc_exec.c \
+	$(USERLAND_DIR)/lua/lua_main.c \
+	$(USERLAND_DIR)/lua/lua_repl.c \
+	$(USERLAND_DIR)/lua/lua_runner.c \
+	$(USERLAND_DIR)/lua/lua_port.c \
+	$(USERLAND_DIR)/lua/lua_runtime.c \
+	$(USERLAND_DIR)/lua/lua_bindings_console.c \
+	$(USERLAND_DIR)/lua/lua_bindings_sys.c \
+	$(USERLAND_DIR)/lua/vendor/lua-5.4.6/src/lapi.c \
+	$(USERLAND_DIR)/lua/vendor/lua-5.4.6/src/lauxlib.c \
+	$(USERLAND_DIR)/lua/vendor/lua-5.4.6/src/lbaselib.c \
+	$(USERLAND_DIR)/lua/vendor/lua-5.4.6/src/lcode.c \
+	$(USERLAND_DIR)/lua/vendor/lua-5.4.6/src/lctype.c \
+	$(USERLAND_DIR)/lua/vendor/lua-5.4.6/src/ldebug.c \
+	$(USERLAND_DIR)/lua/vendor/lua-5.4.6/src/ldump.c \
+	$(USERLAND_DIR)/lua/vendor/lua-5.4.6/src/ldo.c \
+	$(USERLAND_DIR)/lua/vendor/lua-5.4.6/src/lfunc.c \
+	$(USERLAND_DIR)/lua/vendor/lua-5.4.6/src/lgc.c \
+	$(USERLAND_DIR)/lua/vendor/lua-5.4.6/src/llex.c \
+	$(USERLAND_DIR)/lua/vendor/lua-5.4.6/src/lmem.c \
+	$(USERLAND_DIR)/lua/vendor/lua-5.4.6/src/lobject.c \
+	$(USERLAND_DIR)/lua/vendor/lua-5.4.6/src/lopcodes.c \
+	$(USERLAND_DIR)/lua/vendor/lua-5.4.6/src/lparser.c \
+	$(USERLAND_DIR)/lua/vendor/lua-5.4.6/src/lstate.c \
+	$(USERLAND_DIR)/lua/vendor/lua-5.4.6/src/lstring.c \
+	$(USERLAND_DIR)/lua/vendor/lua-5.4.6/src/ltable.c \
+	$(USERLAND_DIR)/lua/vendor/lua-5.4.6/src/ltm.c \
+	$(USERLAND_DIR)/lua/vendor/lua-5.4.6/src/lundump.c \
+	$(USERLAND_DIR)/lua/vendor/lua-5.4.6/src/lvm.c \
+	$(USERLAND_DIR)/lua/vendor/lua-5.4.6/src/lzio.c \
 	$(USERLAND_DIR)/applications/desktop.c \
 	$(USERLAND_DIR)/applications/terminal.c \
 	$(USERLAND_DIR)/applications/clock.c \
 	$(USERLAND_DIR)/applications/filemanager.c \
+	$(USERLAND_DIR)/applications/editor.c \
 	$(USERLAND_DIR)/applications/taskmgr.c
 USERLAND_OBJS := $(patsubst $(USERLAND_DIR)/%.c,$(BUILD_DIR)/%.o,$(USERLAND_SRCS))
 
@@ -43,7 +78,7 @@ KERNEL_ELF := $(BUILD_DIR)/kernel.elf
 KERNEL_BIN := $(BUILD_DIR)/kernel.bin
 IMAGE := $(BUILD_DIR)/boot.img
 
-CFLAGS := -m32 -Os -ffreestanding -fno-pic -fno-pie -fno-stack-protector -fno-builtin -nostdlib -Wall -Wextra -Werror -Iheaders -Iuserland
+CFLAGS := -m32 -Os -ffreestanding -fno-pic -fno-pie -fno-stack-protector -fno-builtin -nostdlib -Wall -Wextra -Werror -Iheaders -Iuserland -Iuserland/lua/include -Iuserland/lua/vendor/lua-5.4.6/src
 LDFLAGS_KERNEL := -m elf_i386 -T $(LINKER_DIR)/kernel.ld -nostdlib -N
 LDFLAGS_USERLAND := -m elf_i386 -T $(LINKER_DIR)/userland.ld -nostdlib -N
 

@@ -347,4 +347,14 @@ void fs_init(void) {
     (void)fs_create("/dev", 1);
     (void)fs_create("/docs", 1);
     (void)fs_write_file("/README", "SISTEMA DE ARQUIVOS VFS", 0);
+    (void)fs_write_file("/teste.lua",
+                        "print(\"hello from lua\")\n"
+                        "x = 42\n"
+                        "print(x)\n",
+                        0);
+    (void)fs_write_file("/hello.c",
+                        "void main() {\n"
+                        "  print(\"hello from sectorc\");\n"
+                        "}\n",
+                        0);
 }

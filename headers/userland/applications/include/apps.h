@@ -9,6 +9,7 @@ enum app_type {
     APP_TERMINAL,
     APP_CLOCK,
     APP_FILEMANAGER,
+    APP_EDITOR,
     APP_TASKMANAGER,
     APP_PERSONALIZE,
 };
@@ -17,6 +18,7 @@ enum app_type {
 #define MAX_TERMINALS 4
 #define MAX_FILEMANAGERS 2
 #define MAX_CLOCKS 4
+#define MAX_EDITORS 2
 #define MAX_TASKMGRS 1
 
 /* generic window descriptor used by desktop_main and task manager */

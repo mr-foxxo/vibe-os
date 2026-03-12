@@ -18,6 +18,7 @@ enum theme_slot {
     THEME_SLOT_MENU_BUTTON,
     THEME_SLOT_TASKBAR,
     THEME_SLOT_WINDOW,
+    THEME_SLOT_TEXT,
     THEME_SLOT_COUNT
 };
 
@@ -27,6 +28,7 @@ struct desktop_theme {
     uint8_t menu_button;
     uint8_t taskbar;
     uint8_t window;
+    uint8_t text;
 };
 
 void ui_init(void);
@@ -50,6 +52,7 @@ void draw_desktop(const struct mouse_state *mouse,
                   int terminal_item_hover,
                   int clock_item_hover,
                   int filemgr_item_hover,
+                  int editor_item_hover,
                   int taskmgr_item_hover,
                   int logout_item_hover,
                   const struct window *wins,
@@ -57,6 +60,7 @@ void draw_desktop(const struct mouse_state *mouse,
                   int focused);
 
 /* entry point for the graphical desktop environment invoked by startx */
+void desktop_request_open_editor(const char *path);
 void desktop_main(void);
 
 #endif // UI_H

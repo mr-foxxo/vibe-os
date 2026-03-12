@@ -257,6 +257,7 @@ int terminal_execute_command(struct terminal_state *t) {
 
 void terminal_draw_window(struct terminal_state *t, int active,
                           int min_hover, int max_hover, int close_hover) {
+    const struct desktop_theme *theme = ui_theme_get();
     const int text_x = t->window.x + 8;
     const int text_y = t->window.y + 22;
 
@@ -265,7 +266,7 @@ void terminal_draw_window(struct terminal_state *t, int active,
              t->window.h - 22, 0);
 
     for (int i = 0; i < t->line_count; ++i) {
-        sys_text(text_x, text_y + (i * 8), 15, t->lines[i]);
+        sys_text(text_x, text_y + (i * 8), theme->text, t->lines[i]);
     }
 
     {
@@ -277,6 +278,6 @@ void terminal_draw_window(struct terminal_state *t, int active,
             input_line[n++] = t->input[i];
         }
         input_line[n] = '\0';
-        sys_text(text_x, t->window.y + t->window.h - 12, 14, input_line);
+        sys_text(text_x, t->window.y + t->window.h - 12, theme->text, input_line);
     }
 }

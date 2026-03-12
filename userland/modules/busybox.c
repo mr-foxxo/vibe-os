@@ -1,6 +1,8 @@
 #include <userland/modules/include/busybox.h>
 #include <userland/modules/include/console.h>
 #include <userland/modules/include/fs.h>
+#include <userland/sectorc/include/sectorc.h>
+#include <userland/lua/include/lua_main.h>
 #include <userland/modules/include/shell.h> /* for history print */
 #include <userland/modules/include/ui.h>    /* for startx */
 #include <stddef.h> /* for size_t */
@@ -18,7 +20,7 @@ static int strcmp(const char *a, const char *b) {
 
 static int cmd_help(int argc, char **argv) {
     (void)argc; (void)argv;
-    const char *list = "commands: pwd ls cd mkdir touch rm cat echo clear uname help exit startx history\n";
+    const char *list = "commands: pwd ls cd mkdir touch rm cat echo clear uname help exit startx history edit lua sectorc cc\n";
     console_write(list);
     return 0;
 }
@@ -159,6 +161,24 @@ static int cmd_history(int argc, char **argv) {
     return 0;
 }
 
+static int cmd_edit(int argc, char **argv) {
+    if (argc > 1) {
+        desktop_request_open_editor(argv[1]);
+    } else {
+        desktop_request_open_editor("");
+    }
+    desktop_main();
+    return 0;
+}
+
+static int cmd_lua(int argc, char **argv) {
+    return vibe_lua_main(argc, argv);
+}
+
+static int cmd_sectorc(int argc, char **argv) {
+    return sectorc_main(argc, argv);
+}
+
 struct command {
     const char *name;
     int (*handler)(int argc, char **argv);
@@ -180,6 +200,10 @@ static const struct command g_commands[] = {
     {"exit", cmd_exit},
     {"startx", cmd_startx},
     {"history", cmd_history},
+    {"edit", cmd_edit},
+    {"lua", cmd_lua},
+    {"sectorc", cmd_sectorc},
+    {"cc", cmd_sectorc},
 };
 
 int busybox_main(int argc, char **argv) {

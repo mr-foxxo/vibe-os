@@ -5,6 +5,7 @@
 #include <userland/modules/include/ui_cursor.h>
 #include <userland/applications/include/clock.h>
 #include <userland/applications/include/filemanager.h>
+#include <userland/applications/include/editor.h>
 #include <userland/applications/include/taskmgr.h>
 #include <userland/modules/include/utils.h>
 #include <userland/modules/include/fs.h>
@@ -16,6 +17,8 @@ static struct clock_state g_clocks[MAX_CLOCKS];
 static int g_clock_used[MAX_CLOCKS];
 static struct filemanager_state g_fms[MAX_FILEMANAGERS];
 static int g_fm_used[MAX_FILEMANAGERS];
+static struct editor_state g_editors[MAX_EDITORS];
+static int g_editor_used[MAX_EDITORS];
 static struct taskmgr_state g_tms[MAX_TASKMGRS];
 static int g_tm_used[MAX_TASKMGRS];
 struct personalize_state {
@@ -43,6 +46,11 @@ enum {
     FMENU_COUNT
 };
 static int g_clipboard_node = -1;
+static int g_launch_editor_pending = 0;
+static char g_launch_editor_path[80];
+
+static void sync_window_instance_rect(int widx);
+static int alloc_window(enum app_type type);
 
 static int fs_child_by_name(int parent, const char *name) {
     int child = g_fs_nodes[parent].first_child;
@@ -188,6 +196,20 @@ static const char *filemanager_menu_label(int action) {
     }
 }
 
+static int open_editor_window_for_node(int node, int *focused) {
+    int idx = alloc_window(APP_EDITOR);
+
+    if (idx < 0) {
+        return -1;
+    }
+    if (node >= 0) {
+        (void)editor_load_node(&g_editors[g_windows[idx].instance], node);
+    }
+    sync_window_instance_rect(idx);
+    *focused = idx;
+    return idx;
+}
+
 static int alloc_term(void) {
     for (int i = 0; i < MAX_TERMINALS; ++i) {
         if (!g_term_used[i]) {
@@ -221,6 +243,17 @@ static int alloc_fm(void) {
     return -1;
 }
 
+static int alloc_editor(void) {
+    for (int i = 0; i < MAX_EDITORS; ++i) {
+        if (!g_editor_used[i]) {
+            g_editor_used[i] = 1;
+            editor_init_state(&g_editors[i]);
+            return i;
+        }
+    }
+    return -1;
+}
+
 static int alloc_tm(void) {
     for (int i = 0; i < MAX_TASKMGRS; ++i) {
         if (!g_tm_used[i]) {
@@ -230,6 +263,15 @@ static int alloc_tm(void) {
         }
     }
     return -1;
+}
+
+void desktop_request_open_editor(const char *path) {
+    if (path == 0) {
+        g_launch_editor_path[0] = '\0';
+    } else {
+        str_copy_limited(g_launch_editor_path, path, (int)sizeof(g_launch_editor_path));
+    }
+    g_launch_editor_pending = 1;
 }
 
 static void sync_window_instance_rect(int widx) {
@@ -242,6 +284,9 @@ static void sync_window_instance_rect(int widx) {
         break;
     case APP_FILEMANAGER:
         g_fms[g_windows[widx].instance].window = g_windows[widx].rect;
+        break;
+    case APP_EDITOR:
+        g_editors[g_windows[widx].instance].window = g_windows[widx].rect;
         break;
     case APP_TASKMANAGER:
         g_tms[g_windows[widx].instance].window = g_windows[widx].rect;
@@ -306,6 +351,12 @@ static int alloc_window(enum app_type type) {
                 g_windows[i].instance = idx;
                 g_windows[i].rect = g_fms[idx].window;
             } break;
+            case APP_EDITOR: {
+                int idx = alloc_editor();
+                if (idx < 0) return -1;
+                g_windows[i].instance = idx;
+                g_windows[i].rect = g_editors[idx].window;
+            } break;
             case APP_TASKMANAGER: {
                 int idx = alloc_tm();
                 if (idx < 0) return -1;
@@ -315,7 +366,7 @@ static int alloc_window(enum app_type type) {
             case APP_PERSONALIZE:
                 if (g_pers_used) return -1;
                 g_pers_used = 1;
-                g_pers.window = (struct rect){32, 18, 254, 154};
+                g_pers.window = (struct rect){20, 18, 254, 188};
                 g_pers.selected_slot = THEME_SLOT_BACKGROUND;
                 g_windows[i].instance = 0;
                 g_windows[i].rect = g_pers.window;
@@ -343,6 +394,7 @@ static void free_window(int widx) {
     case APP_TERMINAL: g_term_used[w->instance] = 0; break;
     case APP_CLOCK: g_clock_used[w->instance] = 0; break;
     case APP_FILEMANAGER: g_fm_used[w->instance] = 0; break;
+    case APP_EDITOR: g_editor_used[w->instance] = 0; break;
     case APP_TASKMANAGER: g_tm_used[w->instance] = 0; break;
     case APP_PERSONALIZE: g_pers_used = 0; break;
     default: break;
@@ -427,14 +479,16 @@ static struct rect desktop_context_menu_rect(int x, int y) {
 }
 
 static struct rect personalize_window_slot_rect(const struct rect *w, int slot) {
-    struct rect r = {w->x + 10 + (slot * 46), w->y + 30, 42, 28};
+    int col = slot % 3;
+    int row = slot / 3;
+    struct rect r = {w->x + 10 + (col * 76), w->y + 30 + (row * 34), 66, 28};
     return r;
 }
 
 static struct rect personalize_window_palette_rect(const struct rect *w, int index) {
     int col = index % 5;
     int row = index / 5;
-    struct rect r = {w->x + 12 + (col * 22), w->y + 86 + (row * 16), 18, 14};
+    struct rect r = {w->x + 12 + (col * 22), w->y + 118 + (row * 16), 18, 14};
     return r;
 }
 
@@ -463,12 +517,13 @@ static void draw_personalize_window(struct personalize_state *state,
 
     draw_window_frame(&state->window, "Personalizar", active, min_hover, max_hover, close_hover);
     sys_rect(state->window.x + 4, state->window.y + 18, state->window.w - 8, state->window.h - 22, 7);
-    sys_text(state->window.x + 10, state->window.y + 20, 0, "Escolha uma area:");
+    sys_text(state->window.x + 10, state->window.y + 20, theme->text, "Escolha uma area:");
 
     if (state->selected_slot == THEME_SLOT_MENU) selected_color = theme->menu;
     else if (state->selected_slot == THEME_SLOT_MENU_BUTTON) selected_color = theme->menu_button;
     else if (state->selected_slot == THEME_SLOT_TASKBAR) selected_color = theme->taskbar;
     else if (state->selected_slot == THEME_SLOT_WINDOW) selected_color = theme->window;
+    else if (state->selected_slot == THEME_SLOT_TEXT) selected_color = theme->text;
 
     for (int slot = 0; slot < THEME_SLOT_COUNT; ++slot) {
         struct rect tile = personalize_window_slot_rect(&state->window, slot);
@@ -478,18 +533,27 @@ static void draw_personalize_window(struct personalize_state *state,
         else if (slot == THEME_SLOT_MENU_BUTTON) color = theme->menu_button;
         else if (slot == THEME_SLOT_TASKBAR) color = theme->taskbar;
         else if (slot == THEME_SLOT_WINDOW) color = theme->window;
+        else if (slot == THEME_SLOT_TEXT) color = theme->text;
 
         sys_rect(tile.x, tile.y, tile.w, tile.h, slot == (int)state->selected_slot ? 15 : 8);
         sys_rect(tile.x + 1, tile.y + 1, tile.w - 2, tile.h - 2, 7);
-        sys_rect(tile.x + 5, tile.y + 5, tile.w - 10, 10, color);
-        sys_rect(tile.x + 8, tile.y + 17, tile.w - 16, 4, slot == (int)state->selected_slot ? 0 : 8);
-        sys_text(tile.x + 3, tile.y + 20, 0, ui_theme_slot_name((enum theme_slot)slot));
+        sys_rect(tile.x + 5, tile.y + 5, tile.w - 10, 10, slot == (int)THEME_SLOT_TEXT ? theme->window : color);
+        if (slot == (int)THEME_SLOT_TEXT) {
+            sys_text(tile.x + 29, tile.y + 6, color, "A");
+        } else {
+            sys_rect(tile.x + 8, tile.y + 17, tile.w - 16, 4, slot == (int)state->selected_slot ? 0 : 8);
+        }
+        sys_text(tile.x + 3, tile.y + 20, theme->text, ui_theme_slot_name((enum theme_slot)slot));
     }
 
-    sys_text(state->window.x + 10, state->window.y + 72, 0, "Cores comuns:");
-    sys_rect(state->window.x + 140, state->window.y + 84, 94, 46, 8);
-    sys_rect(state->window.x + 148, state->window.y + 92, 78, 18, selected_color);
-    sys_text(state->window.x + 154, state->window.y + 116, 0, "Preview");
+    sys_text(state->window.x + 10, state->window.y + 104, theme->text, "Cores comuns:");
+    sys_rect(state->window.x + 140, state->window.y + 118, 94, 50, 8);
+    sys_rect(state->window.x + 148, state->window.y + 126, 78, 18,
+             state->selected_slot == THEME_SLOT_TEXT ? theme->window : selected_color);
+    sys_text(state->window.x + 171, state->window.y + 132,
+             state->selected_slot == THEME_SLOT_TEXT ? selected_color : theme->text,
+             "Aa");
+    sys_text(state->window.x + 154, state->window.y + 150, theme->text, "Preview");
     for (int i = 0; i < (int)(sizeof(g_theme_palette) / sizeof(g_theme_palette[0])); ++i) {
         struct rect swatch = personalize_window_palette_rect(&state->window, i);
         int hover = point_in_rect(&swatch, mouse->x, mouse->y);
@@ -534,6 +598,7 @@ void desktop_main(void) {
     struct rect terminal_item;
     struct rect clock_item;
     struct rect filemgr_item;
+    struct rect editor_item;
     struct rect taskmgr_item;
     struct rect logout_item;
     struct rect context_menu;
@@ -560,14 +625,15 @@ void desktop_main(void) {
     ui_init();
     start_button = taskbar_start_button_rect();
     menu_rect.x = 2;
-    menu_rect.y = (int)SCREEN_HEIGHT - TASKBAR_HEIGHT - 116;
+    menu_rect.y = (int)SCREEN_HEIGHT - TASKBAR_HEIGHT - 134;
     menu_rect.w = 158;
-    menu_rect.h = 114;
+    menu_rect.h = 132;
     terminal_item = (struct rect){menu_rect.x + 28, menu_rect.y + 8, 126, 16};
     clock_item = (struct rect){menu_rect.x + 28, menu_rect.y + 26, 126, 16};
     filemgr_item = (struct rect){menu_rect.x + 28, menu_rect.y + 44, 126, 16};
-    taskmgr_item = (struct rect){menu_rect.x + 28, menu_rect.y + 62, 126, 16};
-    logout_item = (struct rect){menu_rect.x + 28, menu_rect.y + 88, 126, 16};
+    editor_item = (struct rect){menu_rect.x + 28, menu_rect.y + 62, 126, 16};
+    taskmgr_item = (struct rect){menu_rect.x + 28, menu_rect.y + 80, 126, 16};
+    logout_item = (struct rect){menu_rect.x + 28, menu_rect.y + 106, 126, 16};
     context_menu = desktop_context_menu_rect(0, 0);
     fm_context_menu = filemanager_context_menu_rect(0, 0);
     mouse.x = (int)SCREEN_WIDTH / 2;
@@ -578,8 +644,22 @@ void desktop_main(void) {
     for (int i = 0; i < MAX_TERMINALS; ++i) g_term_used[i] = 0;
     for (int i = 0; i < MAX_CLOCKS; ++i) g_clock_used[i] = 0;
     for (int i = 0; i < MAX_FILEMANAGERS; ++i) g_fm_used[i] = 0;
+    for (int i = 0; i < MAX_EDITORS; ++i) g_editor_used[i] = 0;
     for (int i = 0; i < MAX_TASKMGRS; ++i) g_tm_used[i] = 0;
     g_clipboard_node = -1;
+
+    if (g_launch_editor_pending) {
+        int idx = open_editor_window_for_node(-1, &focused);
+        if (idx >= 0 && g_launch_editor_path[0] != '\0') {
+            int node = fs_resolve(g_launch_editor_path);
+            if (node >= 0 && !g_fs_nodes[node].is_dir) {
+                (void)editor_load_node(&g_editors[g_windows[idx].instance], node);
+            }
+        }
+        g_launch_editor_pending = 0;
+        g_launch_editor_path[0] = '\0';
+        dirty = 1;
+    }
 
     while (running) {
         int key;
@@ -591,6 +671,7 @@ void desktop_main(void) {
         int terminal_item_hover = menu_open && point_in_rect(&terminal_item, mouse.x, mouse.y);
         int clock_item_hover = menu_open && point_in_rect(&clock_item, mouse.x, mouse.y);
         int filemgr_item_hover = menu_open && point_in_rect(&filemgr_item, mouse.x, mouse.y);
+        int editor_item_hover = menu_open && point_in_rect(&editor_item, mouse.x, mouse.y);
         int taskmgr_item_hover = menu_open && point_in_rect(&taskmgr_item, mouse.x, mouse.y);
         int logout_item_hover = menu_open && point_in_rect(&logout_item, mouse.x, mouse.y);
         int context_personalize_hover = context_open && point_in_rect(&context_menu, mouse.x, mouse.y);
@@ -619,13 +700,9 @@ void desktop_main(void) {
             dirty = 1;
         }
 
-        for (int i = 0; i < MAX_WINDOWS; ++i) {
-            if (g_windows[i].active && !g_windows[i].minimized && g_windows[i].type == APP_CLOCK) {
-                int idx = g_windows[i].instance;
-                if (ticks / 100u != g_clocks[idx].last_second) {
-                    g_clocks[idx].last_second = ticks / 100u;
-                    dirty = 1;
-                }
+        for (int i = 0; i < MAX_CLOCKS; ++i) {
+            if (g_clock_used[i] && clock_step(&g_clocks[i])) {
+                dirty = 1;
             }
         }
 
@@ -713,7 +790,11 @@ void desktop_main(void) {
                     }
 
                     if (fm_open_hover && target != FILEMANAGER_HIT_NONE) {
-                        if (filemanager_open_node(fm, target)) {
+                        if (target >= 0 && !g_fs_nodes[target].is_dir) {
+                            if (open_editor_window_for_node(target, &focused) >= 0) {
+                                dirty = 1;
+                            }
+                        } else if (filemanager_open_node(fm, target)) {
                             dirty = 1;
                         } else if (target >= 0) {
                             fm->selected_node = target;
@@ -783,6 +864,12 @@ void desktop_main(void) {
                 dirty = 1;
             } else if (menu_open && filemgr_item_hover) {
                 focused = alloc_window(APP_FILEMANAGER);
+                menu_open = 0;
+                context_open = 0;
+                fm_context_open = 0;
+                dirty = 1;
+            } else if (menu_open && editor_item_hover) {
+                focused = alloc_window(APP_EDITOR);
                 menu_open = 0;
                 context_open = 0;
                 fm_context_open = 0;
@@ -864,6 +951,15 @@ void desktop_main(void) {
                             dragging = hit_window;
                             drag_offset_x = mouse.x - g_windows[hit_window].rect.x;
                             drag_offset_y = mouse.y - g_windows[hit_window].rect.y;
+                        } else if (type == APP_EDITOR) {
+                            struct editor_state *ed = &g_editors[g_windows[hit_window].instance];
+                            struct rect save = editor_save_button_rect(ed);
+
+                            if (point_in_rect(&save, mouse.x, mouse.y)) {
+                                if (editor_save(ed)) {
+                                    dirty = 1;
+                                }
+                            }
                         } else if (type == APP_FILEMANAGER) {
                             struct filemanager_state *fm = &g_fms[g_windows[hit_window].instance];
                             struct rect up = filemanager_up_button_rect(fm);
@@ -934,12 +1030,11 @@ void desktop_main(void) {
         while ((key = sys_poll_key()) != 0) {
             if (focused < 0 ||
                 !g_windows[focused].active ||
-                g_windows[focused].minimized ||
-                g_windows[focused].type != APP_TERMINAL) {
+                g_windows[focused].minimized) {
                 continue;
             }
 
-            {
+            if (g_windows[focused].type == APP_TERMINAL) {
                 struct terminal_state *term = &g_terms[g_windows[focused].instance];
                 if (key == '\b') {
                     terminal_backspace(term);
@@ -958,13 +1053,38 @@ void desktop_main(void) {
                     terminal_add_input_char(term, (char)key);
                     dirty = 1;
                 }
+            } else if (g_windows[focused].type == APP_EDITOR) {
+                struct editor_state *ed = &g_editors[g_windows[focused].instance];
+
+                if (key == '\b') {
+                    editor_backspace(ed);
+                    dirty = 1;
+                    continue;
+                }
+                if (key == '\n') {
+                    editor_newline(ed);
+                    dirty = 1;
+                    continue;
+                }
+                if (key == 19) {
+                    if (editor_save(ed)) {
+                        dirty = 1;
+                    }
+                    continue;
+                }
+                if (key >= 32 && key <= 126) {
+                    editor_insert_char(ed, (char)key);
+                    dirty = 1;
+                }
             }
         }
 
         if (dirty) {
+            const struct desktop_theme *theme = ui_theme_get();
+
             draw_desktop(&mouse, menu_open, start_hover,
                          terminal_item_hover, clock_item_hover,
-                         filemgr_item_hover, taskmgr_item_hover,
+                         filemgr_item_hover, editor_item_hover, taskmgr_item_hover,
                          logout_item_hover, g_windows, MAX_WINDOWS, focused);
 
             for (int i = 0; i < MAX_WINDOWS; ++i) {
@@ -994,12 +1114,16 @@ void desktop_main(void) {
                                          min_hover, max_hover, close_hover);
                     break;
                 case APP_CLOCK:
-                    clock_draw_window(&g_clocks[g_windows[i].instance], ticks, active,
+                    clock_draw_window(&g_clocks[g_windows[i].instance], active,
                                       min_hover, max_hover, close_hover);
                     break;
                 case APP_FILEMANAGER:
                     filemanager_draw_window(&g_fms[g_windows[i].instance], active,
                                             min_hover, max_hover, close_hover);
+                    break;
+                case APP_EDITOR:
+                    editor_draw_window(&g_editors[g_windows[i].instance], active,
+                                       min_hover, max_hover, close_hover);
                     break;
                 case APP_TASKMANAGER:
                     taskmgr_draw_window(&g_tms[g_windows[i].instance], g_windows, MAX_WINDOWS, ticks,
@@ -1016,7 +1140,7 @@ void desktop_main(void) {
             if (context_open) {
                 sys_rect(context_menu.x, context_menu.y, context_menu.w, context_menu.h, 8);
                 sys_rect(context_menu.x + 1, context_menu.y + 1, context_menu.w - 2, context_menu.h - 2, context_personalize_hover ? 15 : 7);
-                sys_text(context_menu.x + 6, context_menu.y + 6, 0, "Personalizar...");
+                sys_text(context_menu.x + 6, context_menu.y + 6, theme->text, "Personalizar...");
             }
 
             if (fm_context_open) {
@@ -1032,7 +1156,7 @@ void desktop_main(void) {
                     else if (action == FMENU_NEW_FILE) hover = fm_new_file_hover;
 
                     sys_rect(item.x, item.y, item.w, item.h, hover ? 15 : 7);
-                    sys_text(item.x + 4, item.y + 3, 0, filemanager_menu_label(action));
+                    sys_text(item.x + 4, item.y + 3, theme->text, filemanager_menu_label(action));
                 }
             }
 

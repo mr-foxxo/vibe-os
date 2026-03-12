@@ -54,6 +54,8 @@ void taskmgr_draw_window(struct taskmgr_state *tm,
                           int min_hover,
                           int max_hover,
                           int close_hover) {
+    const struct desktop_theme *theme = ui_theme_get();
+
     draw_window_frame(&tm->window, "TASKS", active, min_hover, max_hover, close_hover);
     sys_rect(tm->window.x + 4, tm->window.y + 18,
              tm->window.w - 8, tm->window.h - 22, 0);
@@ -79,6 +81,7 @@ void taskmgr_draw_window(struct taskmgr_state *tm,
         case APP_TERMINAL: name = "TERM"; break;
         case APP_CLOCK: name = "CLK"; break;
         case APP_FILEMANAGER: name = "FM"; break;
+        case APP_EDITOR: name = "EDIT"; break;
         case APP_TASKMANAGER: name = "TM"; break;
         case APP_PERSONALIZE: name = "PERS"; break;
         default: name = "???"; break;
@@ -95,8 +98,8 @@ void taskmgr_draw_window(struct taskmgr_state *tm,
             line[len++] = numbuf[j];
         }
         line[len] = '\0';
-        sys_text(row.x + 4, row.y + 4, 15, line);
-        sys_text(close_button.x + 5, close_button.y + 3, 15, "Finalizar");
+        sys_text(row.x + 4, row.y + 4, theme->text, line);
+        sys_text(close_button.x + 5, close_button.y + 3, theme->text, "Finalizar");
         ++visible_index;
     }
 }

@@ -5,7 +5,7 @@
 
 #define FS_MAX_NODES 64
 #define FS_NAME_MAX 15
-#define FS_FILE_MAX 120
+#define FS_FILE_MAX 1024
 #define FS_MAX_SEGMENTS 8
 
 struct fs_node {
