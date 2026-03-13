@@ -15,6 +15,7 @@ struct tetris_state {
     int piece_x;
     int piece_y;
     uint32_t next_tick;
+    uint32_t tick_count;
     uint32_t seed;
     int score;
     int game_over;

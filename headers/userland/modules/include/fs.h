@@ -26,6 +26,7 @@ extern int g_fs_cwd;
 void fs_init(void);
 int fs_create(const char *path, int is_dir);
 int fs_remove(const char *path);
+int fs_rename_node(int node, const char *new_name);
 int fs_write_file(const char *path, const char *text, int append);
 int fs_write_bytes(const char *path, const uint8_t *data, int size);
 void fs_build_path(int node, char *out, int max_len);

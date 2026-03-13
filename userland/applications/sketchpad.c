@@ -5,7 +5,7 @@
 #include <userland/modules/include/syscalls.h>
 #include <userland/modules/include/utils.h>
 
-static const struct rect DEFAULT_SKETCHPAD_WINDOW = {22, 18, 240, 214};
+static const struct rect DEFAULT_SKETCHPAD_WINDOW = {22, 18, 286, 240};
 static const uint8_t g_sketch_colors[SKETCHPAD_COLOR_COUNT] = {15, 7, 8, 0, 12, 10, 9, 14, 11, 4};
 static const int SKETCHPAD_PIXEL_SCALE = 3;
 
@@ -46,6 +46,29 @@ static void sketchpad_build_export_path(char *out, int max_len) {
     }
 }
 
+static int sketchpad_write_bitmap(struct sketchpad_state *sketch, const char *path) {
+    uint8_t bmp[4096];
+    int size;
+
+    size = bmp_encode_8bit(&sketch->pixels[0][0],
+                           SKETCHPAD_CANVAS_W,
+                           SKETCHPAD_CANVAS_H,
+                           SKETCHPAD_CANVAS_W,
+                           bmp,
+                           (int)sizeof(bmp));
+    if (size < 0) {
+        str_copy_limited(sketch->last_export_path, "erro ao gerar bmp", (int)sizeof(sketch->last_export_path));
+        return 0;
+    }
+    if (fs_write_bytes(path, bmp, size) != 0) {
+        str_copy_limited(sketch->last_export_path, "erro ao salvar bmp", (int)sizeof(sketch->last_export_path));
+        return 0;
+    }
+
+    str_copy_limited(sketch->last_export_path, path, (int)sizeof(sketch->last_export_path));
+    return 1;
+}
+
 void sketchpad_clear(struct sketchpad_state *sketch) {
     for (int y = 0; y < SKETCHPAD_CANVAS_H; ++y) {
         for (int x = 0; x < SKETCHPAD_CANVAS_W; ++x) {
@@ -63,8 +86,8 @@ void sketchpad_init_state(struct sketchpad_state *sketch) {
 
 struct rect sketchpad_canvas_rect(const struct sketchpad_state *sketch) {
     struct rect r = {
-        sketch->window.x + 8,
-        sketch->window.y + 24,
+        sketch->window.x + 10,
+        sketch->window.y + 34,
         SKETCHPAD_CANVAS_W * SKETCHPAD_PIXEL_SCALE,
         SKETCHPAD_CANVAS_H * SKETCHPAD_PIXEL_SCALE
     };
@@ -72,20 +95,20 @@ struct rect sketchpad_canvas_rect(const struct sketchpad_state *sketch) {
 }
 
 struct rect sketchpad_clear_button_rect(const struct sketchpad_state *sketch) {
-    struct rect r = {sketch->window.x + 176, sketch->window.y + 24, 54, 14};
+    struct rect r = {sketch->window.x + sketch->window.w - 70, sketch->window.y + 34, 54, 14};
     return r;
 }
 
 struct rect sketchpad_export_button_rect(const struct sketchpad_state *sketch) {
-    struct rect r = {sketch->window.x + 176, sketch->window.y + 42, 54, 14};
+    struct rect r = {sketch->window.x + sketch->window.w - 70, sketch->window.y + 52, 54, 14};
     return r;
 }
 
 struct rect sketchpad_color_rect(const struct sketchpad_state *sketch, int index) {
     struct rect canvas = sketchpad_canvas_rect(sketch);
     struct rect r = {
-        sketch->window.x + 8 + ((index % 5) * 24),
-        canvas.y + canvas.h + 8 + ((index / 5) * 18),
+        sketch->window.x + 10 + ((index % 5) * 24),
+        canvas.y + canvas.h + 12 + ((index / 5) * 18),
         18,
         14
     };
@@ -123,28 +146,23 @@ int sketchpad_paint_at(struct sketchpad_state *sketch, int x, int y) {
 }
 
 int sketchpad_export_bitmap(struct sketchpad_state *sketch) {
-    uint8_t bmp[4096];
     char path[80];
-    int size;
 
     sketchpad_build_export_path(path, (int)sizeof(path));
-    size = bmp_encode_8bit(&sketch->pixels[0][0],
-                           SKETCHPAD_CANVAS_W,
-                           SKETCHPAD_CANVAS_H,
-                           SKETCHPAD_CANVAS_W,
-                           bmp,
-                           (int)sizeof(bmp));
-    if (size < 0) {
-        str_copy_limited(sketch->last_export_path, "erro ao gerar bmp", (int)sizeof(sketch->last_export_path));
-        return 0;
-    }
-    if (fs_write_bytes(path, bmp, size) != 0) {
-        str_copy_limited(sketch->last_export_path, "erro ao salvar bmp", (int)sizeof(sketch->last_export_path));
+    return sketchpad_write_bitmap(sketch, path);
+}
+
+int sketchpad_export_bitmap_named(struct sketchpad_state *sketch, const char *filename) {
+    char path[80];
+
+    if (filename == 0 || filename[0] == '\0') {
+        str_copy_limited(sketch->last_export_path, "nome invalido", (int)sizeof(sketch->last_export_path));
         return 0;
     }
 
-    str_copy_limited(sketch->last_export_path, path, (int)sizeof(sketch->last_export_path));
-    return 1;
+    str_copy_limited(path, "/docs/", (int)sizeof(path));
+    str_append(path, filename, (int)sizeof(path));
+    return sketchpad_write_bitmap(sketch, path);
 }
 
 void sketchpad_draw_window(struct sketchpad_state *sketch, int active,
@@ -154,13 +172,19 @@ void sketchpad_draw_window(struct sketchpad_state *sketch, int active,
     struct rect clear_button = sketchpad_clear_button_rect(sketch);
     struct rect export_button = sketchpad_export_button_rect(sketch);
     struct rect body = {sketch->window.x + 4, sketch->window.y + 18, sketch->window.w - 8, sketch->window.h - 22};
-    struct rect status = {sketch->window.x + 6, sketch->window.y + sketch->window.h - 16, sketch->window.w - 12, 10};
+    struct rect tools = {sketch->window.x + sketch->window.w - 82, sketch->window.y + 24, 66, 92};
+    struct rect palette = {sketch->window.x + 8, sketch->window.y + 164, sketch->window.w - 16, 42};
+    struct rect status = {sketch->window.x + 8, sketch->window.y + sketch->window.h - 18, sketch->window.w - 16, 12};
 
     draw_window_frame(&sketch->window, "SKETCHPAD", active, min_hover, max_hover, close_hover);
     ui_draw_surface(&body, ui_color_panel());
+    ui_draw_surface(&tools, ui_color_canvas());
+    ui_draw_surface(&palette, ui_color_canvas());
     ui_draw_button(&clear_button, "Limpar", UI_BUTTON_NORMAL, 0);
     ui_draw_button(&export_button, "Export", UI_BUTTON_PRIMARY, 0);
     ui_draw_inset(&canvas_frame, 15);
+    sys_text(tools.x + 8, tools.y + 10, ui_theme_get()->text, "Acoes");
+    sys_text(palette.x + 8, palette.y + 8, ui_theme_get()->text, "Paleta");
 
     for (int y = 0; y < SKETCHPAD_CANVAS_H; ++y) {
         for (int x = 0; x < SKETCHPAD_CANVAS_W; ++x) {

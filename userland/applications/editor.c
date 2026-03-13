@@ -2,7 +2,7 @@
 #include <userland/modules/include/ui.h>
 #include <userland/modules/include/syscalls.h>
 
-static const struct rect DEFAULT_EDITOR_WINDOW = {56, 32, 260, 152};
+static const struct rect DEFAULT_EDITOR_WINDOW = {52, 28, 298, 182};
 
 static void editor_set_status(struct editor_state *ed, const char *msg) {
     str_copy_limited(ed->status, msg, (int)sizeof(ed->status));
@@ -84,6 +84,25 @@ static int editor_create_default_file(struct editor_state *ed) {
     return ed->file_node >= 0;
 }
 
+static int editor_save_to_path(struct editor_state *ed, const char *path) {
+    int node;
+
+    if (fs_write_file(path, ed->buffer, 0) != 0) {
+        editor_set_status(ed, "Erro ao salvar");
+        return 0;
+    }
+
+    node = fs_resolve(path);
+    if (node < 0 || g_fs_nodes[node].is_dir) {
+        editor_set_status(ed, "Erro ao salvar");
+        return 0;
+    }
+
+    ed->file_node = node;
+    editor_set_status(ed, "Arquivo salvo");
+    return 1;
+}
+
 static void editor_compact_path(const struct editor_state *ed, char *out, int max_len) {
     if (ed->file_node >= 0 && g_fs_nodes[ed->file_node].used) {
         fs_build_path(ed->file_node, out, max_len);
@@ -129,13 +148,27 @@ int editor_save(struct editor_state *ed) {
     }
 
     fs_build_path(ed->file_node, path, sizeof(path));
-    if (fs_write_file(path, ed->buffer, 0) != 0) {
-        editor_set_status(ed, "Erro ao salvar");
+    return editor_save_to_path(ed, path);
+}
+
+int editor_save_named(struct editor_state *ed, const char *filename) {
+    int parent = editor_default_parent();
+    char path[80];
+
+    if (filename == 0 || filename[0] == '\0') {
+        editor_set_status(ed, "Nome invalido");
         return 0;
     }
+    if (ed->file_node >= 0 && g_fs_nodes[ed->file_node].used) {
+        parent = g_fs_nodes[ed->file_node].parent;
+    }
 
-    editor_set_status(ed, "Arquivo salvo");
-    return 1;
+    fs_build_path(parent, path, sizeof(path));
+    if (!str_eq(path, "/")) {
+        str_append(path, "/", (int)sizeof(path));
+    }
+    str_append(path, filename, (int)sizeof(path));
+    return editor_save_to_path(ed, path);
 }
 
 void editor_insert_char(struct editor_state *ed, char c) {
@@ -164,7 +197,7 @@ void editor_newline(struct editor_state *ed) {
 }
 
 struct rect editor_save_button_rect(const struct editor_state *ed) {
-    struct rect r = {ed->window.x + ed->window.w - 48, ed->window.y + 20, 38, 14};
+    struct rect r = {ed->window.x + ed->window.w - 56, ed->window.y + 24, 46, 14};
     return r;
 }
 
@@ -172,20 +205,22 @@ void editor_draw_window(struct editor_state *ed, int active,
                         int min_hover, int max_hover, int close_hover) {
     const struct desktop_theme *theme = ui_theme_get();
     struct rect save = editor_save_button_rect(ed);
-    struct rect area = {ed->window.x + 6, ed->window.y + 40, ed->window.w - 12, ed->window.h - 62};
+    struct rect toolbar = {ed->window.x + 6, ed->window.y + 22, ed->window.w - 12, 22};
+    struct rect area = {ed->window.x + 6, ed->window.y + 50, ed->window.w - 12, ed->window.h - 72};
     struct rect body = {ed->window.x + 4, ed->window.y + 18, ed->window.w - 8, ed->window.h - 22};
-    struct rect path_bar = {ed->window.x + 6, ed->window.y + 22, ed->window.w - 60, 12};
-    struct rect status_bar = {ed->window.x + 6, ed->window.y + ed->window.h - 16, ed->window.w - 12, 10};
+    struct rect path_bar = {toolbar.x + 4, toolbar.y + 5, toolbar.w - 62, 12};
+    struct rect status_bar = {ed->window.x + 6, ed->window.y + ed->window.h - 18, ed->window.w - 12, 12};
     char path[80];
     int x = area.x + 4;
     int y = area.y + 4;
 
     draw_window_frame(&ed->window, "EDITOR", active, min_hover, max_hover, close_hover);
     ui_draw_surface(&body, ui_color_panel());
+    ui_draw_surface(&toolbar, ui_color_canvas());
 
     editor_compact_path(ed, path, sizeof(path));
     ui_draw_inset(&path_bar, ui_color_canvas());
-    sys_text(ed->window.x + 10, ed->window.y + 25, theme->text, path);
+    sys_text(path_bar.x + 4, path_bar.y + 3, theme->text, path);
     ui_draw_button(&save, "Salvar", UI_BUTTON_PRIMARY, 0);
 
     ui_draw_inset(&area, ui_color_canvas());

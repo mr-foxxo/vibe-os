@@ -157,6 +157,28 @@ static int fs_has_children(int idx) {
     return g_fs_nodes[idx].first_child != -1;
 }
 
+static int fs_name_is_valid(const char *name) {
+    int len = 0;
+
+    if (name == 0 || name[0] == '\0') {
+        return 0;
+    }
+    if (str_eq(name, ".") || str_eq(name, "..")) {
+        return 0;
+    }
+
+    while (name[len] != '\0') {
+        if (name[len] == '/') {
+            return 0;
+        }
+        ++len;
+        if (len > FS_NAME_MAX) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static int fs_new_node(const char *name, int is_dir, int parent) {
     int idx = fs_alloc_node();
     if (idx < 0) {
@@ -353,6 +375,28 @@ int fs_remove(const char *path) {
     parent = g_fs_nodes[idx].parent;
     fs_unlink_child(parent, idx);
     fs_reset_node(idx);
+    fs_sync();
+    return 0;
+}
+
+int fs_rename_node(int node, const char *new_name) {
+    int parent;
+    int existing;
+
+    if (node < 0 || node >= FS_MAX_NODES || !g_fs_nodes[node].used || node == g_fs_root) {
+        return -1;
+    }
+    if (!fs_name_is_valid(new_name)) {
+        return -2;
+    }
+
+    parent = g_fs_nodes[node].parent;
+    existing = fs_find_child(parent, new_name);
+    if (existing >= 0 && existing != node) {
+        return -3;
+    }
+
+    str_copy_limited(g_fs_nodes[node].name, new_name, FS_NAME_MAX + 1);
     fs_sync();
     return 0;
 }

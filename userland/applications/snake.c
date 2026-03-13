@@ -47,6 +47,7 @@ static void snake_reset(struct snake_state *snake) {
     snake->next_dir_x = 1;
     snake->next_dir_y = 0;
     snake->next_tick = 0u;
+    snake->tick_count = 0u;
     snake->score = 0;
     snake->game_over = 0;
     if (snake->seed == 0u) {
@@ -130,19 +131,22 @@ int snake_step(struct snake_state *snake, uint32_t ticks) {
     int new_x;
     int new_y;
     int grow = 0;
+    (void)ticks;
 
     if (snake->game_over) {
         return 0;
     }
 
+    snake->tick_count += 1u;
+
     if (snake->next_tick == 0u) {
-        snake->next_tick = ticks + SNAKE_STEP_TICKS;
+        snake->next_tick = snake->tick_count + SNAKE_STEP_TICKS;
         return 1;
     }
-    if (ticks < snake->next_tick) {
+    if (snake->tick_count < snake->next_tick) {
         return 0;
     }
-    snake->next_tick = ticks + SNAKE_STEP_TICKS;
+    snake->next_tick = snake->tick_count + SNAKE_STEP_TICKS;
 
     snake->dir_x = snake->next_dir_x;
     snake->dir_y = snake->next_dir_y;

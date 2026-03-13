@@ -26,5 +26,6 @@ struct rect sketchpad_color_rect(const struct sketchpad_state *sketch, int index
 int sketchpad_hit_color(const struct sketchpad_state *sketch, int x, int y);
 int sketchpad_paint_at(struct sketchpad_state *sketch, int x, int y);
 int sketchpad_export_bitmap(struct sketchpad_state *sketch);
+int sketchpad_export_bitmap_named(struct sketchpad_state *sketch, const char *filename);
 
 #endif // SKETCHPAD_H

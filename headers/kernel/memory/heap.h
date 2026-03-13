@@ -8,6 +8,8 @@
 void kernel_mm_init(uintptr_t heap_start, size_t heap_size);
 void *kernel_malloc(size_t size);
 void kernel_free(void *ptr);
+uintptr_t kernel_heap_start(void);
+uintptr_t kernel_heap_end(void);
 size_t kernel_heap_used(void);
 size_t kernel_heap_free(void);
 

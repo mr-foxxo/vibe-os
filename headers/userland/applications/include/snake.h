@@ -20,6 +20,7 @@ struct snake_state {
     int food_x;
     int food_y;
     uint32_t next_tick;
+    uint32_t tick_count;
     uint32_t seed;
     int score;
     int game_over;

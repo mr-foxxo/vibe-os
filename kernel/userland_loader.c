@@ -1,5 +1,6 @@
 #include <stddef.h>
 #include <stdint.h>
+#include <kernel/memory/heap.h>
 #include <kernel/userland.h>
 
 typedef void (*userland_entry_t)(void);
@@ -15,11 +16,16 @@ __attribute__((noreturn)) void userland_run(void) {
     kernel_debug_puts("userland_run: jump\n");
 
     /*
-     * Userland is linked directly inside the kernel image now, so its .bss
-     * lives inside the kernel address space. Keep the userland stack far above
-     * the embedded image and below the kernel bump heap at 0x500000.
+     * The userland stack sits in the reserved gap directly below the dynamic
+     * kernel heap so higher resolutions can consume more heap without
+     * colliding with userland.
      */
-    uint32_t stack_top = 0x480000;
+    uint32_t stack_top = (uint32_t)kernel_heap_start();
+    if (stack_top > 0x2000u) {
+        stack_top -= 0x1000u;
+    } else {
+        stack_top = 0x00480000u;
+    }
     stack_top = (stack_top + 0xF) & ~0xFu; /* align 16 */
 
     __asm__ volatile("cli\n\t"

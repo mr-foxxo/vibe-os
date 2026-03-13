@@ -3,21 +3,21 @@
 #include <userland/modules/include/ui.h>
 #include <userland/modules/include/fs.h>
 
-static const struct rect DEFAULT_FILEMGR_WINDOW = {20, 20, 280, 140};
-static const int FILEMGR_ROW_HEIGHT = 14;
+static const struct rect DEFAULT_FILEMGR_WINDOW = {20, 20, 306, 170};
+static const int FILEMGR_ROW_HEIGHT = 16;
 
 static struct rect filemanager_path_rect(const struct filemanager_state *fm) {
-    struct rect r = {fm->window.x + 6, fm->window.y + 22, fm->window.w - 44, 12};
+    struct rect r = {fm->window.x + 10, fm->window.y + 27, fm->window.w - 54, 12};
     return r;
 }
 
 struct rect filemanager_up_button_rect(const struct filemanager_state *fm) {
-    struct rect r = {fm->window.x + fm->window.w - 32, fm->window.y + 20, 22, 14};
+    struct rect r = {fm->window.x + fm->window.w - 38, fm->window.y + 24, 28, 14};
     return r;
 }
 
 struct rect filemanager_list_rect(const struct filemanager_state *fm) {
-    struct rect r = {fm->window.x + 6, fm->window.y + 40, fm->window.w - 12, fm->window.h - 62};
+    struct rect r = {fm->window.x + 8, fm->window.y + 52, fm->window.w - 16, fm->window.h - 74};
     if (r.h < FILEMGR_ROW_HEIGHT) {
         r.h = FILEMGR_ROW_HEIGHT;
     }
@@ -25,7 +25,7 @@ struct rect filemanager_list_rect(const struct filemanager_state *fm) {
 }
 
 static struct rect filemanager_status_rect(const struct filemanager_state *fm) {
-    struct rect r = {fm->window.x + 6, fm->window.y + fm->window.h - 16, fm->window.w - 12, 10};
+    struct rect r = {fm->window.x + 8, fm->window.y + fm->window.h - 18, fm->window.w - 16, 12};
     return r;
 }
 
@@ -175,9 +175,11 @@ void filemanager_draw_window(struct filemanager_state *fm, int active,
     struct rect status = filemanager_status_rect(fm);
     const struct desktop_theme *theme = ui_theme_get();
     struct rect body = {fm->window.x + 4, fm->window.y + 18, fm->window.w - 8, fm->window.h - 22};
+    struct rect toolbar = {fm->window.x + 6, fm->window.y + 22, fm->window.w - 12, 24};
 
     draw_window_frame(&fm->window, "FILEMANAGER", active, min_hover, max_hover, close_hover);
     ui_draw_surface(&body, ui_color_panel());
+    ui_draw_surface(&toolbar, ui_color_canvas());
 
     ui_draw_inset(&path_bar, ui_color_canvas());
     ui_draw_button(&up_button, "UP", UI_BUTTON_PRIMARY, 0);

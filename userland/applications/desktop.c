@@ -55,8 +55,39 @@ enum {
     FMENU_PASTE,
     FMENU_NEW_DIR,
     FMENU_NEW_FILE,
+    FMENU_RENAME,
     FMENU_SET_WALLPAPER,
     FMENU_COUNT
+};
+enum {
+    APPCTX_PRIMARY = 0,
+    APPCTX_SAVE_AS,
+    APPCTX_COUNT
+};
+enum file_dialog_mode {
+    FILE_DIALOG_NONE = 0,
+    FILE_DIALOG_EDITOR_SAVE,
+    FILE_DIALOG_SKETCH_EXPORT,
+    FILE_DIALOG_FILE_RENAME
+};
+struct app_context_state {
+    int open;
+    int window;
+    enum app_type type;
+    struct rect menu;
+};
+struct file_dialog_state {
+    int active;
+    enum file_dialog_mode mode;
+    int owner_window;
+    int target_node;
+    int active_field;
+    struct rect window;
+    char title[28];
+    char confirm[16];
+    char name[FS_NAME_MAX + 1];
+    char ext[FS_NAME_MAX + 1];
+    char status[40];
 };
 static int g_clipboard_node = -1;
 static int g_launch_editor_pending = 0;
@@ -71,7 +102,7 @@ static const struct resolution_option g_resolution_options[] = {
     {640u, 480u},
     {800u, 600u},
     {1024u, 768u},
-    {1366u, 768u},
+    {1360u, 720u},
     {1920u, 1080u}
 };
 
@@ -250,9 +281,346 @@ static const char *filemanager_menu_label(int action) {
     case FMENU_PASTE: return "Colar";
     case FMENU_NEW_DIR: return "Novo diretorio";
     case FMENU_NEW_FILE: return "Novo arquivo";
+    case FMENU_RENAME: return "Renomear";
     case FMENU_SET_WALLPAPER: return "Definir plano";
     default: return "";
     }
+}
+
+static const char *app_context_menu_label(enum app_type type, int action) {
+    if (type == APP_EDITOR) {
+        return action == APPCTX_PRIMARY ? "Salvar" : "Salvar como...";
+    }
+    if (type == APP_SKETCHPAD) {
+        return action == APPCTX_PRIMARY ? "Exportar" : "Exportar como...";
+    }
+    return "";
+}
+
+static void set_dialog_status(struct file_dialog_state *dialog, const char *msg) {
+    str_copy_limited(dialog->status, msg, (int)sizeof(dialog->status));
+}
+
+static int find_last_char(const char *text, char ch) {
+    int last = -1;
+
+    for (int i = 0; text[i] != '\0'; ++i) {
+        if (text[i] == ch) {
+            last = i;
+        }
+    }
+    return last;
+}
+
+static void split_filename_parts(const char *filename,
+                                 char *name,
+                                 int name_len,
+                                 char *ext,
+                                 int ext_len) {
+    int dot = -1;
+    int len = str_len(filename);
+
+    name[0] = '\0';
+    ext[0] = '\0';
+    if (filename == 0 || filename[0] == '\0') {
+        return;
+    }
+
+    dot = find_last_char(filename, '.');
+    if (dot > 0 && dot < len - 1) {
+        for (int i = 0; i < dot && i < name_len - 1; ++i) {
+            name[i] = filename[i];
+            name[i + 1] = '\0';
+        }
+        str_copy_limited(ext, filename + dot + 1, ext_len);
+        return;
+    }
+
+    str_copy_limited(name, filename, name_len);
+}
+
+static void extract_basename_parts(const char *path,
+                                   char *name,
+                                   int name_len,
+                                   char *ext,
+                                   int ext_len) {
+    const char *base = path;
+
+    if (path == 0) {
+        name[0] = '\0';
+        ext[0] = '\0';
+        return;
+    }
+    for (const char *p = path; *p != '\0'; ++p) {
+        if (*p == '/') {
+            base = p + 1;
+        }
+    }
+    split_filename_parts(base, name, name_len, ext, ext_len);
+}
+
+static int build_filename_from_dialog(const struct file_dialog_state *dialog,
+                                      char *out,
+                                      int max_len) {
+    int total;
+
+    if (dialog->name[0] == '\0') {
+        return 0;
+    }
+    total = str_len(dialog->name);
+    if (dialog->ext[0] != '\0') {
+        total += 1 + str_len(dialog->ext);
+    }
+    if (total > FS_NAME_MAX) {
+        return 0;
+    }
+
+    str_copy_limited(out, dialog->name, max_len);
+    if (dialog->ext[0] != '\0') {
+        str_append(out, ".", max_len);
+        str_append(out, dialog->ext, max_len);
+    }
+    return 1;
+}
+
+static struct rect app_context_menu_rect(int x, int y) {
+    struct rect r = {x, y, 116, 32};
+    if (r.x + r.w > (int)SCREEN_WIDTH) r.x = (int)SCREEN_WIDTH - r.w;
+    if (r.y + r.h > (int)SCREEN_HEIGHT - TASKBAR_HEIGHT) r.y = (int)SCREEN_HEIGHT - TASKBAR_HEIGHT - r.h;
+    if (r.x < 0) r.x = 0;
+    if (r.y < 0) r.y = 0;
+    return r;
+}
+
+static struct rect app_context_item_rect(const struct rect *menu, int action) {
+    struct rect r = {menu->x + 2, menu->y + 2 + (action * 14), menu->w - 4, 12};
+    return r;
+}
+
+static struct rect file_dialog_window_rect(void) {
+    struct rect r = {(int)SCREEN_WIDTH / 2 - 140, (int)SCREEN_HEIGHT / 2 - 60, 280, 128};
+    if (r.x < 8) r.x = 8;
+    if (r.y < 8) r.y = 8;
+    if (r.y + r.h > (int)SCREEN_HEIGHT - TASKBAR_HEIGHT - 8) {
+        r.y = (int)SCREEN_HEIGHT - TASKBAR_HEIGHT - r.h - 8;
+    }
+    return r;
+}
+
+static struct rect file_dialog_close_rect(const struct file_dialog_state *dialog) {
+    struct rect r = {dialog->window.x + dialog->window.w - 14, dialog->window.y + 2, 10, 10};
+    return r;
+}
+
+static struct rect file_dialog_name_rect(const struct file_dialog_state *dialog) {
+    struct rect r = {dialog->window.x + 16, dialog->window.y + 34, 146, 16};
+    return r;
+}
+
+static struct rect file_dialog_ext_rect(const struct file_dialog_state *dialog) {
+    struct rect r = {dialog->window.x + 178, dialog->window.y + 34, 86, 16};
+    return r;
+}
+
+static struct rect file_dialog_ok_rect(const struct file_dialog_state *dialog) {
+    struct rect r = {dialog->window.x + dialog->window.w - 118, dialog->window.y + dialog->window.h - 24, 50, 14};
+    return r;
+}
+
+static struct rect file_dialog_cancel_rect(const struct file_dialog_state *dialog) {
+    struct rect r = {dialog->window.x + dialog->window.w - 62, dialog->window.y + dialog->window.h - 24, 50, 14};
+    return r;
+}
+
+static void file_dialog_reset(struct file_dialog_state *dialog) {
+    dialog->active = 0;
+    dialog->mode = FILE_DIALOG_NONE;
+    dialog->owner_window = -1;
+    dialog->target_node = -1;
+    dialog->active_field = 0;
+    dialog->title[0] = '\0';
+    dialog->confirm[0] = '\0';
+    dialog->name[0] = '\0';
+    dialog->ext[0] = '\0';
+    dialog->status[0] = '\0';
+}
+
+static void file_dialog_open_editor(struct file_dialog_state *dialog, int window_index) {
+    struct editor_state *ed = &g_editors[g_windows[window_index].instance];
+
+    file_dialog_reset(dialog);
+    dialog->active = 1;
+    dialog->mode = FILE_DIALOG_EDITOR_SAVE;
+    dialog->owner_window = window_index;
+    dialog->window = file_dialog_window_rect();
+    dialog->active_field = 0;
+    str_copy_limited(dialog->title, "Salvar documento", (int)sizeof(dialog->title));
+    str_copy_limited(dialog->confirm, "Salvar", (int)sizeof(dialog->confirm));
+    if (ed->file_node >= 0 && g_fs_nodes[ed->file_node].used) {
+        split_filename_parts(g_fs_nodes[ed->file_node].name,
+                             dialog->name, (int)sizeof(dialog->name),
+                             dialog->ext, (int)sizeof(dialog->ext));
+    } else {
+        str_copy_limited(dialog->name, "nota", (int)sizeof(dialog->name));
+        str_copy_limited(dialog->ext, "txt", (int)sizeof(dialog->ext));
+    }
+    set_dialog_status(dialog, "Defina nome e extensao");
+}
+
+static void file_dialog_open_sketch(struct file_dialog_state *dialog, int window_index) {
+    struct sketchpad_state *sketch = &g_sketches[g_windows[window_index].instance];
+
+    file_dialog_reset(dialog);
+    dialog->active = 1;
+    dialog->mode = FILE_DIALOG_SKETCH_EXPORT;
+    dialog->owner_window = window_index;
+    dialog->window = file_dialog_window_rect();
+    dialog->active_field = 0;
+    str_copy_limited(dialog->title, "Exportar bitmap", (int)sizeof(dialog->title));
+    str_copy_limited(dialog->confirm, "Exportar", (int)sizeof(dialog->confirm));
+    if (sketch->last_export_path[0] != '\0') {
+        extract_basename_parts(sketch->last_export_path,
+                               dialog->name, (int)sizeof(dialog->name),
+                               dialog->ext, (int)sizeof(dialog->ext));
+    } else {
+        str_copy_limited(dialog->name, "sketch", (int)sizeof(dialog->name));
+        str_copy_limited(dialog->ext, "bmp", (int)sizeof(dialog->ext));
+    }
+    if (dialog->ext[0] == '\0') {
+        str_copy_limited(dialog->ext, "bmp", (int)sizeof(dialog->ext));
+    }
+    set_dialog_status(dialog, "Arquivo exportado em /docs");
+}
+
+static void file_dialog_open_rename(struct file_dialog_state *dialog, int window_index, int node) {
+    file_dialog_reset(dialog);
+    dialog->active = 1;
+    dialog->mode = FILE_DIALOG_FILE_RENAME;
+    dialog->owner_window = window_index;
+    dialog->target_node = node;
+    dialog->window = file_dialog_window_rect();
+    dialog->active_field = 0;
+    str_copy_limited(dialog->title, "Renomear item", (int)sizeof(dialog->title));
+    str_copy_limited(dialog->confirm, "Aplicar", (int)sizeof(dialog->confirm));
+    if (node >= 0 && g_fs_nodes[node].used) {
+        split_filename_parts(g_fs_nodes[node].name,
+                             dialog->name, (int)sizeof(dialog->name),
+                             dialog->ext, (int)sizeof(dialog->ext));
+    }
+    set_dialog_status(dialog, "O nome final deve caber em 15 chars");
+}
+
+static int file_dialog_apply(struct file_dialog_state *dialog) {
+    char filename[FS_NAME_MAX + 1];
+
+    if (!build_filename_from_dialog(dialog, filename, (int)sizeof(filename))) {
+        set_dialog_status(dialog, "Nome ou extensao invalido");
+        return 0;
+    }
+
+    if (dialog->mode == FILE_DIALOG_EDITOR_SAVE) {
+        if (!editor_save_named(&g_editors[g_windows[dialog->owner_window].instance], filename)) {
+            set_dialog_status(dialog, "Falha ao salvar");
+            return 0;
+        }
+        return 1;
+    }
+    if (dialog->mode == FILE_DIALOG_SKETCH_EXPORT) {
+        if (!sketchpad_export_bitmap_named(&g_sketches[g_windows[dialog->owner_window].instance], filename)) {
+            set_dialog_status(dialog, "Falha ao exportar");
+            return 0;
+        }
+        return 1;
+    }
+    if (dialog->mode == FILE_DIALOG_FILE_RENAME) {
+        if (fs_rename_node(dialog->target_node, filename) != 0) {
+            set_dialog_status(dialog, "Falha ao renomear");
+            return 0;
+        }
+        return 1;
+    }
+    return 0;
+}
+
+static int file_dialog_accepts_char(int field, int key) {
+    (void)field;
+    return key >= 32 && key <= 126 && key != '/' && key != '.';
+}
+
+static void file_dialog_insert_char(struct file_dialog_state *dialog, int key) {
+    char *dst = dialog->active_field == 0 ? dialog->name : dialog->ext;
+    int max_len = dialog->active_field == 0 ? (int)sizeof(dialog->name) : (int)sizeof(dialog->ext);
+    int len = str_len(dst);
+
+    if (!file_dialog_accepts_char(dialog->active_field, key) || len >= max_len - 1) {
+        return;
+    }
+    dst[len] = (char)key;
+    dst[len + 1] = '\0';
+}
+
+static void file_dialog_backspace(struct file_dialog_state *dialog) {
+    char *dst = dialog->active_field == 0 ? dialog->name : dialog->ext;
+    int len = str_len(dst);
+
+    if (len > 0) {
+        dst[len - 1] = '\0';
+    }
+}
+
+static void draw_file_dialog(const struct file_dialog_state *dialog, const struct mouse_state *mouse) {
+    const struct desktop_theme *theme = ui_theme_get();
+    struct rect body = {dialog->window.x + 4, dialog->window.y + 18, dialog->window.w - 8, dialog->window.h - 22};
+    struct rect title = {dialog->window.x + 2, dialog->window.y + 2, dialog->window.w - 4, 12};
+    struct rect close = file_dialog_close_rect(dialog);
+    struct rect name_field = file_dialog_name_rect(dialog);
+    struct rect ext_field = file_dialog_ext_rect(dialog);
+    struct rect ok = file_dialog_ok_rect(dialog);
+    struct rect cancel = file_dialog_cancel_rect(dialog);
+    int close_hover = point_in_rect(&close, mouse->x, mouse->y);
+    int ok_hover = point_in_rect(&ok, mouse->x, mouse->y);
+    int cancel_hover = point_in_rect(&cancel, mouse->x, mouse->y);
+    int name_active = dialog->active_field == 0;
+    int ext_active = dialog->active_field == 1;
+    int name_len = str_len(dialog->name);
+    int ext_len = str_len(dialog->ext);
+
+    ui_draw_surface(&dialog->window, ui_color_panel());
+    sys_rect(title.x, title.y, title.w, title.h, theme->window);
+    sys_rect(title.x, title.y + title.h - 1, title.w, 1, 0);
+    sys_text(dialog->window.x + 8, dialog->window.y + 4, theme->text, dialog->title);
+    ui_draw_button(&close, "X", UI_BUTTON_DANGER, close_hover);
+    ui_draw_surface(&body, ui_color_canvas());
+
+    sys_text(body.x + 8, body.y + 10, theme->text, "Nome");
+    sys_text(body.x + 170, body.y + 10, theme->text, "Ext");
+    if (name_active) {
+        sys_rect(name_field.x - 1, name_field.y - 1, name_field.w + 2, name_field.h + 2, theme->window);
+    }
+    if (ext_active) {
+        sys_rect(ext_field.x - 1, ext_field.y - 1, ext_field.w + 2, ext_field.h + 2, theme->window);
+    }
+    ui_draw_inset(&name_field, ui_color_canvas());
+    ui_draw_inset(&ext_field, ui_color_canvas());
+    sys_text(name_field.x + 4, name_field.y + 4, theme->text, dialog->name);
+    sys_text(ext_field.x + 4, ext_field.y + 4, theme->text, dialog->ext);
+    if (name_active && name_len < FS_NAME_MAX) {
+        sys_rect(name_field.x + 4 + (name_len * 6), name_field.y + 12, 6, 1, theme->text);
+    }
+    if (ext_active && ext_len < FS_NAME_MAX) {
+        sys_rect(ext_field.x + 4 + (ext_len * 6), ext_field.y + 12, 6, 1, theme->text);
+    }
+
+    sys_text(body.x + 8, body.y + 58, ui_color_muted(), "Preview");
+    {
+        char preview[FS_NAME_MAX + 2] = "";
+        build_filename_from_dialog(dialog, preview, (int)sizeof(preview));
+        ui_draw_inset(&(struct rect){body.x + 8, body.y + 68, body.w - 16, 14}, ui_color_canvas());
+        sys_text(body.x + 12, body.y + 72, theme->text, preview[0] != '\0' ? preview : "(vazio)");
+    }
+    ui_draw_status(&(struct rect){body.x + 8, body.y + 86, body.w - 16, 12}, dialog->status);
+    ui_draw_button(&ok, dialog->confirm, UI_BUTTON_PRIMARY, ok_hover);
+    ui_draw_button(&cancel, "Cancelar", UI_BUTTON_NORMAL, cancel_hover);
 }
 
 static int open_editor_window_for_node(int node, int *focused) {
@@ -507,7 +875,7 @@ static int alloc_window(enum app_type type) {
             case APP_PERSONALIZE:
                 if (g_pers_used) return -1;
                 g_pers_used = 1;
-                g_pers.window = (struct rect){20, 18, 258, 304};
+                g_pers.window = (struct rect){16, 16, 424, 372};
                 g_pers.selected_slot = THEME_SLOT_BACKGROUND;
                 instance = 0;
                 rect = g_pers.window;
@@ -646,31 +1014,31 @@ static struct rect desktop_context_menu_rect(int x, int y) {
 }
 
 static struct rect personalize_window_slot_rect(const struct rect *w, int slot) {
-    int col = slot % 3;
-    int row = slot / 3;
-    struct rect r = {w->x + 10 + (col * 76), w->y + 30 + (row * 34), 66, 28};
+    int col = slot % 2;
+    int row = slot / 2;
+    struct rect r = {w->x + 18 + (col * 94), w->y + 50 + (row * 34), 84, 28};
     return r;
 }
 
 static struct rect personalize_window_palette_rect(const struct rect *w, int index) {
     int col = index % 5;
     int row = index / 5;
-    struct rect r = {w->x + 12 + (col * 22), w->y + 118 + (row * 16), 18, 14};
+    struct rect r = {w->x + 18 + (col * 24), w->y + 204 + (row * 18), 20, 16};
     return r;
 }
 
 static struct rect personalize_window_wallpaper_button_rect(const struct rect *w, int index) {
-    struct rect r = {w->x + 10, w->y + 178 + (index * 16), 138, 14};
+    struct rect r = {w->x + 228, w->y + 128 + (index * 18), 180, 16};
     return r;
 }
 
 static struct rect personalize_window_resolution_button_rect(const struct rect *w, int index) {
-    struct rect r = {w->x + 164, w->y + 182 + (index * 18), 82, 14};
+    struct rect r = {w->x + 228, w->y + 244 + (index * 18), 180, 16};
     return r;
 }
 
 static struct rect filemanager_context_menu_rect(int x, int y) {
-    struct rect r = {x, y, 108, g_fm_context_has_wallpaper_action ? 88 : 74};
+    struct rect r = {x, y, 112, g_fm_context_has_wallpaper_action ? 102 : 88};
     if (r.x + r.w > (int)SCREEN_WIDTH) r.x = (int)SCREEN_WIDTH - r.w;
     if (r.y + r.h > (int)SCREEN_HEIGHT - TASKBAR_HEIGHT) r.y = (int)SCREEN_HEIGHT - TASKBAR_HEIGHT - r.h;
     if (r.x < 0) r.x = 0;
@@ -699,12 +1067,29 @@ static void draw_personalize_window(struct personalize_state *state,
     int bmp_count = find_bmp_nodes(bmp_nodes, 4);
     int current_wallpaper = ui_wallpaper_source_node();
     uint8_t selected_color = theme->background;
-    struct rect body = {state->window.x + 4, state->window.y + 18, state->window.w - 8, state->window.h - 22};
-    struct rect preview = {state->window.x + 140, state->window.y + 118, 94, 50};
+    struct rect body = {state->window.x + 6, state->window.y + 20, state->window.w - 12, state->window.h - 26};
+    struct rect theme_panel = {body.x + 8, body.y + 8, 202, 132};
+    struct rect preview_panel = {body.x + 220, body.y + 8, body.w - 228, 78};
+    struct rect wallpaper_panel = {body.x + 220, body.y + 94, body.w - 228, 126};
+    struct rect palette_panel = {body.x + 8, body.y + 148, 202, body.h - 156};
+    struct rect preview = {preview_panel.x + 16, preview_panel.y + 22, preview_panel.w - 32, 40};
+    struct rect preview_chip = {preview.x + 10, preview.y + 10, 56, 18};
+    struct rect preview_strip = {preview.x + 10, preview.y + 31, preview.w - 20, 4};
+    struct rect resolution_panel = {body.x + 220, body.y + 222, body.w - 228, body.h - 230};
 
     draw_window_frame(&state->window, "Personalizar", active, min_hover, max_hover, close_hover);
     ui_draw_surface(&body, ui_color_panel());
-    sys_text(state->window.x + 10, state->window.y + 20, theme->text, "Escolha uma area:");
+    ui_draw_surface(&theme_panel, ui_color_canvas());
+    ui_draw_surface(&preview_panel, ui_color_canvas());
+    ui_draw_surface(&wallpaper_panel, ui_color_canvas());
+    ui_draw_surface(&palette_panel, ui_color_canvas());
+    ui_draw_surface(&resolution_panel, ui_color_canvas());
+
+    sys_text(theme_panel.x + 8, theme_panel.y + 8, theme->text, "Area do tema");
+    sys_text(preview_panel.x + 8, preview_panel.y + 8, theme->text, "Preview");
+    sys_text(wallpaper_panel.x + 8, wallpaper_panel.y + 8, theme->text, "Wallpaper");
+    sys_text(palette_panel.x + 8, palette_panel.y + 8, theme->text, "Paleta");
+    sys_text(resolution_panel.x + 8, resolution_panel.y + 8, theme->text, "Resolucao");
 
     if (state->selected_slot == THEME_SLOT_MENU) selected_color = theme->menu;
     else if (state->selected_slot == THEME_SLOT_MENU_BUTTON) selected_color = theme->menu_button;
@@ -733,14 +1118,15 @@ static void draw_personalize_window(struct personalize_state *state,
         sys_text(tile.x + 3, tile.y + 20, theme->text, ui_theme_slot_name((enum theme_slot)slot));
     }
 
-    sys_text(state->window.x + 10, state->window.y + 104, theme->text, "Cores comuns:");
     ui_draw_inset(&preview, ui_color_canvas());
-    sys_rect(state->window.x + 148, state->window.y + 126, 78, 18,
+    sys_rect(preview_chip.x, preview_chip.y, preview_chip.w, preview_chip.h,
              state->selected_slot == THEME_SLOT_TEXT ? theme->window : selected_color);
-    sys_text(state->window.x + 171, state->window.y + 132,
+    sys_rect(preview_strip.x, preview_strip.y, preview_strip.w, preview_strip.h, theme->window);
+    sys_text(preview.x + 78, preview.y + 12,
              state->selected_slot == THEME_SLOT_TEXT ? selected_color : theme->text,
              "Aa");
-    sys_text(state->window.x + 154, state->window.y + 150, theme->text, "Preview");
+    sys_text(preview.x + 78, preview.y + 28, theme->text, ui_theme_slot_name(state->selected_slot));
+    sys_text(preview_panel.x + 16, preview_panel.y + 68, theme->text, "Ajuste rapido do desktop");
     for (int i = 0; i < (int)(sizeof(g_theme_palette) / sizeof(g_theme_palette[0])); ++i) {
         struct rect swatch = personalize_window_palette_rect(&state->window, i);
         int hover = point_in_rect(&swatch, mouse->x, mouse->y);
@@ -748,8 +1134,9 @@ static void draw_personalize_window(struct personalize_state *state,
         sys_rect(swatch.x, swatch.y, swatch.w, swatch.h, hover ? 15 : 0);
         sys_rect(swatch.x + 1, swatch.y + 1, swatch.w - 2, swatch.h - 2, g_theme_palette[i]);
     }
+    sys_text(palette_panel.x + 8, palette_panel.y + palette_panel.h - 18, theme->text,
+             "Clique em uma cor para aplicar");
 
-    sys_text(state->window.x + 10, state->window.y + 164, theme->text, "Wallpaper BMP:");
     for (int i = -1; i < bmp_count; ++i) {
         struct rect button = personalize_window_wallpaper_button_rect(&state->window, i + 1);
         int node = i < 0 ? -1 : bmp_nodes[i];
@@ -763,10 +1150,9 @@ static void draw_personalize_window(struct personalize_state *state,
                        hover);
     }
     if (bmp_count == 0) {
-        sys_text(state->window.x + 12, state->window.y + 244, theme->text, "nenhum .bmp encontrado");
+        sys_text(wallpaper_panel.x + 8, wallpaper_panel.y + 104, theme->text, "nenhum .bmp encontrado");
     }
 
-    sys_text(state->window.x + 164, state->window.y + 164, theme->text, "Resolucao:");
     for (int i = 0; i < (int)(sizeof(g_resolution_options) / sizeof(g_resolution_options[0])); ++i) {
         struct rect button = personalize_window_resolution_button_rect(&state->window, i);
         char label[16] = "";
@@ -782,6 +1168,8 @@ static void draw_personalize_window(struct personalize_state *state,
                        selected ? UI_BUTTON_ACTIVE : UI_BUTTON_PRIMARY,
                        hover);
     }
+    sys_text(resolution_panel.x + 8, resolution_panel.y + resolution_panel.h - 18, theme->text,
+             "Aplicacao imediata");
 }
 
 static void restore_or_toggle_window(int widx, int *focused) {
@@ -819,6 +1207,8 @@ void desktop_main(void) {
     struct rect context_menu;
     struct rect fm_context_menu;
     struct mouse_state mouse;
+    struct app_context_state app_context = {0, -1, APP_NONE, {0, 0, 0, 0}};
+    struct file_dialog_state file_dialog;
     int menu_hover[START_MENU_ITEM_COUNT];
     int menu_open = 0;
     int context_open = 0;
@@ -844,6 +1234,7 @@ void desktop_main(void) {
     mouse.x = (int)SCREEN_WIDTH / 2;
     mouse.y = (int)SCREEN_HEIGHT / 2;
     mouse.buttons = 0;
+    file_dialog_reset(&file_dialog);
 
     for (int i = 0; i < MAX_WINDOWS; ++i) g_windows[i].active = 0;
     for (int i = 0; i < MAX_TERMINALS; ++i) g_term_used[i] = 0;
@@ -925,15 +1316,21 @@ void desktop_main(void) {
         struct rect fm_paste_rect = filemanager_context_item_rect(&fm_context_menu, FMENU_PASTE);
         struct rect fm_new_dir_rect = filemanager_context_item_rect(&fm_context_menu, FMENU_NEW_DIR);
         struct rect fm_new_file_rect = filemanager_context_item_rect(&fm_context_menu, FMENU_NEW_FILE);
+        struct rect fm_rename_rect = filemanager_context_item_rect(&fm_context_menu, FMENU_RENAME);
         struct rect fm_set_wallpaper_rect = filemanager_context_item_rect(&fm_context_menu, FMENU_SET_WALLPAPER);
+        struct rect app_primary_rect = app_context_item_rect(&app_context.menu, APPCTX_PRIMARY);
+        struct rect app_save_as_rect = app_context_item_rect(&app_context.menu, APPCTX_SAVE_AS);
         int fm_open_hover = fm_context_open && point_in_rect(&fm_open_rect, mouse.x, mouse.y);
         int fm_copy_hover = fm_context_open && point_in_rect(&fm_copy_rect, mouse.x, mouse.y);
         int fm_paste_hover = fm_context_open && point_in_rect(&fm_paste_rect, mouse.x, mouse.y);
         int fm_new_dir_hover = fm_context_open && point_in_rect(&fm_new_dir_rect, mouse.x, mouse.y);
         int fm_new_file_hover = fm_context_open && point_in_rect(&fm_new_file_rect, mouse.x, mouse.y);
+        int fm_rename_hover = fm_context_open && point_in_rect(&fm_rename_rect, mouse.x, mouse.y);
         int fm_set_wallpaper_hover = fm_context_open &&
                                      g_fm_context_has_wallpaper_action &&
                                      point_in_rect(&fm_set_wallpaper_rect, mouse.x, mouse.y);
+        int app_primary_hover = app_context.open && point_in_rect(&app_primary_rect, mouse.x, mouse.y);
+        int app_save_as_hover = app_context.open && point_in_rect(&app_save_as_rect, mouse.x, mouse.y);
 
         if (fm_context_open) {
             if (fm_context_window < 0 ||
@@ -942,6 +1339,16 @@ void desktop_main(void) {
                 fm_context_open = 0;
                 fm_context_window = -1;
                 g_fm_context_has_wallpaper_action = 0;
+                dirty = 1;
+            }
+        }
+        if (app_context.open) {
+            if (app_context.window < 0 ||
+                !g_windows[app_context.window].active ||
+                g_windows[app_context.window].type != app_context.type) {
+                app_context.open = 0;
+                app_context.window = -1;
+                app_context.type = APP_NONE;
                 dirty = 1;
             }
         }
@@ -1006,7 +1413,12 @@ void desktop_main(void) {
             int click_y = right_press_y;
             int hit_window = topmost_window_at(click_x, click_y);
 
-            if (hit_window >= 0 && g_windows[hit_window].type == APP_FILEMANAGER) {
+            if (file_dialog.active) {
+                app_context.open = 0;
+                context_open = 0;
+                fm_context_open = 0;
+                dirty = 1;
+            } else if (hit_window >= 0 && g_windows[hit_window].type == APP_FILEMANAGER) {
                 struct filemanager_state *fm = &g_fms[g_windows[hit_window].instance];
                 struct rect list = filemanager_list_rect(fm);
 
@@ -1030,23 +1442,40 @@ void desktop_main(void) {
                     }
                     context_open = 0;
                     menu_open = 0;
+                    app_context.open = 0;
                     dirty = 1;
                 } else if (fm_context_open || context_open) {
                     fm_context_open = 0;
                     g_fm_context_has_wallpaper_action = 0;
                     context_open = 0;
+                    app_context.open = 0;
                     dirty = 1;
                 }
+            } else if (hit_window >= 0 &&
+                       (g_windows[hit_window].type == APP_EDITOR || g_windows[hit_window].type == APP_SKETCHPAD)) {
+                int new_index = raise_window_to_front(hit_window, &focused);
+
+                focused = new_index;
+                app_context.open = 1;
+                app_context.window = new_index;
+                app_context.type = g_windows[new_index].type;
+                app_context.menu = app_context_menu_rect(click_x, click_y);
+                context_open = 0;
+                fm_context_open = 0;
+                menu_open = 0;
+                dirty = 1;
             } else if (hit_window < 0 &&
                        click_y < (int)SCREEN_HEIGHT - TASKBAR_HEIGHT) {
                 context_menu = desktop_context_menu_rect(click_x, click_y);
                 context_open = 1;
                 fm_context_open = 0;
+                app_context.open = 0;
                 menu_open = 0;
                 dirty = 1;
-            } else if (context_open || fm_context_open) {
+            } else if (context_open || fm_context_open || app_context.open) {
                 context_open = 0;
                 fm_context_open = 0;
+                app_context.open = 0;
                 g_fm_context_has_wallpaper_action = 0;
                 dirty = 1;
             }
@@ -1059,7 +1488,85 @@ void desktop_main(void) {
             int hit_window = -1;
             int handled = 0;
 
-            if (fm_context_open && fm_context_window >= 0 &&
+            if (file_dialog.active) {
+                struct rect close = file_dialog_close_rect(&file_dialog);
+                struct rect name_field = file_dialog_name_rect(&file_dialog);
+                struct rect ext_field = file_dialog_ext_rect(&file_dialog);
+                struct rect ok = file_dialog_ok_rect(&file_dialog);
+                struct rect cancel = file_dialog_cancel_rect(&file_dialog);
+
+                handled = 1;
+                if (point_in_rect(&close, click_x, click_y) ||
+                    point_in_rect(&cancel, click_x, click_y)) {
+                    file_dialog_reset(&file_dialog);
+                    dirty = 1;
+                } else if (point_in_rect(&ok, click_x, click_y)) {
+                    if (file_dialog_apply(&file_dialog)) {
+                        file_dialog_reset(&file_dialog);
+                    }
+                    dirty = 1;
+                } else if (point_in_rect(&name_field, click_x, click_y)) {
+                    file_dialog.active_field = 0;
+                    dirty = 1;
+                } else if (point_in_rect(&ext_field, click_x, click_y)) {
+                    file_dialog.active_field = 1;
+                    dirty = 1;
+                }
+            }
+
+            if (!handled && app_context.open && point_in_rect(&app_context.menu, click_x, click_y)) {
+                handled = 1;
+                if (point_in_rect(&app_primary_rect, click_x, click_y)) {
+                    if (app_context.type == APP_EDITOR) {
+                        struct editor_state *ed = &g_editors[g_windows[app_context.window].instance];
+                        if (ed->file_node >= 0 && g_fs_nodes[ed->file_node].used) {
+                            if (editor_save(ed)) {
+                                dirty = 1;
+                            }
+                        } else {
+                            file_dialog_open_editor(&file_dialog, app_context.window);
+                            dirty = 1;
+                        }
+                    } else if (app_context.type == APP_SKETCHPAD) {
+                        struct sketchpad_state *sketch = &g_sketches[g_windows[app_context.window].instance];
+                        if (sketch->last_export_path[0] != '\0') {
+                            char name[FS_NAME_MAX + 1];
+                            char ext[FS_NAME_MAX + 1];
+                            char filename[FS_NAME_MAX + 1];
+
+                            extract_basename_parts(sketch->last_export_path,
+                                                   name, (int)sizeof(name),
+                                                   ext, (int)sizeof(ext));
+                            filename[0] = '\0';
+                            str_copy_limited(filename, name, (int)sizeof(filename));
+                            if (ext[0] != '\0') {
+                                str_append(filename, ".", (int)sizeof(filename));
+                                str_append(filename, ext, (int)sizeof(filename));
+                            }
+                            if (sketchpad_export_bitmap_named(sketch, filename)) {
+                                dirty = 1;
+                            }
+                        } else {
+                            file_dialog_open_sketch(&file_dialog, app_context.window);
+                            dirty = 1;
+                        }
+                    }
+                    app_context.open = 0;
+                } else if (point_in_rect(&app_save_as_rect, click_x, click_y)) {
+                    if (app_context.type == APP_EDITOR) {
+                        file_dialog_open_editor(&file_dialog, app_context.window);
+                    } else if (app_context.type == APP_SKETCHPAD) {
+                        file_dialog_open_sketch(&file_dialog, app_context.window);
+                    }
+                    app_context.open = 0;
+                    dirty = 1;
+                }
+            } else if (!handled && app_context.open && !point_in_rect(&app_context.menu, click_x, click_y)) {
+                app_context.open = 0;
+                dirty = 1;
+            }
+
+            if (!handled && fm_context_open && fm_context_window >= 0 &&
                 g_windows[fm_context_window].active &&
                 g_windows[fm_context_window].type == APP_FILEMANAGER) {
                 struct filemanager_state *fm = &g_fms[g_windows[fm_context_window].instance];
@@ -1068,17 +1575,20 @@ void desktop_main(void) {
                 struct rect fm_paste_rect = filemanager_context_item_rect(&fm_context_menu, FMENU_PASTE);
                 struct rect fm_new_dir_rect = filemanager_context_item_rect(&fm_context_menu, FMENU_NEW_DIR);
                 struct rect fm_new_file_rect = filemanager_context_item_rect(&fm_context_menu, FMENU_NEW_FILE);
+                struct rect fm_rename_rect = filemanager_context_item_rect(&fm_context_menu, FMENU_RENAME);
                 struct rect fm_set_wallpaper_rect = filemanager_context_item_rect(&fm_context_menu, FMENU_SET_WALLPAPER);
                 int fm_open_hover = point_in_rect(&fm_open_rect, click_x, click_y);
                 int fm_copy_hover = point_in_rect(&fm_copy_rect, click_x, click_y);
                 int fm_paste_hover = point_in_rect(&fm_paste_rect, click_x, click_y);
                 int fm_new_dir_hover = point_in_rect(&fm_new_dir_rect, click_x, click_y);
                 int fm_new_file_hover = point_in_rect(&fm_new_file_rect, click_x, click_y);
+                int fm_rename_hover = point_in_rect(&fm_rename_rect, click_x, click_y);
                 int fm_set_wallpaper_hover = g_fm_context_has_wallpaper_action &&
                                              point_in_rect(&fm_set_wallpaper_rect, click_x, click_y);
                 int target = fm_context_target;
 
                 if (fm_open_hover || fm_copy_hover || fm_paste_hover || fm_new_dir_hover || fm_new_file_hover ||
+                    fm_rename_hover ||
                     fm_set_wallpaper_hover) {
                     if (target == FILEMANAGER_HIT_NONE) {
                         target = fm->selected_node;
@@ -1114,6 +1624,9 @@ void desktop_main(void) {
                             fm->selected_node = created;
                             dirty = 1;
                         }
+                    } else if (fm_rename_hover && target >= 0) {
+                        file_dialog_open_rename(&file_dialog, fm_context_window, target);
+                        dirty = 1;
                     } else if (fm_set_wallpaper_hover && target >= 0) {
                         if (ui_wallpaper_set_from_node(target) == 0) {
                             dirty = 1;
@@ -1142,11 +1655,13 @@ void desktop_main(void) {
                 }
                 context_open = 0;
                 fm_context_open = 0;
+                app_context.open = 0;
                 handled = 1;
             } else if (start_click_hover) {
                 menu_open = !menu_open;
                 context_open = 0;
                 fm_context_open = 0;
+                app_context.open = 0;
                 dirty = 1;
             } else {
                 if (menu_open) {
@@ -1169,6 +1684,7 @@ void desktop_main(void) {
                         menu_open = 0;
                         context_open = 0;
                         fm_context_open = 0;
+                        app_context.open = 0;
                         handled = 1;
                     } else if (start_menu_item_contains(START_MENU_LOGOUT, click_x, click_y)) {
                         running = 0;
@@ -1186,6 +1702,10 @@ void desktop_main(void) {
                     fm_context_window = -1;
                     fm_context_target = FILEMANAGER_HIT_NONE;
                     g_fm_context_has_wallpaper_action = 0;
+                    dirty = 1;
+                }
+                if (app_context.open && !point_in_rect(&app_context.menu, click_x, click_y)) {
+                    app_context.open = 0;
                     dirty = 1;
                 }
                 for (int i = 0; i < MAX_WINDOWS; ++i) {
@@ -1252,7 +1772,9 @@ void desktop_main(void) {
                             struct rect save = editor_save_button_rect(ed);
 
                             if (point_in_rect(&save, click_x, click_y)) {
-                                if (editor_save(ed)) {
+                                if ((ed->file_node >= 0 && g_fs_nodes[ed->file_node].used) ? editor_save(ed) : (file_dialog_open_editor(&file_dialog, hit_window), 0)) {
+                                    dirty = 1;
+                                } else {
                                     dirty = 1;
                                 }
                             }
@@ -1318,7 +1840,25 @@ void desktop_main(void) {
                                 sketchpad_clear(sketch);
                                 dirty = 1;
                             } else if (point_in_rect(&export_button, click_x, click_y)) {
-                                if (sketchpad_export_bitmap(sketch)) {
+                                if (sketch->last_export_path[0] != '\0') {
+                                    char name[FS_NAME_MAX + 1];
+                                    char ext[FS_NAME_MAX + 1];
+                                    char filename[FS_NAME_MAX + 1];
+
+                                    extract_basename_parts(sketch->last_export_path,
+                                                           name, (int)sizeof(name),
+                                                           ext, (int)sizeof(ext));
+                                    filename[0] = '\0';
+                                    str_copy_limited(filename, name, (int)sizeof(filename));
+                                    if (ext[0] != '\0') {
+                                        str_append(filename, ".", (int)sizeof(filename));
+                                        str_append(filename, ext, (int)sizeof(filename));
+                                    }
+                                    if (sketchpad_export_bitmap_named(sketch, filename)) {
+                                        dirty = 1;
+                                    }
+                                } else {
+                                    file_dialog_open_sketch(&file_dialog, hit_window);
                                     dirty = 1;
                                 }
                             } else if (color_index >= 0) {
@@ -1393,6 +1933,25 @@ void desktop_main(void) {
         }
 
         while ((key = sys_poll_key()) != 0) {
+            if (file_dialog.active) {
+                if (key == '\b' || key == 127) {
+                    file_dialog_backspace(&file_dialog);
+                    dirty = 1;
+                } else if (key == '\t') {
+                    file_dialog.active_field = 1 - file_dialog.active_field;
+                    dirty = 1;
+                } else if (key == '\n') {
+                    if (file_dialog_apply(&file_dialog)) {
+                        file_dialog_reset(&file_dialog);
+                    }
+                    dirty = 1;
+                } else if (key >= 32 && key <= 126) {
+                    file_dialog_insert_char(&file_dialog, key);
+                    dirty = 1;
+                }
+                continue;
+            }
+
             if (focused < 0 ||
                 !g_windows[focused].active ||
                 g_windows[focused].minimized) {
@@ -1569,10 +2128,28 @@ void desktop_main(void) {
                     else if (action == FMENU_PASTE) hover = fm_paste_hover;
                     else if (action == FMENU_NEW_DIR) hover = fm_new_dir_hover;
                     else if (action == FMENU_NEW_FILE) hover = fm_new_file_hover;
+                    else if (action == FMENU_RENAME) hover = fm_rename_hover;
                     else if (action == FMENU_SET_WALLPAPER) hover = fm_set_wallpaper_hover;
 
                     ui_draw_button(&item, filemanager_menu_label(action), UI_BUTTON_NORMAL, hover);
                 }
+            }
+
+            if (app_context.open) {
+                ui_draw_surface(&app_context.menu, ui_color_panel());
+                for (int action = 0; action < APPCTX_COUNT; ++action) {
+                    struct rect item = app_context_item_rect(&app_context.menu, action);
+                    int hover = action == APPCTX_PRIMARY ? app_primary_hover : app_save_as_hover;
+
+                    ui_draw_button(&item,
+                                   app_context_menu_label(app_context.type, action),
+                                   action == APPCTX_PRIMARY ? UI_BUTTON_PRIMARY : UI_BUTTON_NORMAL,
+                                   hover);
+                }
+            }
+
+            if (file_dialog.active) {
+                draw_file_dialog(&file_dialog, &mouse);
             }
 
             cursor_draw(mouse.x, mouse.y);

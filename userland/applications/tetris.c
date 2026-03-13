@@ -100,6 +100,7 @@ static void tetris_reset(struct tetris_state *tetris) {
     tetris->score = 0;
     tetris->game_over = 0;
     tetris->next_tick = 0u;
+    tetris->tick_count = 0u;
     tetris_spawn_piece(tetris);
 }
 
@@ -235,18 +236,21 @@ int tetris_handle_key(struct tetris_state *tetris, int key) {
 }
 
 int tetris_step(struct tetris_state *tetris, uint32_t ticks) {
+    (void)ticks;
     if (tetris->game_over) {
         return 0;
     }
 
+    tetris->tick_count += 1u;
+
     if (tetris->next_tick == 0u) {
-        tetris->next_tick = ticks + TETRIS_STEP_TICKS;
+        tetris->next_tick = tetris->tick_count + TETRIS_STEP_TICKS;
         return 1;
     }
-    if (ticks < tetris->next_tick) {
+    if (tetris->tick_count < tetris->next_tick) {
         return 0;
     }
-    tetris->next_tick = ticks + TETRIS_STEP_TICKS;
+    tetris->next_tick = tetris->tick_count + TETRIS_STEP_TICKS;
 
     if (!tetris_try_move(tetris, 0, 1)) {
         tetris_lock_piece(tetris);

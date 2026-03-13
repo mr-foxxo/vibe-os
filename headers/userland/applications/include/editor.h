@@ -16,6 +16,7 @@ struct editor_state {
 void editor_init_state(struct editor_state *ed);
 int editor_load_node(struct editor_state *ed, int node);
 int editor_save(struct editor_state *ed);
+int editor_save_named(struct editor_state *ed, const char *filename);
 void editor_insert_char(struct editor_state *ed, char c);
 void editor_backspace(struct editor_state *ed);
 void editor_newline(struct editor_state *ed);

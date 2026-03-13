@@ -67,7 +67,7 @@ static int kernel_video_mode_supported(uint16_t width, uint16_t height) {
     return (width == 640u && height == 480u) ||
            (width == 800u && height == 600u) ||
            (width == 1024u && height == 768u) ||
-           (width == 1366u && height == 768u) ||
+           (width == 1360u && height == 720u) ||
            (width == 1920u && height == 1080u);
 }
 

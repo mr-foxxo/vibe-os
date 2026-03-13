@@ -137,6 +137,7 @@ static void ui_load_settings(void) {
     uint32_t width = SCREEN_WIDTH;
     uint32_t height = SCREEN_HEIGHT;
     int clear_wallpaper = 1;
+    int migrated_resolution = 0;
 
     if (idx < 0 || g_fs_nodes[idx].is_dir || g_fs_nodes[idx].size <= 0) {
         return;
@@ -181,6 +182,12 @@ static void ui_load_settings(void) {
         line = next;
     }
 
+    if (width == 1366u && height == 768u) {
+        width = 1360u;
+        height = 720u;
+        migrated_resolution = 1;
+    }
+
     if (width != SCREEN_WIDTH || height != SCREEN_HEIGHT) {
         (void)ui_set_resolution(width, height);
     }
@@ -195,6 +202,10 @@ static void ui_load_settings(void) {
         } else {
             ui_wallpaper_clear();
         }
+    }
+
+    if (migrated_resolution) {
+        ui_save_settings();
     }
 }
 

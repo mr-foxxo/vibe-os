@@ -3,6 +3,10 @@ ORG 0x7C00
 
 %define KERNEL_SEG 0x1000
 %define KERNEL_OFF 0x0000
+%define BOOTINFO_ADDR 0x8000
+%define BOOTINFO_MAGIC 0x56424D49
+%define E820_BUF 0x8020
+%define MIN_USABLE_ADDR 0x00100000
 ; Number of 512-byte sectors to read for the kernel image.
 ; The current kernel.bin is ~170 KiB (~332 sectors) after embedding
 ; userland, Lua, SectorC and the desktop apps. Load 384 sectors for headroom.
@@ -34,6 +38,8 @@ start:
 
     mov si,msg_loaded
     call print
+
+    call detect_memory
 
     call enable_a20
 
@@ -81,6 +87,67 @@ load_kernel:
 
     popa
     stc
+    ret
+
+; -----------------------------
+; memory map
+; -----------------------------
+
+detect_memory:
+
+    mov dword [BOOTINFO_ADDR + 0], BOOTINFO_MAGIC
+    mov dword [BOOTINFO_ADDR + 4], 0x00500000
+    mov dword [BOOTINFO_ADDR + 8], 0x00400000
+    mov dword [BOOTINFO_ADDR + 12], 0x00900000
+
+    xor ax,ax
+    mov es,ax
+    xor ebx,ebx
+
+.next:
+    mov eax,0xE820
+    mov edx,0x534D4150
+    mov ecx,20
+    mov di,E820_BUF
+    int 0x15
+    jc .done
+    cmp eax,0x534D4150
+    jne .done
+    cmp dword [E820_BUF + 16],1
+    jne .cont
+    cmp dword [E820_BUF + 4],0
+    jne .cont
+    cmp dword [E820_BUF + 12],0
+    jne .cont
+
+    mov eax,[E820_BUF + 0]
+    mov edx,[E820_BUF + 8]
+    test edx,edx
+    jz .cont
+    mov ecx,eax
+    add ecx,edx
+    jc .cont
+    cmp ecx,MIN_USABLE_ADDR
+    jbe .cont
+    cmp eax,MIN_USABLE_ADDR
+    jae .size_ready
+    mov eax,MIN_USABLE_ADDR
+    mov edx,ecx
+    sub edx,eax
+    jz .cont
+
+.size_ready:
+    cmp edx,[BOOTINFO_ADDR + 8]
+    jbe .cont
+    mov [BOOTINFO_ADDR + 4],eax
+    mov [BOOTINFO_ADDR + 8],edx
+    mov [BOOTINFO_ADDR + 12],ecx
+
+.cont:
+    test ebx,ebx
+    jne .next
+
+.done:
     ret
 
 ; -----------------------------
