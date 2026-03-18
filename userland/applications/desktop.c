@@ -9,8 +9,15 @@
 #include <userland/applications/include/taskmgr.h>
 #include <userland/applications/include/calculator.h>
 #include <userland/applications/include/sketchpad.h>
-#include <userland/applications/include/snake.h>
-#include <userland/applications/include/tetris.h>
+#include <userland/applications/include/games/snake.h>
+#include <userland/applications/include/games/tetris.h>
+#include <userland/applications/include/games/pacman.h>
+#include <userland/applications/include/games/space_invaders.h>
+#include <userland/applications/include/games/pong.h>
+#include <userland/applications/include/games/donkey_kong.h>
+#include <userland/applications/include/games/brick_race.h>
+#include <userland/applications/include/games/flap_birb.h>
+#include <userland/applications/include/games/doom.h>
 #include <userland/modules/include/utils.h>
 #include <userland/modules/include/fs.h>
 
@@ -33,22 +40,54 @@ static struct snake_state g_snakes[MAX_SNAKES];
 static int g_snake_used[MAX_SNAKES];
 static struct tetris_state g_tetris[MAX_TETRIS];
 static int g_tetris_used[MAX_TETRIS];
+static struct pacman_state g_pacman[MAX_PACMAN];
+static int g_pacman_used[MAX_PACMAN];
+static struct space_invaders_state g_space_invaders[MAX_SPACE_INVADERS];
+static int g_space_invaders_used[MAX_SPACE_INVADERS];
+static struct pong_state g_pong[MAX_PONG];
+static int g_pong_used[MAX_PONG];
+static struct donkey_kong_state g_donkey_kong[MAX_DONKEY_KONG];
+static int g_donkey_kong_used[MAX_DONKEY_KONG];
+static struct brick_race_state g_brick_race[MAX_BRICK_RACE];
+static int g_brick_race_used[MAX_BRICK_RACE];
+static struct flap_birb_state g_flap_birb[MAX_FLAP_BIRB];
+static int g_flap_birb_used[MAX_FLAP_BIRB];
+static struct doom_state g_doom[MAX_DOOM];
+static int g_doom_used[MAX_DOOM];
 struct personalize_state {
     struct rect window;
     enum theme_slot selected_slot;
+    int color_picker_open;
+    int color_picker_start_x;
+    int color_picker_start_y;
 };
 static struct personalize_state g_pers;
 static int g_pers_used = 0;
 
+/* 256-color palette */
+static const uint8_t g_color_palette_256[] = {
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+    16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+    32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
+    48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63,
+    64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79,
+    80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95,
+    96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111,
+    112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127,
+    128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143,
+    144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159,
+    160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175,
+    176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 187, 188, 189, 190, 191,
+    192, 193, 194, 195, 196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207,
+    208, 209, 210, 211, 212, 213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223,
+    224, 225, 226, 227, 228, 229, 230, 231, 232, 233, 234, 235, 236, 237, 238, 239,
+    240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 251, 252, 253, 254, 255
+};
+
 #define TASKBAR_HEIGHT 22
 #define WINDOW_MIN_W 96
 #define WINDOW_MIN_H 60
-static const uint8_t g_theme_palette[] = {
-    15, 7, 8, 0, 16,
-    12, 4, 14, 6, 17,
-    10, 2, 11, 3, 18,
-    9, 1, 13, 5, 19
-};
+
 enum {
     FMENU_OPEN = 0,
     FMENU_COPY,
@@ -111,6 +150,221 @@ static int alloc_window(enum app_type type);
 static int find_window_by_type(enum app_type type);
 static int raise_window_to_front(int widx, int *focused);
 static int open_window_or_focus_existing(enum app_type type, int *focused);
+static void append_uint_limited(char *buf, unsigned value, int max_len);
+static void debug_window_event(const char *tag, int widx, enum app_type type, int instance);
+static void clamp_mouse_state(struct mouse_state *mouse);
+
+static int app_type_valid(enum app_type type) {
+    return type > APP_NONE && type <= APP_PERSONALIZE;
+}
+
+static int window_instance_valid(enum app_type type, int instance) {
+    switch (type) {
+    case APP_TERMINAL: return instance >= 0 && instance < MAX_TERMINALS;
+    case APP_CLOCK: return instance >= 0 && instance < MAX_CLOCKS;
+    case APP_FILEMANAGER: return instance >= 0 && instance < MAX_FILEMANAGERS;
+    case APP_EDITOR: return instance >= 0 && instance < MAX_EDITORS;
+    case APP_TASKMANAGER: return instance >= 0 && instance < MAX_TASKMGRS;
+    case APP_CALCULATOR: return instance >= 0 && instance < MAX_CALCULATORS;
+    case APP_SKETCHPAD: return instance >= 0 && instance < MAX_SKETCHPADS;
+    case APP_SNAKE: return instance >= 0 && instance < MAX_SNAKES;
+    case APP_TETRIS: return instance >= 0 && instance < MAX_TETRIS;
+    case APP_PACMAN: return instance >= 0 && instance < MAX_PACMAN;
+    case APP_SPACE_INVADERS: return instance >= 0 && instance < MAX_SPACE_INVADERS;
+    case APP_PONG: return instance >= 0 && instance < MAX_PONG;
+    case APP_DONKEY_KONG: return instance >= 0 && instance < MAX_DONKEY_KONG;
+    case APP_BRICK_RACE: return instance >= 0 && instance < MAX_BRICK_RACE;
+    case APP_FLAP_BIRB: return instance >= 0 && instance < MAX_FLAP_BIRB;
+    case APP_DOOM: return instance >= 0 && instance < MAX_DOOM;
+    case APP_PERSONALIZE: return instance == 0;
+    default: return 0;
+    }
+}
+
+static int sanitize_windows(int *focused) {
+    int term_used[MAX_TERMINALS] = {0};
+    int clock_used[MAX_CLOCKS] = {0};
+    int fm_used[MAX_FILEMANAGERS] = {0};
+    int editor_used[MAX_EDITORS] = {0};
+    int tm_used[MAX_TASKMGRS] = {0};
+    int calc_used[MAX_CALCULATORS] = {0};
+    int sketch_used[MAX_SKETCHPADS] = {0};
+    int snake_used[MAX_SNAKES] = {0};
+    int tetris_used[MAX_TETRIS] = {0};
+    int pacman_used[MAX_PACMAN] = {0};
+    int space_invaders_used[MAX_SPACE_INVADERS] = {0};
+    int pong_used[MAX_PONG] = {0};
+    int donkey_kong_used[MAX_DONKEY_KONG] = {0};
+    int brick_race_used[MAX_BRICK_RACE] = {0};
+    int flap_birb_used[MAX_FLAP_BIRB] = {0};
+    int doom_used[MAX_DOOM] = {0};
+    int pers_used = 0;
+    int changed = 0;
+
+    for (int i = 0; i < MAX_WINDOWS; ++i) {
+        int duplicate = 0;
+
+        if (!g_windows[i].active) {
+            continue;
+        }
+        if (!app_type_valid(g_windows[i].type) ||
+            !window_instance_valid(g_windows[i].type, g_windows[i].instance)) {
+            debug_window_event(" sanitize-invalid", i, g_windows[i].type, g_windows[i].instance);
+            g_windows[i].active = 0;
+            if (*focused == i) {
+                *focused = -1;
+            }
+            changed = 1;
+            continue;
+        }
+
+        switch (g_windows[i].type) {
+        case APP_TERMINAL:
+            duplicate = term_used[g_windows[i].instance];
+            term_used[g_windows[i].instance] = 1;
+            break;
+        case APP_CLOCK:
+            duplicate = clock_used[g_windows[i].instance];
+            clock_used[g_windows[i].instance] = 1;
+            break;
+        case APP_FILEMANAGER:
+            duplicate = fm_used[g_windows[i].instance];
+            fm_used[g_windows[i].instance] = 1;
+            break;
+        case APP_EDITOR:
+            duplicate = editor_used[g_windows[i].instance];
+            editor_used[g_windows[i].instance] = 1;
+            break;
+        case APP_TASKMANAGER:
+            duplicate = tm_used[g_windows[i].instance];
+            tm_used[g_windows[i].instance] = 1;
+            break;
+        case APP_CALCULATOR:
+            duplicate = calc_used[g_windows[i].instance];
+            calc_used[g_windows[i].instance] = 1;
+            break;
+        case APP_SKETCHPAD:
+            duplicate = sketch_used[g_windows[i].instance];
+            sketch_used[g_windows[i].instance] = 1;
+            break;
+        case APP_SNAKE:
+            duplicate = snake_used[g_windows[i].instance];
+            snake_used[g_windows[i].instance] = 1;
+            break;
+        case APP_TETRIS:
+            duplicate = tetris_used[g_windows[i].instance];
+            tetris_used[g_windows[i].instance] = 1;
+            break;
+        case APP_PACMAN:
+            duplicate = pacman_used[g_windows[i].instance];
+            pacman_used[g_windows[i].instance] = 1;
+            break;
+        case APP_SPACE_INVADERS:
+            duplicate = space_invaders_used[g_windows[i].instance];
+            space_invaders_used[g_windows[i].instance] = 1;
+            break;
+        case APP_PONG:
+            duplicate = pong_used[g_windows[i].instance];
+            pong_used[g_windows[i].instance] = 1;
+            break;
+        case APP_DONKEY_KONG:
+            duplicate = donkey_kong_used[g_windows[i].instance];
+            donkey_kong_used[g_windows[i].instance] = 1;
+            break;
+        case APP_BRICK_RACE:
+            duplicate = brick_race_used[g_windows[i].instance];
+            brick_race_used[g_windows[i].instance] = 1;
+            break;
+        case APP_FLAP_BIRB:
+            duplicate = flap_birb_used[g_windows[i].instance];
+            flap_birb_used[g_windows[i].instance] = 1;
+            break;
+        case APP_DOOM:
+            duplicate = doom_used[g_windows[i].instance];
+            doom_used[g_windows[i].instance] = 1;
+            break;
+        case APP_PERSONALIZE:
+            duplicate = pers_used;
+            pers_used = 1;
+            break;
+        default:
+            duplicate = 1;
+            break;
+        }
+
+        if (duplicate) {
+            debug_window_event(" sanitize-dup", i, g_windows[i].type, g_windows[i].instance);
+            g_windows[i].active = 0;
+            if (*focused == i) {
+                *focused = -1;
+            }
+            changed = 1;
+        }
+    }
+
+    for (int i = 0; i < MAX_TERMINALS; ++i) g_term_used[i] = term_used[i];
+    for (int i = 0; i < MAX_CLOCKS; ++i) g_clock_used[i] = clock_used[i];
+    for (int i = 0; i < MAX_FILEMANAGERS; ++i) g_fm_used[i] = fm_used[i];
+    for (int i = 0; i < MAX_EDITORS; ++i) g_editor_used[i] = editor_used[i];
+    for (int i = 0; i < MAX_TASKMGRS; ++i) g_tm_used[i] = tm_used[i];
+    for (int i = 0; i < MAX_CALCULATORS; ++i) g_calc_used[i] = calc_used[i];
+    for (int i = 0; i < MAX_SKETCHPADS; ++i) g_sketch_used[i] = sketch_used[i];
+    for (int i = 0; i < MAX_SNAKES; ++i) g_snake_used[i] = snake_used[i];
+    for (int i = 0; i < MAX_TETRIS; ++i) g_tetris_used[i] = tetris_used[i];
+    for (int i = 0; i < MAX_PACMAN; ++i) g_pacman_used[i] = pacman_used[i];
+    for (int i = 0; i < MAX_SPACE_INVADERS; ++i) g_space_invaders_used[i] = space_invaders_used[i];
+    for (int i = 0; i < MAX_PONG; ++i) g_pong_used[i] = pong_used[i];
+    for (int i = 0; i < MAX_DONKEY_KONG; ++i) g_donkey_kong_used[i] = donkey_kong_used[i];
+    for (int i = 0; i < MAX_BRICK_RACE; ++i) g_brick_race_used[i] = brick_race_used[i];
+    for (int i = 0; i < MAX_FLAP_BIRB; ++i) g_flap_birb_used[i] = flap_birb_used[i];
+    for (int i = 0; i < MAX_DOOM; ++i) g_doom_used[i] = doom_used[i];
+    g_pers_used = pers_used;
+
+    return changed;
+}
+
+static int has_active_window_instance(enum app_type type, int instance) {
+    for (int i = 0; i < MAX_WINDOWS; ++i) {
+        if (!g_windows[i].active) {
+            continue;
+        }
+        if (g_windows[i].type == type && g_windows[i].instance == instance) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void debug_append_int(char *buf, int value, int max_len) {
+    if (value < 0) {
+        str_append(buf, "-", max_len);
+        value = -value;
+    }
+    append_uint_limited(buf, (unsigned)value, max_len);
+}
+
+static void debug_window_event(const char *tag, int widx, enum app_type type, int instance) {
+    char msg[96];
+
+    msg[0] = '\0';
+    str_append(msg, "desktop:", (int)sizeof(msg));
+    str_append(msg, tag, (int)sizeof(msg));
+    str_append(msg, " w=", (int)sizeof(msg));
+    debug_append_int(msg, widx, (int)sizeof(msg));
+    str_append(msg, " t=", (int)sizeof(msg));
+    debug_append_int(msg, (int)type, (int)sizeof(msg));
+    str_append(msg, " i=", (int)sizeof(msg));
+    debug_append_int(msg, instance, (int)sizeof(msg));
+    str_append(msg, "\n", (int)sizeof(msg));
+    sys_write_debug(msg);
+}
+
+static void clamp_mouse_state(struct mouse_state *mouse) {
+    if (mouse->x < 0) mouse->x = 0;
+    if (mouse->y < 0) mouse->y = 0;
+    if (mouse->x >= (int)SCREEN_WIDTH) mouse->x = (int)SCREEN_WIDTH - 1;
+    if (mouse->y >= (int)SCREEN_HEIGHT) mouse->y = (int)SCREEN_HEIGHT - 1;
+}
 
 static int fs_child_by_name(int parent, const char *name) {
     int child = g_fs_nodes[parent].first_child;
@@ -736,6 +990,83 @@ static int alloc_tetris(void) {
     return -1;
 }
 
+static int alloc_pacman(void) {
+    for (int i = 0; i < MAX_PACMAN; ++i) {
+        if (!g_pacman_used[i]) {
+            g_pacman_used[i] = 1;
+            pacman_init_state(&g_pacman[i]);
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int alloc_space_invaders(void) {
+    for (int i = 0; i < MAX_SPACE_INVADERS; ++i) {
+        if (!g_space_invaders_used[i]) {
+            g_space_invaders_used[i] = 1;
+            space_invaders_init_state(&g_space_invaders[i]);
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int alloc_pong(void) {
+    for (int i = 0; i < MAX_PONG; ++i) {
+        if (!g_pong_used[i]) {
+            g_pong_used[i] = 1;
+            pong_init_state(&g_pong[i]);
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int alloc_donkey_kong(void) {
+    for (int i = 0; i < MAX_DONKEY_KONG; ++i) {
+        if (!g_donkey_kong_used[i]) {
+            g_donkey_kong_used[i] = 1;
+            donkey_kong_init_state(&g_donkey_kong[i]);
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int alloc_brick_race(void) {
+    for (int i = 0; i < MAX_BRICK_RACE; ++i) {
+        if (!g_brick_race_used[i]) {
+            g_brick_race_used[i] = 1;
+            brick_race_init_state(&g_brick_race[i]);
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int alloc_flap_birb(void) {
+    for (int i = 0; i < MAX_FLAP_BIRB; ++i) {
+        if (!g_flap_birb_used[i]) {
+            g_flap_birb_used[i] = 1;
+            flap_birb_init_state(&g_flap_birb[i]);
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int alloc_doom(void) {
+    for (int i = 0; i < MAX_DOOM; ++i) {
+        if (!g_doom_used[i]) {
+            g_doom_used[i] = 1;
+            doom_init_state(&g_doom[i]);
+            return i;
+        }
+    }
+    return -1;
+}
+
 void desktop_request_open_editor(const char *path) {
     if (path == 0) {
         g_launch_editor_path[0] = '\0';
@@ -774,6 +1105,27 @@ static void sync_window_instance_rect(int widx) {
     case APP_TETRIS:
         g_tetris[g_windows[widx].instance].window = g_windows[widx].rect;
         break;
+    case APP_PACMAN:
+        g_pacman[g_windows[widx].instance].window = g_windows[widx].rect;
+        break;
+    case APP_SPACE_INVADERS:
+        g_space_invaders[g_windows[widx].instance].window = g_windows[widx].rect;
+        break;
+    case APP_PONG:
+        g_pong[g_windows[widx].instance].window = g_windows[widx].rect;
+        break;
+    case APP_DONKEY_KONG:
+        g_donkey_kong[g_windows[widx].instance].window = g_windows[widx].rect;
+        break;
+    case APP_BRICK_RACE:
+        g_brick_race[g_windows[widx].instance].window = g_windows[widx].rect;
+        break;
+    case APP_FLAP_BIRB:
+        g_flap_birb[g_windows[widx].instance].window = g_windows[widx].rect;
+        break;
+    case APP_DOOM:
+        g_doom[g_windows[widx].instance].window = g_windows[widx].rect;
+        break;
     case APP_PERSONALIZE:
         g_pers.window = g_windows[widx].rect;
         break;
@@ -810,6 +1162,11 @@ static struct rect maximized_rect(void) {
 }
 
 static int alloc_window(enum app_type type) {
+    if (!app_type_valid(type)) {
+        debug_window_event(" alloc-bad-type", -1, type, -1);
+        return -1;
+    }
+
     for (int i = 0; i < MAX_WINDOWS; ++i) {
         if (!g_windows[i].active) {
             int dx = 20 * i;
@@ -872,6 +1229,48 @@ static int alloc_window(enum app_type type) {
                 instance = idx;
                 rect = g_tetris[idx].window;
             } break;
+            case APP_PACMAN: {
+                int idx = alloc_pacman();
+                if (idx < 0) return -1;
+                instance = idx;
+                rect = g_pacman[idx].window;
+            } break;
+            case APP_SPACE_INVADERS: {
+                int idx = alloc_space_invaders();
+                if (idx < 0) return -1;
+                instance = idx;
+                rect = g_space_invaders[idx].window;
+            } break;
+            case APP_PONG: {
+                int idx = alloc_pong();
+                if (idx < 0) return -1;
+                instance = idx;
+                rect = g_pong[idx].window;
+            } break;
+            case APP_DONKEY_KONG: {
+                int idx = alloc_donkey_kong();
+                if (idx < 0) return -1;
+                instance = idx;
+                rect = g_donkey_kong[idx].window;
+            } break;
+            case APP_BRICK_RACE: {
+                int idx = alloc_brick_race();
+                if (idx < 0) return -1;
+                instance = idx;
+                rect = g_brick_race[idx].window;
+            } break;
+            case APP_FLAP_BIRB: {
+                int idx = alloc_flap_birb();
+                if (idx < 0) return -1;
+                instance = idx;
+                rect = g_flap_birb[idx].window;
+            } break;
+            case APP_DOOM: {
+                int idx = alloc_doom();
+                if (idx < 0) return -1;
+                instance = idx;
+                rect = g_doom[idx].window;
+            } break;
             case APP_PERSONALIZE:
                 if (g_pers_used) return -1;
                 g_pers_used = 1;
@@ -896,9 +1295,11 @@ static int alloc_window(enum app_type type) {
             clamp_window_rect(&g_windows[i].rect);
             g_windows[i].restore_rect = g_windows[i].rect;
             sync_window_instance_rect(i);
+            debug_window_event(" alloc-ok", i, type, instance);
             return i;
         }
     }
+    debug_window_event(" alloc-no-slot", -1, type, -1);
     return -1;
 }
 
@@ -907,6 +1308,7 @@ static int open_window_or_focus_existing(enum app_type type, int *focused) {
 
     if (idx >= 0) {
         *focused = idx;
+        debug_window_event(" open-new", idx, g_windows[idx].type, g_windows[idx].instance);
         return idx;
     }
 
@@ -916,9 +1318,11 @@ static int open_window_or_focus_existing(enum app_type type, int *focused) {
             g_windows[idx].minimized = 0;
         }
         *focused = raise_window_to_front(idx, focused);
+        debug_window_event(" open-focus", *focused, g_windows[*focused].type, g_windows[*focused].instance);
         return *focused;
     }
 
+    debug_window_event(" open-fail", -1, type, -1);
     return -1;
 }
 
@@ -926,6 +1330,7 @@ static void free_window(int widx) {
     struct window *w = &g_windows[widx];
 
     if (!w->active) return;
+    debug_window_event(" free", widx, w->type, w->instance);
     switch (w->type) {
     case APP_TERMINAL: g_term_used[w->instance] = 0; break;
     case APP_CLOCK: g_clock_used[w->instance] = 0; break;
@@ -936,6 +1341,13 @@ static void free_window(int widx) {
     case APP_SKETCHPAD: g_sketch_used[w->instance] = 0; break;
     case APP_SNAKE: g_snake_used[w->instance] = 0; break;
     case APP_TETRIS: g_tetris_used[w->instance] = 0; break;
+    case APP_PACMAN: g_pacman_used[w->instance] = 0; break;
+    case APP_SPACE_INVADERS: g_space_invaders_used[w->instance] = 0; break;
+    case APP_PONG: g_pong_used[w->instance] = 0; break;
+    case APP_DONKEY_KONG: g_donkey_kong_used[w->instance] = 0; break;
+    case APP_BRICK_RACE: g_brick_race_used[w->instance] = 0; break;
+    case APP_FLAP_BIRB: g_flap_birb_used[w->instance] = 0; break;
+    case APP_DOOM: g_doom_used[w->instance] = 0; break;
     case APP_PERSONALIZE: g_pers_used = 0; break;
     default: break;
     }
@@ -1016,24 +1428,32 @@ static struct rect desktop_context_menu_rect(int x, int y) {
 static struct rect personalize_window_slot_rect(const struct rect *w, int slot) {
     int col = slot % 2;
     int row = slot / 2;
-    struct rect r = {w->x + 18 + (col * 94), w->y + 50 + (row * 34), 84, 28};
+    struct rect r = {w->x + 26 + (col * 100), w->y + 58 + (row * 38), 88, 32};
     return r;
 }
 
-static struct rect personalize_window_palette_rect(const struct rect *w, int index) {
-    int col = index % 5;
-    int row = index / 5;
-    struct rect r = {w->x + 18 + (col * 24), w->y + 204 + (row * 18), 20, 16};
-    return r;
-}
+
 
 static struct rect personalize_window_wallpaper_button_rect(const struct rect *w, int index) {
-    struct rect r = {w->x + 228, w->y + 128 + (index * 18), 180, 16};
+    struct rect r = {w->x + 242, w->y + 132 + (index * 14), 160, 12};
     return r;
 }
 
 static struct rect personalize_window_resolution_button_rect(const struct rect *w, int index) {
-    struct rect r = {w->x + 228, w->y + 244 + (index * 18), 180, 16};
+    struct rect r = {w->x + 242, w->y + 216 + (index * 16), 160, 12};
+    return r;
+}
+
+static struct rect personalize_color_picker_rect(void) {
+    /* 16x16 grid of colors, 12px each, centered-ish */
+    struct rect r = {(int)SCREEN_WIDTH / 2 - 98, (int)SCREEN_HEIGHT / 2 - 100, 200, 220};
+    return r;
+}
+
+static struct rect personalize_color_swatch_rect(const struct rect *picker, int idx) {
+    int col = idx % 16;
+    int row = idx / 16;
+    struct rect r = {picker->x + 4 + (col * 12), picker->y + 24 + (row * 12), 10, 10};
     return r;
 }
 
@@ -1056,6 +1476,107 @@ static int start_menu_item_contains(int item, int x, int y) {
     return point_in_rect(&r, x, y);
 }
 
+static struct rect start_menu_tab_rect(int tab) {
+    struct rect menu = ui_start_menu_rect();
+    struct rect r = {menu.x + 18 + (tab * 126), menu.y + 42, 118, 20};
+    return r;
+}
+
+static void draw_start_menu_with_tab(enum start_menu_tab active_tab,
+                                     const int *menu_item_hover,
+                                     int apps_tab_hover,
+                                     int games_tab_hover) {
+    static const char *apps_labels[START_MENU_ITEM_COUNT - 1] = {
+        "Terminal",
+        "Relogio",
+        "Arquivos",
+        "Editor",
+        "Tasks",
+        "Calculadora",
+        "Sketchpad",
+        "Personalizar",
+        "Terminal +"
+    };
+    static const char *games_labels[START_MENU_ITEM_COUNT - 1] = {
+        "Snake",
+        "Tetrax",
+        "Pacpac",
+        "Aliens",
+        "Pong",
+        "Monkey Dong",
+        "Brick Race",
+        "Flap Birb",
+        "DOOM"
+    };
+    struct rect menu_rect = ui_start_menu_rect();
+    struct rect header = {menu_rect.x + 12, menu_rect.y + 10, menu_rect.w - 24, 24};
+    struct rect apps_tab = start_menu_tab_rect(START_MENU_TAB_APPS);
+    struct rect games_tab = start_menu_tab_rect(START_MENU_TAB_GAMES);
+    struct rect tagline = {menu_rect.x + 16, menu_rect.y + menu_rect.h - 26, menu_rect.w - 32, 16};
+    const struct desktop_theme *theme = ui_theme_get();
+
+    ui_draw_surface(&menu_rect, theme->menu);
+    ui_draw_button(&header, "VIBE DESKTOP", UI_BUTTON_ACTIVE, 0);
+    sys_rect(menu_rect.x + 12, menu_rect.y + 34, menu_rect.w - 24, 1, theme->window);
+    ui_draw_button(&apps_tab,
+                   "Apps",
+                   active_tab == START_MENU_TAB_APPS ? UI_BUTTON_ACTIVE : UI_BUTTON_NORMAL,
+                   apps_tab_hover);
+    ui_draw_button(&games_tab,
+                   "Games",
+                   active_tab == START_MENU_TAB_GAMES ? UI_BUTTON_ACTIVE : UI_BUTTON_NORMAL,
+                   games_tab_hover);
+
+    for (int i = 0; i < START_MENU_ITEM_COUNT; ++i) {
+        struct rect item = ui_start_menu_item_rect(i);
+        const char *label = "";
+        int is_logout = i == START_MENU_ITEM_COUNT - 1;
+
+        if (is_logout) {
+            sys_rect(item.x, item.y - 8, item.w, 1, ui_color_muted());
+            label = "Encerrar sessao";
+        } else if (active_tab == START_MENU_TAB_APPS) {
+            label = apps_labels[i];
+        } else {
+            label = games_labels[i];
+        }
+
+        ui_draw_button(&item,
+                       label,
+                       is_logout ? UI_BUTTON_DANGER :
+                                   (menu_item_hover[i] ? UI_BUTTON_ACTIVE : UI_BUTTON_NORMAL),
+                       menu_item_hover[i]);
+    }
+
+    ui_draw_inset(&tagline, ui_color_canvas());
+    sys_text(tagline.x + 8, tagline.y + 5, theme->text, active_tab == START_MENU_TAB_APPS ?
+             "Ambiente e ferramentas do sistema" : "Colecao de jogos do VibeOS");
+}
+
+static const enum app_type g_start_apps[START_MENU_ITEM_COUNT - 1] = {
+    APP_TERMINAL,
+    APP_CLOCK,
+    APP_FILEMANAGER,
+    APP_EDITOR,
+    APP_TASKMANAGER,
+    APP_CALCULATOR,
+    APP_SKETCHPAD,
+    APP_PERSONALIZE,
+    APP_TERMINAL
+};
+
+static const enum app_type g_start_games[START_MENU_ITEM_COUNT - 1] = {
+    APP_SNAKE,
+    APP_TETRIS,
+    APP_PACMAN,
+    APP_SPACE_INVADERS,
+    APP_PONG,
+    APP_DONKEY_KONG,
+    APP_BRICK_RACE,
+    APP_FLAP_BIRB,
+    APP_DOOM
+};
+
 static void draw_personalize_window(struct personalize_state *state,
                                     int active,
                                     int min_hover,
@@ -1068,14 +1589,14 @@ static void draw_personalize_window(struct personalize_state *state,
     int current_wallpaper = ui_wallpaper_source_node();
     uint8_t selected_color = theme->background;
     struct rect body = {state->window.x + 6, state->window.y + 20, state->window.w - 12, state->window.h - 26};
-    struct rect theme_panel = {body.x + 8, body.y + 8, 202, 132};
-    struct rect preview_panel = {body.x + 220, body.y + 8, body.w - 228, 78};
-    struct rect wallpaper_panel = {body.x + 220, body.y + 94, body.w - 228, 126};
-    struct rect palette_panel = {body.x + 8, body.y + 148, 202, body.h - 156};
-    struct rect preview = {preview_panel.x + 16, preview_panel.y + 22, preview_panel.w - 32, 40};
-    struct rect preview_chip = {preview.x + 10, preview.y + 10, 56, 18};
-    struct rect preview_strip = {preview.x + 10, preview.y + 31, preview.w - 20, 4};
-    struct rect resolution_panel = {body.x + 220, body.y + 222, body.w - 228, body.h - 230};
+    struct rect theme_panel = {body.x + 8, body.y + 8, 216, 190};
+    struct rect preview_panel = {body.x + 232, body.y + 8, body.w - 240, 62};
+    struct rect wallpaper_panel = {body.x + 232, body.y + 78, body.w - 240, 74};
+    struct rect resolution_panel = {body.x + 232, body.y + 160, body.w - 240, 132};
+    struct rect palette_panel = {body.x + 8, body.y + body.h - 98, 216, 88};
+    struct rect preview = {preview_panel.x + 12, preview_panel.y + 20, preview_panel.w - 24, 34};
+    struct rect preview_chip = {preview.x + 8, preview.y + 8, 48, 16};
+    struct rect preview_strip = {preview.x + 8, preview.y + 26, preview.w - 16, 3};
 
     draw_window_frame(&state->window, "Personalizar", active, min_hover, max_hover, close_hover);
     ui_draw_surface(&body, ui_color_panel());
@@ -1093,8 +1614,10 @@ static void draw_personalize_window(struct personalize_state *state,
 
     if (state->selected_slot == THEME_SLOT_MENU) selected_color = theme->menu;
     else if (state->selected_slot == THEME_SLOT_MENU_BUTTON) selected_color = theme->menu_button;
+    else if (state->selected_slot == THEME_SLOT_MENU_BUTTON_INACTIVE) selected_color = theme->menu_button_inactive;
     else if (state->selected_slot == THEME_SLOT_TASKBAR) selected_color = theme->taskbar;
     else if (state->selected_slot == THEME_SLOT_WINDOW) selected_color = theme->window;
+    else if (state->selected_slot == THEME_SLOT_WINDOW_BG) selected_color = theme->window_bg;
     else if (state->selected_slot == THEME_SLOT_TEXT) selected_color = theme->text;
 
     for (int slot = 0; slot < THEME_SLOT_COUNT; ++slot) {
@@ -1103,8 +1626,10 @@ static void draw_personalize_window(struct personalize_state *state,
 
         if (slot == THEME_SLOT_MENU) color = theme->menu;
         else if (slot == THEME_SLOT_MENU_BUTTON) color = theme->menu_button;
+        else if (slot == THEME_SLOT_MENU_BUTTON_INACTIVE) color = theme->menu_button_inactive;
         else if (slot == THEME_SLOT_TASKBAR) color = theme->taskbar;
         else if (slot == THEME_SLOT_WINDOW) color = theme->window;
+        else if (slot == THEME_SLOT_WINDOW_BG) color = theme->window_bg;
         else if (slot == THEME_SLOT_TEXT) color = theme->text;
 
         ui_draw_surface(&tile, slot == (int)state->selected_slot ? theme->window : ui_color_panel());
@@ -1127,15 +1652,13 @@ static void draw_personalize_window(struct personalize_state *state,
              "Aa");
     sys_text(preview.x + 78, preview.y + 28, theme->text, ui_theme_slot_name(state->selected_slot));
     sys_text(preview_panel.x + 16, preview_panel.y + 68, theme->text, "Ajuste rapido do desktop");
-    for (int i = 0; i < (int)(sizeof(g_theme_palette) / sizeof(g_theme_palette[0])); ++i) {
-        struct rect swatch = personalize_window_palette_rect(&state->window, i);
-        int hover = point_in_rect(&swatch, mouse->x, mouse->y);
-
-        sys_rect(swatch.x, swatch.y, swatch.w, swatch.h, hover ? 15 : 0);
-        sys_rect(swatch.x + 1, swatch.y + 1, swatch.w - 2, swatch.h - 2, g_theme_palette[i]);
-    }
-    sys_text(palette_panel.x + 8, palette_panel.y + palette_panel.h - 18, theme->text,
-             "Clique em uma cor para aplicar");
+    
+    /* Draw "Seletor de cores" button */
+    struct rect mais_cores_btn = {palette_panel.x + 8, palette_panel.y + 30, palette_panel.w - 16, 14};
+    int mais_cores_hover = point_in_rect(&mais_cores_btn, mouse->x, mouse->y);
+    ui_draw_button(&mais_cores_btn, "Seletor de cores",
+                   state->color_picker_open ? UI_BUTTON_ACTIVE : UI_BUTTON_NORMAL,
+                   mais_cores_hover);
 
     for (int i = -1; i < bmp_count; ++i) {
         struct rect button = personalize_window_wallpaper_button_rect(&state->window, i + 1);
@@ -1150,7 +1673,7 @@ static void draw_personalize_window(struct personalize_state *state,
                        hover);
     }
     if (bmp_count == 0) {
-        sys_text(wallpaper_panel.x + 8, wallpaper_panel.y + 104, theme->text, "nenhum .bmp encontrado");
+        sys_text(wallpaper_panel.x + 8, wallpaper_panel.y + wallpaper_panel.h - 16, theme->text, "nenhum .bmp encontrado");
     }
 
     for (int i = 0; i < (int)(sizeof(g_resolution_options) / sizeof(g_resolution_options[0])); ++i) {
@@ -1168,8 +1691,33 @@ static void draw_personalize_window(struct personalize_state *state,
                        selected ? UI_BUTTON_ACTIVE : UI_BUTTON_PRIMARY,
                        hover);
     }
-    sys_text(resolution_panel.x + 8, resolution_panel.y + resolution_panel.h - 18, theme->text,
-             "Aplicacao imediata");
+    const char *res_text = "Aplicacao imediata";
+    int res_text_w = str_len(res_text) * 6;
+    sys_text(resolution_panel.x + (resolution_panel.w - res_text_w) / 2,
+             resolution_panel.y + resolution_panel.h - 14, theme->text,
+             res_text);
+
+    /* Draw 256-color picker popup */
+    if (state->color_picker_open) {
+        struct rect picker = personalize_color_picker_rect();
+        
+        /* Draw semi-transparent background */
+        ui_draw_surface(&picker, ui_color_muted());
+        
+        /* Draw title */
+        sys_text(picker.x + 8, picker.y + 6, theme->text, "Selecione cor (0-255)");
+        
+        /* Draw 256 color swatches in 16x16 grid */
+        for (int i = 0; i < 256; ++i) {
+            struct rect swatch = personalize_color_swatch_rect(&picker, i);
+            int hover = point_in_rect(&swatch, mouse->x, mouse->y);
+            
+            if (hover) {
+                sys_rect(swatch.x - 1, swatch.y - 1, swatch.w + 2, swatch.h + 2, theme->text);
+            }
+            sys_rect(swatch.x, swatch.y, swatch.w, swatch.h, g_color_palette_256[i]);
+        }
+    }
 }
 
 static void restore_or_toggle_window(int widx, int *focused) {
@@ -1210,6 +1758,9 @@ void desktop_main(void) {
     struct app_context_state app_context = {0, -1, APP_NONE, {0, 0, 0, 0}};
     struct file_dialog_state file_dialog;
     int menu_hover[START_MENU_ITEM_COUNT];
+    int apps_tab_hover = 0;
+    int games_tab_hover = 0;
+    enum start_menu_tab start_menu_tab = START_MENU_TAB_APPS;
     int menu_open = 0;
     int context_open = 0;
     int fm_context_open = 0;
@@ -1246,6 +1797,13 @@ void desktop_main(void) {
     for (int i = 0; i < MAX_SKETCHPADS; ++i) g_sketch_used[i] = 0;
     for (int i = 0; i < MAX_SNAKES; ++i) g_snake_used[i] = 0;
     for (int i = 0; i < MAX_TETRIS; ++i) g_tetris_used[i] = 0;
+    for (int i = 0; i < MAX_PACMAN; ++i) g_pacman_used[i] = 0;
+    for (int i = 0; i < MAX_SPACE_INVADERS; ++i) g_space_invaders_used[i] = 0;
+    for (int i = 0; i < MAX_PONG; ++i) g_pong_used[i] = 0;
+    for (int i = 0; i < MAX_DONKEY_KONG; ++i) g_donkey_kong_used[i] = 0;
+    for (int i = 0; i < MAX_BRICK_RACE; ++i) g_brick_race_used[i] = 0;
+    for (int i = 0; i < MAX_FLAP_BIRB; ++i) g_flap_birb_used[i] = 0;
+    for (int i = 0; i < MAX_DOOM; ++i) g_doom_used[i] = 0;
     g_clipboard_node = -1;
 
     if (g_launch_editor_pending) {
@@ -1278,6 +1836,11 @@ void desktop_main(void) {
 
         start_button = ui_taskbar_start_button_rect();
         menu_rect = ui_start_menu_rect();
+        apps_tab_hover = 0;
+        games_tab_hover = 0;
+        if (sanitize_windows(&focused)) {
+            dirty = 1;
+        }
 
         for (int i = 0; i < START_MENU_ITEM_COUNT; ++i) {
             menu_hover[i] = 0;
@@ -1288,6 +1851,7 @@ void desktop_main(void) {
             int new_right;
 
             mouse = polled_mouse;
+            clamp_mouse_state(&mouse);
             mouse_event = 1;
             new_left = (mouse.buttons & 0x01u) != 0;
             new_right = (mouse.buttons & 0x02u) != 0;
@@ -1306,6 +1870,12 @@ void desktop_main(void) {
         }
 
         start_hover = point_in_rect(&start_button, mouse.x, mouse.y);
+        if (menu_open) {
+            struct rect apps_tab = start_menu_tab_rect(START_MENU_TAB_APPS);
+            struct rect games_tab = start_menu_tab_rect(START_MENU_TAB_GAMES);
+            apps_tab_hover = point_in_rect(&apps_tab, mouse.x, mouse.y);
+            games_tab_hover = point_in_rect(&games_tab, mouse.x, mouse.y);
+        }
         for (int i = 0; i < START_MENU_ITEM_COUNT; ++i) {
             struct rect item = ui_start_menu_item_rect(i);
             menu_hover[i] = menu_open && point_in_rect(&item, mouse.x, mouse.y);
@@ -1358,17 +1928,72 @@ void desktop_main(void) {
         }
 
         for (int i = 0; i < MAX_CLOCKS; ++i) {
-            if (g_clock_used[i] && clock_step(&g_clocks[i])) {
+            if (g_clock_used[i] && !has_active_window_instance(APP_CLOCK, i)) {
+                g_clock_used[i] = 0;
+            } else if (g_clock_used[i] && clock_step(&g_clocks[i])) {
                 dirty = 1;
             }
         }
         for (int i = 0; i < MAX_SNAKES; ++i) {
-            if (g_snake_used[i] && snake_step(&g_snakes[i], ticks)) {
+            if (g_snake_used[i] && !has_active_window_instance(APP_SNAKE, i)) {
+                g_snake_used[i] = 0;
+            } else if (g_snake_used[i] && snake_step(&g_snakes[i], ticks)) {
                 dirty = 1;
             }
         }
         for (int i = 0; i < MAX_TETRIS; ++i) {
-            if (g_tetris_used[i] && tetris_step(&g_tetris[i], ticks)) {
+            if (g_tetris_used[i] && !has_active_window_instance(APP_TETRIS, i)) {
+                g_tetris_used[i] = 0;
+            } else if (g_tetris_used[i] && tetris_step(&g_tetris[i], ticks)) {
+                dirty = 1;
+            }
+        }
+        for (int i = 0; i < MAX_PACMAN; ++i) {
+            if (g_pacman_used[i] && !has_active_window_instance(APP_PACMAN, i)) {
+                g_pacman_used[i] = 0;
+            } else if (g_pacman_used[i] && pacman_step(&g_pacman[i], ticks)) {
+                dirty = 1;
+            }
+        }
+        for (int i = 0; i < MAX_SPACE_INVADERS; ++i) {
+            if (g_space_invaders_used[i] && !has_active_window_instance(APP_SPACE_INVADERS, i)) {
+                g_space_invaders_used[i] = 0;
+            } else if (g_space_invaders_used[i] && space_invaders_step(&g_space_invaders[i], ticks)) {
+                dirty = 1;
+            }
+        }
+        for (int i = 0; i < MAX_PONG; ++i) {
+            if (g_pong_used[i] && !has_active_window_instance(APP_PONG, i)) {
+                g_pong_used[i] = 0;
+            } else if (g_pong_used[i] && pong_step(&g_pong[i], ticks)) {
+                dirty = 1;
+            }
+        }
+        for (int i = 0; i < MAX_DONKEY_KONG; ++i) {
+            if (g_donkey_kong_used[i] && !has_active_window_instance(APP_DONKEY_KONG, i)) {
+                g_donkey_kong_used[i] = 0;
+            } else if (g_donkey_kong_used[i] && donkey_kong_step(&g_donkey_kong[i], ticks)) {
+                dirty = 1;
+            }
+        }
+        for (int i = 0; i < MAX_BRICK_RACE; ++i) {
+            if (g_brick_race_used[i] && !has_active_window_instance(APP_BRICK_RACE, i)) {
+                g_brick_race_used[i] = 0;
+            } else if (g_brick_race_used[i] && brick_race_step(&g_brick_race[i], ticks)) {
+                dirty = 1;
+            }
+        }
+        for (int i = 0; i < MAX_FLAP_BIRB; ++i) {
+            if (g_flap_birb_used[i] && !has_active_window_instance(APP_FLAP_BIRB, i)) {
+                g_flap_birb_used[i] = 0;
+            } else if (g_flap_birb_used[i] && flap_birb_step(&g_flap_birb[i], ticks)) {
+                dirty = 1;
+            }
+        }
+        for (int i = 0; i < MAX_DOOM; ++i) {
+            if (g_doom_used[i] && !has_active_window_instance(APP_DOOM, i)) {
+                g_doom_used[i] = 0;
+            } else if (g_doom_used[i] && doom_step(&g_doom[i], ticks)) {
                 dirty = 1;
             }
         }
@@ -1666,30 +2291,43 @@ void desktop_main(void) {
             } else {
                 if (menu_open) {
                     enum app_type launch_type = APP_NONE;
+                    struct rect apps_tab = start_menu_tab_rect(START_MENU_TAB_APPS);
+                    struct rect games_tab = start_menu_tab_rect(START_MENU_TAB_GAMES);
+                    int menu_contains_click = point_in_rect(&menu_rect, click_x, click_y);
 
-                    if (start_menu_item_contains(START_MENU_TERMINAL, click_x, click_y)) launch_type = APP_TERMINAL;
-                    else if (start_menu_item_contains(START_MENU_CLOCK, click_x, click_y)) launch_type = APP_CLOCK;
-                    else if (start_menu_item_contains(START_MENU_FILEMANAGER, click_x, click_y)) launch_type = APP_FILEMANAGER;
-                    else if (start_menu_item_contains(START_MENU_EDITOR, click_x, click_y)) launch_type = APP_EDITOR;
-                    else if (start_menu_item_contains(START_MENU_TASKMANAGER, click_x, click_y)) launch_type = APP_TASKMANAGER;
-                    else if (start_menu_item_contains(START_MENU_CALCULATOR, click_x, click_y)) launch_type = APP_CALCULATOR;
-                    else if (start_menu_item_contains(START_MENU_SKETCHPAD, click_x, click_y)) launch_type = APP_SKETCHPAD;
-                    else if (start_menu_item_contains(START_MENU_SNAKE, click_x, click_y)) launch_type = APP_SNAKE;
-                    else if (start_menu_item_contains(START_MENU_TETRIS, click_x, click_y)) launch_type = APP_TETRIS;
-
-                    if (launch_type != APP_NONE) {
-                        if (open_window_or_focus_existing(launch_type, &focused) >= 0) {
+                    if (menu_contains_click) {
+                        if (point_in_rect(&apps_tab, click_x, click_y)) {
+                            start_menu_tab = START_MENU_TAB_APPS;
                             dirty = 1;
+                        } else if (point_in_rect(&games_tab, click_x, click_y)) {
+                            start_menu_tab = START_MENU_TAB_GAMES;
+                            dirty = 1;
+                        } else if (start_menu_item_contains(START_MENU_ITEM_COUNT - 1, click_x, click_y)) {
+                            running = 0;
+                        } else {
+                            for (int i = 0; i < START_MENU_ITEM_COUNT - 1; ++i) {
+                                if (!start_menu_item_contains(i, click_x, click_y)) {
+                                    continue;
+                                }
+                                launch_type = start_menu_tab == START_MENU_TAB_APPS ? g_start_apps[i] : g_start_games[i];
+                                break;
+                            }
+                            if (launch_type != APP_NONE) {
+                                if (open_window_or_focus_existing(launch_type, &focused) >= 0) {
+                                    dirty = 1;
+                                }
+                                menu_open = 0;
+                                context_open = 0;
+                                fm_context_open = 0;
+                                app_context.open = 0;
+                            }
                         }
+                        handled = 1;
+                    } else {
                         menu_open = 0;
-                        context_open = 0;
-                        fm_context_open = 0;
-                        app_context.open = 0;
-                        handled = 1;
-                    } else if (start_menu_item_contains(START_MENU_LOGOUT, click_x, click_y)) {
-                        running = 0;
-                        handled = 1;
+                        dirty = 1;
                     }
+
                 }
 
                 if (!handled) {
@@ -1867,23 +2505,54 @@ void desktop_main(void) {
                             } else if (sketchpad_paint_at(sketch, click_x, click_y)) {
                                 dirty = 1;
                             }
+                        } else if (type == APP_FLAP_BIRB) {
+                            if (flap_birb_handle_click(&g_flap_birb[g_windows[hit_window].instance])) {
+                                dirty = 1;
+                            }
+                        } else if (type == APP_DOOM) {
+                            if (doom_handle_click(&g_doom[g_windows[hit_window].instance])) {
+                                dirty = 1;
+                            }
                         } else if (type == APP_PERSONALIZE) {
                             int bmp_nodes[4];
                             int bmp_count = find_bmp_nodes(bmp_nodes, 4);
 
-                            for (int slot = 0; slot < THEME_SLOT_COUNT; ++slot) {
-                                struct rect tile = personalize_window_slot_rect(&g_windows[hit_window].rect, slot);
-                                if (point_in_rect(&tile, click_x, click_y)) {
-                                    g_pers.selected_slot = (enum theme_slot)slot;
+                            /* Handle color picker popup */
+                            if (g_pers.color_picker_open) {
+                                struct rect picker = personalize_color_picker_rect();
+                                for (int i = 0; i < 256; ++i) {
+                                    struct rect swatch = personalize_color_swatch_rect(&picker, i);
+                                    if (point_in_rect(&swatch, click_x, click_y)) {
+                                        ui_theme_set_slot(g_pers.selected_slot, g_color_palette_256[i]);
+                                        g_pers.color_picker_open = 0;
+                                        dirty = 1;
+                                        break;
+                                    }
+                                }
+                                /* Click outside closes popup */
+                                if (!point_in_rect(&picker, click_x, click_y)) {
+                                    g_pers.color_picker_open = 0;
+                                }
+                            } else {
+                                struct rect body = {g_windows[hit_window].rect.x + 6,
+                                                   g_windows[hit_window].rect.y + 20,
+                                                   g_windows[hit_window].rect.w - 12,
+                                                   g_windows[hit_window].rect.h - 26};
+                                struct rect palette_panel = {body.x + 8, body.y + body.h - 98, 216, 88};
+                                struct rect mais_cores_btn = {palette_panel.x + 8, palette_panel.y + 30, palette_panel.w - 16, 14};
+                                if (point_in_rect(&mais_cores_btn, click_x, click_y)) {
+                                    g_pers.color_picker_open = 1;
                                     dirty = 1;
                                 }
-                            }
-                            for (int c = 0; c < (int)(sizeof(g_theme_palette) / sizeof(g_theme_palette[0])); ++c) {
-                                struct rect swatch = personalize_window_palette_rect(&g_windows[hit_window].rect, c);
-                                if (point_in_rect(&swatch, click_x, click_y)) {
-                                    ui_theme_set_slot(g_pers.selected_slot, g_theme_palette[c]);
-                                    dirty = 1;
+
+                                for (int slot = 0; slot < THEME_SLOT_COUNT; ++slot) {
+                                    struct rect tile = personalize_window_slot_rect(&g_windows[hit_window].rect, slot);
+                                    if (point_in_rect(&tile, click_x, click_y)) {
+                                        g_pers.selected_slot = (enum theme_slot)slot;
+                                        dirty = 1;
+                                    }
                                 }
+
                             }
                             for (int i = -1; i < bmp_count; ++i) {
                                 struct rect button = personalize_window_wallpaper_button_rect(&g_windows[hit_window].rect, i + 1);
@@ -2032,12 +2701,43 @@ void desktop_main(void) {
                 if (tetris_handle_key(&g_tetris[g_windows[focused].instance], key)) {
                     dirty = 1;
                 }
+            } else if (g_windows[focused].type == APP_PACMAN) {
+                if (pacman_handle_key(&g_pacman[g_windows[focused].instance], key)) {
+                    dirty = 1;
+                }
+            } else if (g_windows[focused].type == APP_SPACE_INVADERS) {
+                if (space_invaders_handle_key(&g_space_invaders[g_windows[focused].instance], key)) {
+                    dirty = 1;
+                }
+            } else if (g_windows[focused].type == APP_PONG) {
+                if (pong_handle_key(&g_pong[g_windows[focused].instance], key)) {
+                    dirty = 1;
+                }
+            } else if (g_windows[focused].type == APP_DONKEY_KONG) {
+                if (donkey_kong_handle_key(&g_donkey_kong[g_windows[focused].instance], key)) {
+                    dirty = 1;
+                }
+            } else if (g_windows[focused].type == APP_BRICK_RACE) {
+                if (brick_race_handle_key(&g_brick_race[g_windows[focused].instance], key)) {
+                    dirty = 1;
+                }
+            } else if (g_windows[focused].type == APP_FLAP_BIRB) {
+                if (flap_birb_handle_key(&g_flap_birb[g_windows[focused].instance], key)) {
+                    dirty = 1;
+                }
+            } else if (g_windows[focused].type == APP_DOOM) {
+                if (doom_handle_key(&g_doom[g_windows[focused].instance], key)) {
+                    dirty = 1;
+                }
             }
         }
 
         if (dirty) {
             draw_desktop(&mouse, menu_open, start_hover,
                          menu_hover, g_windows, MAX_WINDOWS, focused);
+            if (menu_open) {
+                draw_start_menu_with_tab(start_menu_tab, menu_hover, apps_tab_hover, games_tab_hover);
+            }
 
             for (int i = 0; i < MAX_WINDOWS; ++i) {
                 int close_hover;
@@ -2096,6 +2796,34 @@ void desktop_main(void) {
                 case APP_TETRIS:
                     tetris_draw_window(&g_tetris[g_windows[i].instance], active,
                                        min_hover, max_hover, close_hover);
+                    break;
+                case APP_PACMAN:
+                    pacman_draw_window(&g_pacman[g_windows[i].instance], active,
+                                       min_hover, max_hover, close_hover);
+                    break;
+                case APP_SPACE_INVADERS:
+                    space_invaders_draw_window(&g_space_invaders[g_windows[i].instance], active,
+                                               min_hover, max_hover, close_hover);
+                    break;
+                case APP_PONG:
+                    pong_draw_window(&g_pong[g_windows[i].instance], active,
+                                     min_hover, max_hover, close_hover);
+                    break;
+                case APP_DONKEY_KONG:
+                    donkey_kong_draw_window(&g_donkey_kong[g_windows[i].instance], active,
+                                            min_hover, max_hover, close_hover);
+                    break;
+                case APP_BRICK_RACE:
+                    brick_race_draw_window(&g_brick_race[g_windows[i].instance], active,
+                                           min_hover, max_hover, close_hover);
+                    break;
+                case APP_FLAP_BIRB:
+                    flap_birb_draw_window(&g_flap_birb[g_windows[i].instance], active,
+                                          min_hover, max_hover, close_hover);
+                    break;
+                case APP_DOOM:
+                    doom_draw_window(&g_doom[g_windows[i].instance], active,
+                                     min_hover, max_hover, close_hover);
                     break;
                 case APP_PERSONALIZE:
                     draw_personalize_window(&g_pers, active, min_hover, max_hover, close_hover, &mouse);

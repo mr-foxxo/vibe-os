@@ -215,8 +215,8 @@ void editor_draw_window(struct editor_state *ed, int active,
     int y = area.y + 4;
 
     draw_window_frame(&ed->window, "EDITOR", active, min_hover, max_hover, close_hover);
-    ui_draw_surface(&body, ui_color_panel());
-    ui_draw_surface(&toolbar, ui_color_canvas());
+    ui_draw_surface(&body, theme->window_bg);
+    ui_draw_surface(&toolbar, theme->window_bg);
 
     editor_compact_path(ed, path, sizeof(path));
     ui_draw_inset(&path_bar, ui_color_canvas());

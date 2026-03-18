@@ -23,6 +23,10 @@ SECTIONS
         EXCLUDE_FILE (*userland_blob.o) *(.data*)
     }
 
+    /* Keep kernel/userland .bss away from VGA/BIOS low-memory holes.
+       Place it above 1 MiB to avoid 0xA0000-0xFFFFF reserved ranges. */
+    . = 0x00100000;
+
 .bss : ALIGN(4)
 {
     __bss_start = .;

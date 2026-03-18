@@ -49,6 +49,7 @@ void kernel_pic_init(void) {
 }
 
 void kernel_irq_enable(void) {
+    pic_unmask_irq(0);
     pic_unmask_irq(1);
     pic_unmask_irq(2);
     pic_unmask_irq(12);

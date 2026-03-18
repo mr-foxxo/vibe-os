@@ -176,6 +176,22 @@ int kernel_storage_ready(void) {
     return g_ata_ready;
 }
 
+int kernel_storage_read_sectors(uint32_t lba, void *dst, uint32_t sector_count) {
+    uint8_t *out = (uint8_t *)dst;
+
+    if (!g_ata_ready || dst == 0 || sector_count == 0u) {
+        return -1;
+    }
+
+    for (uint32_t i = 0; i < sector_count; ++i) {
+        if (ata_read_sector(lba + i, out + (i * KERNEL_PERSIST_SECTOR_SIZE)) != 0) {
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
 int kernel_storage_load(void *dst, uint32_t size) {
     uint8_t sector[KERNEL_PERSIST_SECTOR_SIZE];
     uint8_t *out = (uint8_t *)dst;

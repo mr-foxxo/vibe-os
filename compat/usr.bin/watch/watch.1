@@ -1,0 +1,127 @@
+.\"	$OpenBSD: watch.1,v 1.15 2025/06/27 05:42:51 jmc Exp $
+.\"
+.\" Copyright (c) 2000, 2001, 2014, 2016 Internet Initiative Japan Inc.
+.\"
+.\" Permission to use, copy, modify, and distribute this software for any
+.\" purpose with or without fee is hereby granted, provided that the above
+.\" copyright notice and this permission notice appear in all copies.
+.\"
+.\" THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+.\" WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+.\" MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+.\" ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+.\" WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+.\" ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+.\" OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+.\"
+.Dd $Mdocdate: June 27 2025 $
+.Dt WATCH 1
+.Os
+.Sh NAME
+.Nm watch
+.Nd periodically execute a command and display its output
+.Sh SYNOPSIS
+.Nm
+.Op Fl celwx
+.Op Fl s Ar seconds
+.Ar command Op Ar arg ...
+.Sh DESCRIPTION
+The
+.Nm
+utility periodically executes and displays the output of
+.Ar command .
+Differences between successive runs can be highlighted.
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl c
+Highlight changed characters.
+.It Fl e
+Pause updating if
+.Ar command
+exits with a non-zero exit code.
+.It Fl l
+Highlight changed lines.
+.It Fl s Ar seconds
+Set the interval between updates to
+.Ar seconds .
+The default is 1 second.
+.It Fl w
+Highlight changed words.
+.It Fl x
+Pass
+.Ar command
+to
+.Xr execl 3
+instead of
+.Ic sh -c ,
+for different quoting and shell escaping behaviour.
+.El
+.Sh INTERACTIVE COMMANDS
+Certain characters cause immediate action by
+.Nm .
+These are:
+.Bl -tag -width Ds
+.It Aq Ic Space
+Run
+.Ar command
+again.
+.It Aq Ic Page Down
+Scroll down a screenful.
+.It Aq Ic Page Up
+Scroll up a screenful.
+.It Ic \&[ | Aq Ic left arrow
+Scroll left by one column.
+.It Ic \&] | Aq Ic right arrow
+Scroll right by one column.
+.It Ic c
+Highlight changed characters.
+.It Ic e
+Pause command executions if the command exits with a non-zero exit code.
+.It Ic g
+Scroll to top.
+.It Ic H
+Scroll left half a screen.
+.It Ic h | Ic \&?
+Display a summary of the commands (help screen).
+.It Ic J
+Scroll down half a screen.
+.It Ic j | Aq Ic down arrow
+Scroll down one line.
+.It Ic K
+Scroll up half a screen.
+.It Ic k | Aq Ic up arrow
+Scroll up one line.
+.It Ic L
+Scroll right half a screen.
+.It Ic l
+Highlight changed lines.
+.It Ic r
+Display information about resource utilization.
+.It Ic s
+Change the update interval.
+.It Ic p
+Pause or resume command executions.
+.Aq Ic Space
+can be used while paused.
+.It Ic w
+Highlight changed words.
+.It Ic q
+Quit
+.Nm .
+.El
+.Sh SEE ALSO
+.Xr sh 1 ,
+.Xr getrusage 2 ,
+.Xr execl 3
+.Sh HISTORY
+.Nm
+was first published in 1991 and has been available since
+.Ox 7.8 .
+.Sh AUTHORS
+.An -nosplit
+.An Takuya Sato ,
+.An Kazumasa Utashiro ,
+.An YASUOKA Masahiko Aq Mt yasuoka@openbsd.org ,
+and
+.An Job Snijders Aq Mt job@openbsd.org .

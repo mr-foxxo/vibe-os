@@ -1,0 +1,27 @@
+# compat_inventory.txt - Inventario da arvore compat/
+# Formato: diretorio | tipo | dependencias provaveis | viabilidade de port
+
+compat/bin | utilitario userland | libc, stdio, VFS, parser CLI | alta (Tier 1-2)
+compat/sbin | utilitario administracao | ioctls, rede, mount, privilegios | baixa/medio prazo (Tier 4-5)
+compat/usr.bin | utilitario userland | libc, regex, locale, stdio | media/alta (Tier 1-3)
+compat/usr.sbin | utilitario administracao | rede, processos, daemons, syscalls avancadas | baixa (Tier 4-5)
+compat/lib | biblioteca sistema | ABI libc completa, linker, locale, threads | baixa (referencia)
+compat/libexec | daemons/helpers | fork/exec/sinais/sockets | baixa (Tier 5)
+compat/include | headers | padronizacao API compat, mapeamento libc/posix | media (suporte incremental)
+compat/sys | kernel code | kernel OpenBSD, ABI interna, MMU/VM OpenBSD | nao viavel (somente referencia)
+compat/etc | configuracao | runtime e daemons compat | nao aplicavel direto
+compat/share | docs/dados | manpages, locales, assets | nao aplicavel direto
+compat/gnu | toolchain/utilitarios GNU | libc/posix ampla, build system GNU | media (caso a caso)
+compat/games | utilitarios userland | libc, tty, arquivos | baixa prioridade
+compat/regress | testes | harness OpenBSD | nao aplicavel direto
+compat/src | codigo base extra | depende da subarvore de origem | media (apoio ao port)
+compat/libc | camada compat local | VFS, console, runtime app | alta (incremental)
+compat/posix | camada compat local | VFS, fds, errno, stat | alta (incremental)
+compat/metadata | controle de port | atualizacao manual | alta
+
+# Status de viabilidade resumido por tier no VibeOS atual
+# Tier 1 (muito faceis): echo, cat, wc, true, printf
+# Tier 2 (faceis): head, tail, grep, cut, tr
+# Tier 3 (medios): sed, sort, find, uniq
+# Tier 4 (complexos): less, vi, awk
+# Tier 5 (nao suportados ainda): dependencias de fork/exec/signals/tty complexo/mmap

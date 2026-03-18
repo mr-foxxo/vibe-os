@@ -2,12 +2,33 @@
 #include <kernel/hal/io.h>
 #include <kernel/interrupt.h>
 #include <include/userland_api.h>
+#include <headers/kernel/keymap.h>
+#include <include/string.h>
 
 #define KBD_QUEUE_SIZE 128
 #define PS2_STATUS_PORT 0x64u
 #define PS2_DATA_PORT 0x60u
 #define PS2_STATUS_OUTPUT_FULL 0x01u
 #define PS2_STATUS_INPUT_FULL 0x02u
+
+extern keymap_t keymap_us;
+extern keymap_t keymap_pt_br;
+extern keymap_t keymap_br_abnt2;
+extern keymap_t keymap_us_intl;
+extern keymap_t keymap_es;
+extern keymap_t keymap_fr;
+extern keymap_t keymap_de;
+
+static const keymap_t* g_available_keymaps[] = {
+    &keymap_us,
+    &keymap_pt_br,
+    &keymap_br_abnt2,
+    &keymap_us_intl,
+    &keymap_es,
+    &keymap_fr,
+    &keymap_de,
+};
+static const int g_num_available_keymaps = sizeof(g_available_keymaps) / sizeof(keymap_t*);
 
 static volatile uint16_t g_kernel_kbd_queue[KBD_QUEUE_SIZE];
 static volatile uint8_t g_kernel_kbd_head = 0u;
@@ -16,8 +37,7 @@ static volatile uint8_t g_kernel_kbd_shift = 0u;
 static volatile uint8_t g_kernel_kbd_ctrl = 0u;
 static volatile uint8_t g_kernel_kbd_extended = 0u;
 static volatile uint8_t g_kernel_kbd_ready = 0u;
-static char g_kernel_kbd_map[128];
-static char g_kernel_kbd_shift_map[128];
+static const keymap_t* g_current_keymap = &keymap_us;
 
 static void ps2_wait_write(void) {
     while ((inb(PS2_STATUS_PORT) & PS2_STATUS_INPUT_FULL) != 0u) {
@@ -51,63 +71,31 @@ static int kbd_expect_ack(void) {
     return inb(PS2_DATA_PORT) == 0xFAu;
 }
 
-static void kbd_init_maps(void) {
-    for (int i = 0; i < 128; ++i) {
-        g_kernel_kbd_map[i] = '\0';
-        g_kernel_kbd_shift_map[i] = '\0';
+int kernel_keyboard_set_layout(const char* name) {
+    for (int i = 0; i < g_num_available_keymaps; ++i) {
+        if (strcmp(g_available_keymaps[i]->name, name) == 0) {
+            g_current_keymap = g_available_keymaps[i];
+            return 0;
+        }
     }
+    return -1;
+}
 
-    g_kernel_kbd_map[0x02] = '1'; g_kernel_kbd_shift_map[0x02] = '!';
-    g_kernel_kbd_map[0x03] = '2'; g_kernel_kbd_shift_map[0x03] = '@';
-    g_kernel_kbd_map[0x04] = '3'; g_kernel_kbd_shift_map[0x04] = '#';
-    g_kernel_kbd_map[0x05] = '4'; g_kernel_kbd_shift_map[0x05] = '$';
-    g_kernel_kbd_map[0x06] = '5'; g_kernel_kbd_shift_map[0x06] = '%';
-    g_kernel_kbd_map[0x07] = '6'; g_kernel_kbd_shift_map[0x07] = '^';
-    g_kernel_kbd_map[0x08] = '7'; g_kernel_kbd_shift_map[0x08] = '&';
-    g_kernel_kbd_map[0x09] = '8'; g_kernel_kbd_shift_map[0x09] = '*';
-    g_kernel_kbd_map[0x0A] = '9'; g_kernel_kbd_shift_map[0x0A] = '(';
-    g_kernel_kbd_map[0x0B] = '0'; g_kernel_kbd_shift_map[0x0B] = ')';
-    g_kernel_kbd_map[0x0C] = '-'; g_kernel_kbd_shift_map[0x0C] = '_';
-    g_kernel_kbd_map[0x0D] = '='; g_kernel_kbd_shift_map[0x0D] = '+';
-    g_kernel_kbd_map[0x0E] = '\b'; g_kernel_kbd_shift_map[0x0E] = '\b';
-    g_kernel_kbd_map[0x0F] = '\t'; g_kernel_kbd_shift_map[0x0F] = '\t';
-    g_kernel_kbd_map[0x10] = 'q'; g_kernel_kbd_shift_map[0x10] = 'Q';
-    g_kernel_kbd_map[0x11] = 'w'; g_kernel_kbd_shift_map[0x11] = 'W';
-    g_kernel_kbd_map[0x12] = 'e'; g_kernel_kbd_shift_map[0x12] = 'E';
-    g_kernel_kbd_map[0x13] = 'r'; g_kernel_kbd_shift_map[0x13] = 'R';
-    g_kernel_kbd_map[0x14] = 't'; g_kernel_kbd_shift_map[0x14] = 'T';
-    g_kernel_kbd_map[0x15] = 'y'; g_kernel_kbd_shift_map[0x15] = 'Y';
-    g_kernel_kbd_map[0x16] = 'u'; g_kernel_kbd_shift_map[0x16] = 'U';
-    g_kernel_kbd_map[0x17] = 'i'; g_kernel_kbd_shift_map[0x17] = 'I';
-    g_kernel_kbd_map[0x18] = 'o'; g_kernel_kbd_shift_map[0x18] = 'O';
-    g_kernel_kbd_map[0x19] = 'p'; g_kernel_kbd_shift_map[0x19] = 'P';
-    g_kernel_kbd_map[0x1A] = '['; g_kernel_kbd_shift_map[0x1A] = '{';
-    g_kernel_kbd_map[0x1B] = ']'; g_kernel_kbd_shift_map[0x1B] = '}';
-    g_kernel_kbd_map[0x1C] = '\n'; g_kernel_kbd_shift_map[0x1C] = '\n';
-    g_kernel_kbd_map[0x1E] = 'a'; g_kernel_kbd_shift_map[0x1E] = 'A';
-    g_kernel_kbd_map[0x1F] = 's'; g_kernel_kbd_shift_map[0x1F] = 'S';
-    g_kernel_kbd_map[0x20] = 'd'; g_kernel_kbd_shift_map[0x20] = 'D';
-    g_kernel_kbd_map[0x21] = 'f'; g_kernel_kbd_shift_map[0x21] = 'F';
-    g_kernel_kbd_map[0x22] = 'g'; g_kernel_kbd_shift_map[0x22] = 'G';
-    g_kernel_kbd_map[0x23] = 'h'; g_kernel_kbd_shift_map[0x23] = 'H';
-    g_kernel_kbd_map[0x24] = 'j'; g_kernel_kbd_shift_map[0x24] = 'J';
-    g_kernel_kbd_map[0x25] = 'k'; g_kernel_kbd_shift_map[0x25] = 'K';
-    g_kernel_kbd_map[0x26] = 'l'; g_kernel_kbd_shift_map[0x26] = 'L';
-    g_kernel_kbd_map[0x27] = ';'; g_kernel_kbd_shift_map[0x27] = ':';
-    g_kernel_kbd_map[0x28] = '\''; g_kernel_kbd_shift_map[0x28] = '"';
-    g_kernel_kbd_map[0x29] = '`'; g_kernel_kbd_shift_map[0x29] = '~';
-    g_kernel_kbd_map[0x2B] = '\\'; g_kernel_kbd_shift_map[0x2B] = '|';
-    g_kernel_kbd_map[0x2C] = 'z'; g_kernel_kbd_shift_map[0x2C] = 'Z';
-    g_kernel_kbd_map[0x2D] = 'x'; g_kernel_kbd_shift_map[0x2D] = 'X';
-    g_kernel_kbd_map[0x2E] = 'c'; g_kernel_kbd_shift_map[0x2E] = 'C';
-    g_kernel_kbd_map[0x2F] = 'v'; g_kernel_kbd_shift_map[0x2F] = 'V';
-    g_kernel_kbd_map[0x30] = 'b'; g_kernel_kbd_shift_map[0x30] = 'B';
-    g_kernel_kbd_map[0x31] = 'n'; g_kernel_kbd_shift_map[0x31] = 'N';
-    g_kernel_kbd_map[0x32] = 'm'; g_kernel_kbd_shift_map[0x32] = 'M';
-    g_kernel_kbd_map[0x33] = ','; g_kernel_kbd_shift_map[0x33] = '<';
-    g_kernel_kbd_map[0x34] = '.'; g_kernel_kbd_shift_map[0x34] = '>';
-    g_kernel_kbd_map[0x35] = '/'; g_kernel_kbd_shift_map[0x35] = '?';
-    g_kernel_kbd_map[0x39] = ' '; g_kernel_kbd_shift_map[0x39] = ' ';
+const char* kernel_keyboard_get_layout(void) {
+    return g_current_keymap->name;
+}
+
+void kernel_keyboard_get_available_layouts(char* buffer, int size) {
+    int offset = 0;
+    for (int i = 0; i < g_num_available_keymaps; ++i) {
+        int len = strlen(g_available_keymaps[i]->name);
+        if (offset + len + 2 < size) {
+            strcpy(buffer + offset, g_available_keymaps[i]->name);
+            offset += len;
+            buffer[offset++] = '\n';
+        }
+    }
+    buffer[offset] = '\0';
 }
 
 static void kbd_push_key(uint16_t key) {
@@ -197,7 +185,7 @@ void kernel_keyboard_irq_handler(void) {
         return;
     }
 
-    char c = g_kernel_kbd_shift ? g_kernel_kbd_shift_map[scancode] : g_kernel_kbd_map[scancode];
+    char c = g_kernel_kbd_shift ? g_current_keymap->shift_map[scancode] : g_current_keymap->map[scancode];
     if (c != '\0') {
         if (g_kernel_kbd_ctrl) {
             char lower = c;
@@ -224,7 +212,7 @@ void kernel_keyboard_init(void) {
     g_kernel_kbd_ctrl = 0u;
     g_kernel_kbd_extended = 0u;
     g_kernel_kbd_ready = 0u;
-    kbd_init_maps();
+    kernel_keyboard_set_layout("us");
 
     ps2_drain_output();
 

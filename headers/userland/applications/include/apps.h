@@ -15,10 +15,17 @@ enum app_type {
     APP_SKETCHPAD,
     APP_SNAKE,
     APP_TETRIS,
+    APP_PACMAN,
+    APP_SPACE_INVADERS,
+    APP_PONG,
+    APP_DONKEY_KONG,
+    APP_BRICK_RACE,
+    APP_FLAP_BIRB,
+    APP_DOOM,
     APP_PERSONALIZE,
 };
 
-#define MAX_WINDOWS 12
+#define MAX_WINDOWS 20
 #define MAX_TERMINALS 4
 #define MAX_FILEMANAGERS 2
 #define MAX_CLOCKS 4
@@ -28,6 +35,13 @@ enum app_type {
 #define MAX_SKETCHPADS 1
 #define MAX_SNAKES 1
 #define MAX_TETRIS 1
+#define MAX_PACMAN 1
+#define MAX_SPACE_INVADERS 1
+#define MAX_PONG 1
+#define MAX_DONKEY_KONG 1
+#define MAX_BRICK_RACE 1
+#define MAX_FLAP_BIRB 1
+#define MAX_DOOM 1
 
 /* generic window descriptor used by desktop_main and task manager */
 struct window {

@@ -1,0 +1,12 @@
+.\" $OpenBSD: dupe.in,v 1.3 2020/01/19 16:36:47 schwarze Exp $
+.Dd $Mdocdate: January 19 2020 $
+.Os NetBSD
+.Dt OS-DUPE 1
+.Os FreeBSD
+.Sh NAME
+.Nm Os-dupe
+.Nd repeated operating system macros
+.Sh DESCRIPTION
+initial text
+.Os OpenBSD
+final text

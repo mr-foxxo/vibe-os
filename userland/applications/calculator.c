@@ -197,7 +197,7 @@ void calculator_draw_window(struct calculator_state *calc, int active,
     struct rect display = {calc->window.x + 8, calc->window.y + 24, calc->window.w - 16, 16};
 
     draw_window_frame(&calc->window, "CALCULADORA", active, min_hover, max_hover, close_hover);
-    ui_draw_surface(&body, ui_color_panel());
+    ui_draw_surface(&body, theme->window_bg);
 
     ui_draw_inset(&display, ui_color_canvas());
     sys_text(calc->window.x + 12, calc->window.y + 29, theme->text, calc->display);

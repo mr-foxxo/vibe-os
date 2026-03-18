@@ -1,0 +1,49 @@
+# OpenBSD Source Code Inventory and Porting Plan
+
+This document outlines the contents of the OpenBSD `src` directory, which has been imported into the `compat/` directory of this project. It provides a classification of the components and a plan for their incremental integration.
+
+## Directory Inventory and Classification
+
+| Directory   | Type           | Viability      | Tier | Dependencies / Notes                                            |
+|-------------|----------------|----------------|------|-----------------------------------------------------------------|
+| `bin/`      | Core User Apps | High           | A    | Essential utilities like `cat`, `echo`, `ls`. Good first ports.  |
+| `sbin/`     | System Admin   | Medium/Hard    | C    | System-level utilities, e.g., `ifconfig`, `mount`. High deps.   |
+| `usr.bin/`  | User Apps      | Mixed          | A/B  | Wide range of apps. `grep`, `sed`, `awk` are here. Port case-by-case. |
+| `usr.sbin/` | System Admin   | Hard           | C/D  | More daemons and system management tools. Very high deps.       |
+| `lib/`      | System Libs    | Very Hard      | D    | Core system libraries (libc, libm, etc). For reference only.    |
+| `libexec/`  | System Daemons | Hard           | C    | Helper programs and daemons. High dependencies.                 |
+| `gnu/`      | GNU Tools      | Mixed          | B/C  | GNU-licensed tools. Might be easier to port than BSD equivalents. |
+| `include/`  | Headers        | Very Hard (Full) | D  | System headers. We will create our own compat headers.          |
+| `sys/`      | Kernel         | Infeasible     | D    | OpenBSD kernel source. For reference and study only.            |
+| `etc/`      | Config Files   | N/A            | -    | Sample configuration files. Not for direct integration.         |
+| `share/`    | Shared Data    | N/A            | -    | Manual pages, documentation, etc. Not for integration.          |
+| `games/`    | Games          | Low Priority   | C/D  | Games. Not a priority for porting.                              |
+| `regress/`  | Tests          | N/A            | -    | Regression tests. Not for integration.                          |
+| `distrib/`  | Distribution   | N/A            | -    | Tools for building OpenBSD releases. Not for integration.       |
+| `src/`      | Source tree    | N/A            | -    | This directory contains a copy of the other directories         |
+| `Makefile`  | Build System   | N/A            | -    | Top-level Makefile for OpenBSD. Not used in our build.          |
+| `Makefile.cross`| Build System| N/A            | -    | Makefile for cross-compiling OpenBSD. Not used.               |
+
+
+## Porting Tiers
+
+*   **Tier A: Easiest to port, high value**
+    *   `echo`, `cat`, `wc`, `head`, `tail`, `grep`, `printf`, `true`, `sleep`
+    *   **Location:** `bin/`, `usr.bin/`
+
+*   **Tier B: Medium difficulty, useful tools**
+    *   `sed`, `less`, `find`, `sort`, `cut`, `tr`, `awk`
+    *   **Location:** `usr.bin/`
+
+*   **Tier C: Hard, significant dependencies**
+    *   Fullscreen editors (`vi`), complex shell (`ksh`), system admin tools.
+    *   **Location:** `usr.bin/`, `sbin/`, `usr.sbin/`
+
+*   **Tier D: Infeasible for now**
+    *   Kernel (`sys/`), core libraries (`lib/`), anything with heavy OS-internal dependencies.
+
+## Next Steps
+
+1.  Implement a minimal compatibility layer (`compat/libc/`) with basic stdio, stdlib, and string functions.
+2.  Create a build system (`Build.compat.mk`) for compiling ported applications.
+3.  Start porting Tier A applications, beginning with `echo`.

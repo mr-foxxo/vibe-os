@@ -1,0 +1,112 @@
+&#xFFFD;&#xFFFD;	&lt;control&gt; NULL
+&#xFFFD;&#xFFFD;	&lt;control&gt; START OF HEADING
+&#xFFFD;&#xFFFD;	&lt;control&gt; START OF TEXT
+&#xFFFD;&#xFFFD;	&lt;control&gt; END OF TEXT
+&#xFFFD;&#xFFFD;	&lt;control&gt; END OF TRANSMISSION
+&#xFFFD;&#xFFFD;	&lt;control&gt; ENQUIRY
+&#xFFFD;&#xFFFD;	&lt;control&gt; ACKNOWLEDGE
+&#xFFFD;&#xFFFD;	&lt;control&gt; BELL
+&#xFFFD;&#xFFFD;	&lt;control&gt; BACKSPACE
+			&lt;control&gt; CHARACTER TABULATION
+&#xFFFD;&#xFFFD;	&lt;control&gt; LINE FEED
+&#xFFFD;&#xFFFD;	&lt;control&gt; LINE TABULATION
+&#xFFFD;&#xFFFD;	&lt;control&gt; FORM FEED
+&#xFFFD;&#xFFFD;	&lt;control&gt; CARRIAGE RETURN
+&#xFFFD;&#xFFFD;	&lt;control&gt; SHIFT OUT
+&#xFFFD;&#xFFFD;	&lt;control&gt; SHIFT IN
+&#xFFFD;&#xFFFD;	&lt;control&gt; DATA LINK ESCAPE
+&#xFFFD;&#xFFFD;	&lt;control&gt; DEVICE CONTROL ONE
+&#xFFFD;&#xFFFD;	&lt;control&gt; DEVICE CONTROL TWO
+&#xFFFD;&#xFFFD;	&lt;control&gt; DEVICE CONTROL THREE
+&#xFFFD;&#xFFFD;	&lt;control&gt; DEVICE CONTROL FOUR
+&#xFFFD;&#xFFFD;	&lt;control&gt; NEGATIVE ACKNOWLEDGE
+&#xFFFD;&#xFFFD;	&lt;control&gt; SYNCHRONOUS IDLE
+&#xFFFD;&#xFFFD;	&lt;control&gt; END OF TRANSMISSION BLOCK
+&#xFFFD;&#xFFFD;	&lt;control&gt; CANCEL
+&#xFFFD;&#xFFFD;	&lt;control&gt; END OF MEDIUM
+&#xFFFD;&#xFFFD;	&lt;control&gt; SUBSTITUTE
+&#xFFFD;&#xFFFD;	&lt;control&gt; ESCAPE
+&#xFFFD;&#xFFFD;	&lt;control&gt; INFORMATION SEPARATOR FOUR
+&#xFFFD;&#xFFFD;	&lt;control&gt; INFORMATION SEPARATOR THREE
+&#xFFFD;&#xFFFD;	&lt;control&gt; INFORMATION SEPARATOR TWO
+&#xFFFD;&#xFFFD;	&lt;control&gt; INFORMATION SEPARATOR INE
+!!	EXCLAMATION MARK
+%%	PERCENT SIGN
+&amp;&amp;	AMPERSAND
+((	LEFT PARENTHESIS
+))	RIGHT PARENTHESIS
+**	ASTERISK
+,,	COMMA
+--	HYPHEN-MINUS
+..	FULL STOP
+00	DIGIT ZERO
+11	DIGIT ONE
+99	DIGIT NINE
+::	COLON
+;;	SEMICOLON
+&lt;&lt;	LESS-THAN SIGN
+&gt;&gt;	GREATER-THAN SIGN
+??	QUESTION MARK
+AA	LATIN CAPITAL LETTER A
+ZZ	LATIN CAPITAL LETTER Z
+aa	LATIN SMALL LETTER A
+zz	LATIN SMALL LETTER Z
+&#xFFFD;&#xFFFD;	&lt;control&gt; DELETE
+&#xFFFD;&#xFFFD;	&lt;control&gt; 0x80
+&#xFFFD;&#xFFFD;	&lt;control&gt; 0x81
+&#xFFFD;&#xFFFD;	&lt;control&gt; BREAK PERMITTED HERE
+&#xFFFD;&#xFFFD;	&lt;control&gt; NO BREAK HERE
+&#xFFFD;&#xFFFD;	&lt;control&gt; 0x84
+&#xFFFD;&#xFFFD;	&lt;control&gt; NEXT LINE (NEL)
+&#xFFFD;&#xFFFD;	&lt;control&gt; START OF SELECTED AREA
+&#xFFFD;&#xFFFD;	&lt;control&gt; END OF SELECTED AREA
+&#xFFFD;&#xFFFD;	&lt;control&gt; CHARACTER TABULATION SET
+&#xFFFD;&#xFFFD;	&lt;control&gt; CHARACTER TABULATION WITH JUSTIFICATION
+&#xFFFD;&#xFFFD;	&lt;control&gt; LINE TABULATION SET
+&#xFFFD;&#xFFFD;	&lt;control&gt; PARTIAL LINE FORWARD
+&#xFFFD;&#xFFFD;	&lt;control&gt; PARTIAL LINE BACKWARD
+&#xFFFD;&#xFFFD;	&lt;control&gt; REVERSE LINE FEED
+&#xFFFD;&#xFFFD;	&lt;control&gt; SINGLE SHIFT TWO
+&#xFFFD;&#xFFFD;	&lt;control&gt; SINGLE SHIFT THREE
+&#xFFFD;&#xFFFD;	&lt;control&gt; DEVICE CONTROL STRING
+&#xFFFD;&#xFFFD;	&lt;control&gt; PRIVATE USE ONE
+&#xFFFD;&#xFFFD;	&lt;control&gt; PRIVATE USE TWO
+&#xFFFD;&#xFFFD;	&lt;control&gt; SET TRANSMIT STATE
+&#xFFFD;&#xFFFD;	&lt;control&gt; CANCEL CHARACTER
+&#xFFFD;&#xFFFD;	&lt;control&gt; MESSAGE WAITING
+&#xFFFD;&#xFFFD;	&lt;control&gt; START OF GUARDED AREA
+&#xFFFD;&#xFFFD;	&lt;control&gt; END OF GUARDED AREA
+&#xFFFD;&#xFFFD;	&lt;control&gt; START OF STRING
+&#xFFFD;&#xFFFD;	&lt;control&gt; 0x99
+&#xFFFD;&#xFFFD;	&lt;control&gt; SINGLE CHARACTER INTRODUCER
+&#xFFFD;&#xFFFD;	&lt;control&gt; CONTROL SEQUENCE INTRODUCER
+&#xFFFD;&#xFFFD;	&lt;control&gt; STRING TERMINATOR
+&#xFFFD;&#xFFFD;	&lt;control&gt; OPERATING SYSTEM COMMAND
+&#xFFFD;&#xFFFD;	&lt;control&gt; PRIVACY MESSAGE
+&#xFFFD;&#xFFFD;	&lt;control&gt; APPLICATION PROGRAM COMMAND
+&#x226A;&#x226A;	MUCH LESS-THAN
+&#x226B;&#x226B;	MUCH GREATER-THAN
+&#xD7FB;	HANGUL JONGSEONG PHIEUPH-THIEUTH
+&#xE000;	&lt;Private Use, First&gt;
+&#xF8FF;	&lt;Private Use, Last&gt;
+&#xF900;	CJK COMPATIBILITY IDEOGRAPH-F900
+&#xFB00;&#xFB00;	LATIN SMALL LIGATURE FF
+&#xFB01;&#xFB01;	LATIN SMALL LIGATURE FI
+&#xFB02;&#xFB02;	LATIN SMALL LIGATURE FL
+&#xFB03;&#xFB03;	LATIN SMALL LIGATURE FFI
+&#xFB04;&#xFB04;	LATIN SMALL LIGATURE FFL
+&#xFFFD;	REPLACEMENT CHARACTER
+&#xFFFE;	&lt;undefined&gt;
+&#xFFFF;	&lt;undefined&gt;
+&#x10000;	LINEAR B SYLLABLE B008 A
+&#xE01EF;	VARIATION SELECTOR-256
+&#xEFFFE;	&lt;undefined&gt;
+&#xEFFFF;	&lt;undefined&gt;
+&#xF0000;	&lt;Plane 15 Private Use, First&gt;
+&#xFFFFD;	&lt;Plane 15 Private Use, Last&gt;
+&#xFFFFE;	&lt;undefined&gt;
+&#xFFFFF;	&lt;undefined&gt;
+&#x100000;	&lt;Plane 16 Private Use, First&gt;
+&#x10FFFD;	&lt;Plane 16 Private Use, Last&gt;
+&#x10FFFE;	&lt;undefined&gt;
+&#x10FFFF;	&lt;undefined&gt;

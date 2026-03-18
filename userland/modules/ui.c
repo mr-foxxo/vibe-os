@@ -12,7 +12,7 @@ uint32_t SCREEN_WIDTH = 640;
 uint32_t SCREEN_HEIGHT = 480;
 uint32_t SCREEN_PITCH = 640;
 struct video_mode g_screen_mode = {0};
-static struct desktop_theme g_theme = {1, 8, 17, 8, 17, 15};
+static struct desktop_theme g_theme = {1, 7, 3, 14, 7, 3, 15, 0}; /* Classic Win95: teal desktop(11), light gray menu(7), light gray button(7), dark gray inactive(8), light gray taskbar(7), dark gray window(8), white bg(15), black text(0) */
 static int g_ui_loading_settings = 0;
 static struct {
     int active;
@@ -23,13 +23,13 @@ static struct {
 } g_wallpaper = {0, -1, 0, 0, {{0}}};
 
 #define TASKBAR_HEIGHT 22
-#define START_MENU_WIDTH 176
-#define START_MENU_HEIGHT 204
-#define START_MENU_ITEM_X 10
-#define START_MENU_ITEM_Y 34
-#define START_MENU_ITEM_W 156
-#define START_MENU_ITEM_H 14
-#define START_MENU_ITEM_STEP 16
+#define START_MENU_WIDTH 368
+#define START_MENU_HEIGHT 390
+#define START_MENU_ITEM_X 16
+#define START_MENU_ITEM_Y 94
+#define START_MENU_ITEM_W 336
+#define START_MENU_ITEM_H 20
+#define START_MENU_ITEM_STEP 26
 #define UI_SETTINGS_PATH "/config/ui.cfg"
 #define UI_CANVAS_COLOR 1u
 #define UI_PANEL_COLOR 8u
@@ -119,6 +119,7 @@ static void ui_save_settings(void) {
     ui_append_kv_u32(text, "menu_button=", g_theme.menu_button, (int)sizeof(text));
     ui_append_kv_u32(text, "taskbar=", g_theme.taskbar, (int)sizeof(text));
     ui_append_kv_u32(text, "window=", g_theme.window, (int)sizeof(text));
+    ui_append_kv_u32(text, "window_bg=", g_theme.window_bg, (int)sizeof(text));
     ui_append_kv_u32(text, "text=", g_theme.text, (int)sizeof(text));
     ui_append_kv_u32(text, "width=", SCREEN_WIDTH, (int)sizeof(text));
     ui_append_kv_u32(text, "height=", SCREEN_HEIGHT, (int)sizeof(text));
@@ -168,6 +169,8 @@ static void ui_load_settings(void) {
             loaded.taskbar = (uint8_t)value;
         } else if (ui_starts_with(line, "window=") && ui_parse_uint(line + 7, &value)) {
             loaded.window = (uint8_t)value;
+        } else if (ui_starts_with(line, "window_bg=") && ui_parse_uint(line + 10, &value)) {
+            loaded.window_bg = (uint8_t)value;
         } else if (ui_starts_with(line, "text=") && ui_parse_uint(line + 5, &value)) {
             loaded.text = (uint8_t)value;
         } else if (ui_starts_with(line, "width=") && ui_parse_uint(line + 6, &value)) {
@@ -299,11 +302,17 @@ void ui_theme_set_slot(enum theme_slot slot, uint8_t color) {
     case THEME_SLOT_MENU_BUTTON:
         g_theme.menu_button = color;
         break;
+    case THEME_SLOT_MENU_BUTTON_INACTIVE:
+        g_theme.menu_button_inactive = color;
+        break;
     case THEME_SLOT_TASKBAR:
         g_theme.taskbar = color;
         break;
     case THEME_SLOT_WINDOW:
         g_theme.window = color;
+        break;
+    case THEME_SLOT_WINDOW_BG:
+        g_theme.window_bg = color;
         break;
     case THEME_SLOT_TEXT:
         g_theme.text = color;
@@ -321,11 +330,161 @@ const char *ui_theme_slot_name(enum theme_slot slot) {
     case THEME_SLOT_BACKGROUND: return "Plano";
     case THEME_SLOT_MENU: return "Menu";
     case THEME_SLOT_MENU_BUTTON: return "Botao";
+    case THEME_SLOT_MENU_BUTTON_INACTIVE: return "Btn Inativo";
     case THEME_SLOT_TASKBAR: return "Barra";
     case THEME_SLOT_WINDOW: return "Janela";
+    case THEME_SLOT_WINDOW_BG: return "Fundo Jan";
     case THEME_SLOT_TEXT: return "Texto";
     default: return "Tema";
     }
+}
+
+void ui_theme_save_named(const char *name) {
+    char path[80];
+    if (fs_resolve("/config/themes") < 0) {
+        (void)fs_create("/config/themes", 1);
+    }
+    path[0] = '\0';
+    str_append(path, "/config/themes/", (int)sizeof(path));
+    str_append(path, name, (int)sizeof(path));
+    str_append(path, ".theme", (int)sizeof(path));
+    
+    char text[256];
+    text[0] = '\0';
+    ui_append_kv_u32(text, "background=", g_theme.background, (int)sizeof(text));
+    ui_append_kv_u32(text, "menu=", g_theme.menu, (int)sizeof(text));
+    ui_append_kv_u32(text, "menu_button=", g_theme.menu_button, (int)sizeof(text));
+    ui_append_kv_u32(text, "taskbar=", g_theme.taskbar, (int)sizeof(text));
+    ui_append_kv_u32(text, "window=", g_theme.window, (int)sizeof(text));
+    ui_append_kv_u32(text, "window_bg=", g_theme.window_bg, (int)sizeof(text));
+    ui_append_kv_u32(text, "text=", g_theme.text, (int)sizeof(text));
+    str_append(text, "\n", (int)sizeof(text));
+    (void)fs_write_file(path, text, 0);
+}
+
+void ui_theme_load_named(const char *name) {
+    char path[80];
+    path[0] = '\0';
+    str_append(path, "/config/themes/", (int)sizeof(path));
+    str_append(path, name, (int)sizeof(path));
+    str_append(path, ".theme", (int)sizeof(path));
+    
+    int idx = fs_resolve(path);
+    if (idx < 0 || g_fs_nodes[idx].is_dir || g_fs_nodes[idx].size <= 0) return;
+    
+    char text[256];
+    str_copy_limited(text, g_fs_nodes[idx].data, (int)sizeof(text));
+    struct desktop_theme loaded = g_theme;
+    
+    for (char *line = text; *line != '\0'; ) {
+        char *next = line;
+        uint32_t value = 0u;
+        while (*next != '\0' && *next != '\n') ++next;
+        if (*next == '\n') { *next = '\0'; ++next; }
+        
+        if (ui_starts_with(line, "background=") && ui_parse_uint(line + 11, &value))
+            loaded.background = (uint8_t)value;
+        else if (ui_starts_with(line, "menu=") && ui_parse_uint(line + 5, &value))
+            loaded.menu = (uint8_t)value;
+        else if (ui_starts_with(line, "menu_button=") && ui_parse_uint(line + 12, &value))
+            loaded.menu_button = (uint8_t)value;
+        else if (ui_starts_with(line, "taskbar=") && ui_parse_uint(line + 8, &value))
+            loaded.taskbar = (uint8_t)value;
+        else if (ui_starts_with(line, "window=") && ui_parse_uint(line + 7, &value))
+            loaded.window = (uint8_t)value;
+        else if (ui_starts_with(line, "window_bg=") && ui_parse_uint(line + 10, &value))
+            loaded.window_bg = (uint8_t)value;
+        else if (ui_starts_with(line, "text=") && ui_parse_uint(line + 5, &value))
+            loaded.text = (uint8_t)value;
+        line = next;
+    }
+    g_theme = loaded;
+}
+
+void ui_theme_export(const char *export_path) {
+    char text[256];
+    text[0] = '\0';
+    ui_append_kv_u32(text, "background=", g_theme.background, (int)sizeof(text));
+    ui_append_kv_u32(text, "menu=", g_theme.menu, (int)sizeof(text));
+    ui_append_kv_u32(text, "menu_button=", g_theme.menu_button, (int)sizeof(text));
+    ui_append_kv_u32(text, "taskbar=", g_theme.taskbar, (int)sizeof(text));
+    ui_append_kv_u32(text, "window=", g_theme.window, (int)sizeof(text));
+    ui_append_kv_u32(text, "window_bg=", g_theme.window_bg, (int)sizeof(text));
+    ui_append_kv_u32(text, "text=", g_theme.text, (int)sizeof(text));
+    str_append(text, "\n", (int)sizeof(text));
+    (void)fs_write_file(export_path, text, 0);
+}
+
+void ui_theme_import(const char *import_path) {
+    int idx = fs_resolve(import_path);
+    if (idx < 0 || g_fs_nodes[idx].is_dir || g_fs_nodes[idx].size <= 0) return;
+    
+    char text[256];
+    str_copy_limited(text, g_fs_nodes[idx].data, (int)sizeof(text));
+    struct desktop_theme loaded = g_theme;
+    
+    for (char *line = text; *line != '\0'; ) {
+        char *next = line;
+        uint32_t value = 0u;
+        while (*next != '\0' && *next != '\n') ++next;
+        if (*next == '\n') { *next = '\0'; ++next; }
+        
+        if (ui_starts_with(line, "background=") && ui_parse_uint(line + 11, &value))
+            loaded.background = (uint8_t)value;
+        else if (ui_starts_with(line, "menu=") && ui_parse_uint(line + 5, &value))
+            loaded.menu = (uint8_t)value;
+        else if (ui_starts_with(line, "menu_button=") && ui_parse_uint(line + 12, &value))
+            loaded.menu_button = (uint8_t)value;
+        else if (ui_starts_with(line, "taskbar=") && ui_parse_uint(line + 8, &value))
+            loaded.taskbar = (uint8_t)value;
+        else if (ui_starts_with(line, "window=") && ui_parse_uint(line + 7, &value))
+            loaded.window = (uint8_t)value;
+        else if (ui_starts_with(line, "window_bg=") && ui_parse_uint(line + 10, &value))
+            loaded.window_bg = (uint8_t)value;
+        else if (ui_starts_with(line, "text=") && ui_parse_uint(line + 5, &value))
+            loaded.text = (uint8_t)value;
+        line = next;
+    }
+    g_theme = loaded;
+}
+
+void ui_theme_create_classic(void) {
+    /* Classic - VibeOS default theme */
+    g_theme.background = 1;
+    g_theme.menu = 7;
+    g_theme.menu_button = 3;
+    g_theme.menu_button_inactive = 14;
+    g_theme.taskbar = 7;
+    g_theme.window = 3;
+    g_theme.window_bg = 15;
+    g_theme.text = 0;
+    ui_theme_save_named("classic");
+}
+
+void ui_theme_create_luna(void) {
+    /* Luna - Windows XP: Authentic sky blue theme */
+    g_theme.background = 9;      /* XP Sky Blue desktop */
+    g_theme.menu = 17;           /* Silver menu bar */
+    g_theme.menu_button = 16;    /* Silver button */
+    g_theme.menu_button_inactive = 8;  /* Dark gray inactive */
+    g_theme.taskbar = 17;        /* Silver taskbar */
+    g_theme.window = 16;         /* Silver window frame */
+    g_theme.window_bg = 15;      /* White window background */
+    g_theme.text = 0;            /* Black text */
+    ui_theme_save_named("luna");
+}
+
+void ui_theme_create_luna_dark(void) {
+    /* Luna Dark - Dark variant with same desktop as Luna but dark windows */
+    g_theme.background = 9;      /* XP Sky Blue desktop - same as Luna */
+    g_theme.menu = 8;            /* Dark gray menu */
+    g_theme.menu_button = 8;     /* Dark gray button */
+    g_theme.menu_button_inactive = 16;  /* Gray inactive */
+    g_theme.taskbar = 8;         /* Dark gray taskbar */
+    g_theme.window = 8;          /* Dark gray window frame */
+    g_theme.window_bg = 245;     /* Light dark window background */
+    g_theme.text = 0;            /* Black text on dark */
+    ui_theme_save_named("luna_dark");
 }
 
 struct rect ui_taskbar_start_button_rect(void) {
@@ -351,11 +510,11 @@ struct rect ui_start_menu_item_rect(int index) {
 }
 
 uint8_t ui_color_canvas(void) {
-    return UI_CANVAS_COLOR;
+    return g_theme.window_bg;  /* Use theme window background */
 }
 
 uint8_t ui_color_panel(void) {
-    return UI_PANEL_COLOR;
+    return g_theme.menu;  /* Use theme menu color */
 }
 
 uint8_t ui_color_muted(void) {
@@ -402,6 +561,9 @@ void ui_draw_button(const struct rect *r, const char *label,
     }
 
     switch (style) {
+    case UI_BUTTON_NORMAL:
+        fill = g_theme.menu_button_inactive;
+        break;
     case UI_BUTTON_PRIMARY:
         fill = g_theme.menu_button;
         break;
@@ -412,7 +574,7 @@ void ui_draw_button(const struct rect *r, const char *label,
         fill = g_theme.window;
         break;
     default:
-        fill = UI_PANEL_COLOR;
+        fill = g_theme.menu_button_inactive;
         break;
     }
 
@@ -474,9 +636,16 @@ static const char *app_caption(enum app_type type) {
     case APP_CALCULATOR: return "Calc";
     case APP_SKETCHPAD: return "Sketch";
     case APP_SNAKE: return "Snake";
-    case APP_TETRIS: return "Tetris";
+    case APP_TETRIS: return "Tetrax";
+    case APP_PACMAN: return "Pacpac";
+    case APP_SPACE_INVADERS: return "Aliens";
+    case APP_PONG: return "Pong";
+    case APP_DONKEY_KONG: return "Monkey Dong";
+    case APP_BRICK_RACE: return "Race";
+    case APP_FLAP_BIRB: return "Flap";
+    case APP_DOOM: return "DOOM";
     case APP_PERSONALIZE: return "Cores";
-    default: return "App";
+    default: return "";
     }
 }
 
@@ -491,7 +660,7 @@ void draw_window_frame(const struct rect *w, const char *title,
     const struct rect outer = {w->x, w->y, w->w, w->h};
     const struct rect title_bar = {w->x + 2, w->y + 2, w->w - 4, 12};
 
-    ui_draw_surface(&outer, UI_PANEL_COLOR);
+    ui_draw_surface(&outer, g_theme.window_bg);
     sys_rect(title_bar.x, title_bar.y, title_bar.w, title_bar.h, active ? g_theme.window : g_theme.taskbar);
     sys_rect(title_bar.x, title_bar.y + title_bar.h - 1, title_bar.w, 1, 0);
     sys_text(w->x + 8, w->y + 4, g_theme.text, title);
@@ -499,39 +668,6 @@ void draw_window_frame(const struct rect *w, const char *title,
     ui_draw_button(&min, "-", UI_BUTTON_NORMAL, min_hover);
     ui_draw_button(&max, "+", UI_BUTTON_NORMAL, max_hover);
     ui_draw_button(&close, "X", UI_BUTTON_DANGER, close_hover);
-}
-
-static void draw_start_menu(int taskbar_y,
-                            const int *menu_item_hover) {
-    static const char *labels[START_MENU_ITEM_COUNT] = {
-        "Terminal",
-        "Relogio",
-        "Arquivos",
-        "Editor",
-        "Tasks",
-        "Calculadora",
-        "Sketchpad",
-        "Snake",
-        "Tetris",
-        "Encerrar sessao"
-    };
-    const struct rect menu_rect = {2, taskbar_y - START_MENU_HEIGHT, START_MENU_WIDTH, START_MENU_HEIGHT};
-    const struct rect header = {menu_rect.x + 8, menu_rect.y + 8, menu_rect.w - 16, 18};
-
-    ui_draw_surface(&menu_rect, g_theme.menu);
-    ui_draw_button(&header, "VIBE DESKTOP", UI_BUTTON_ACTIVE, 0);
-
-    for (int i = 0; i < START_MENU_ITEM_COUNT; ++i) {
-        struct rect item = ui_start_menu_item_rect(i);
-        if (i == START_MENU_LOGOUT) {
-            sys_rect(item.x, item.y - 6, item.w, 1, UI_MUTED_COLOR);
-        }
-        ui_draw_button(&item,
-                       labels[i],
-                       i == START_MENU_LOGOUT ? UI_BUTTON_DANGER :
-                                                (menu_item_hover[i] ? UI_BUTTON_ACTIVE : UI_BUTTON_NORMAL),
-                       menu_item_hover[i]);
-    }
 }
 
 static void draw_taskbar(const struct window *wins, int win_count, int focused, int start_hover) {
@@ -548,6 +684,9 @@ static void draw_taskbar(const struct window *wins, int win_count, int focused, 
         struct rect button;
 
         if (!wins[i].active) {
+            continue;
+        }
+        if (wins[i].type <= APP_NONE || wins[i].type > APP_PERSONALIZE) {
             continue;
         }
 
@@ -590,8 +729,7 @@ void draw_desktop(const struct mouse_state *mouse,
 
     draw_taskbar(wins, win_count, focused, start_hover);
 
-    if (menu_open) {
-        draw_start_menu((int)SCREEN_HEIGHT - TASKBAR_HEIGHT, menu_item_hover);
-    }
+    (void)menu_open;
+    (void)menu_item_hover;
     (void)mouse;
 }

@@ -58,7 +58,7 @@ void taskmgr_draw_window(struct taskmgr_state *tm,
     struct rect body = {tm->window.x + 4, tm->window.y + 18, tm->window.w - 8, tm->window.h - 22};
 
     draw_window_frame(&tm->window, "TASKS", active, min_hover, max_hover, close_hover);
-    ui_draw_surface(&body, ui_color_panel());
+    ui_draw_surface(&body, theme->window_bg);
 
     int visible_index = 0;
     for (int i = 0; i < win_count; ++i) {
@@ -86,7 +86,14 @@ void taskmgr_draw_window(struct taskmgr_state *tm,
         case APP_CALCULATOR: name = "CALC"; break;
         case APP_SKETCHPAD: name = "DRAW"; break;
         case APP_SNAKE: name = "SNAKE"; break;
-        case APP_TETRIS: name = "TETRIS"; break;
+        case APP_TETRIS: name = "TETRAX"; break;
+        case APP_PACMAN: name = "PACPAC"; break;
+        case APP_SPACE_INVADERS: name = "ALIENS"; break;
+        case APP_PONG: name = "PONG"; break;
+        case APP_DONKEY_KONG: name = "MONKEY"; break;
+        case APP_BRICK_RACE: name = "RACE"; break;
+        case APP_FLAP_BIRB: name = "FLAP"; break;
+        case APP_DOOM: name = "DOOM"; break;
         case APP_PERSONALIZE: name = "PERS"; break;
         default: name = "???"; break;
         }

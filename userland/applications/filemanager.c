@@ -178,8 +178,8 @@ void filemanager_draw_window(struct filemanager_state *fm, int active,
     struct rect toolbar = {fm->window.x + 6, fm->window.y + 22, fm->window.w - 12, 24};
 
     draw_window_frame(&fm->window, "FILEMANAGER", active, min_hover, max_hover, close_hover);
-    ui_draw_surface(&body, ui_color_panel());
-    ui_draw_surface(&toolbar, ui_color_canvas());
+    ui_draw_surface(&body, theme->window_bg);
+    ui_draw_surface(&toolbar, theme->window_bg);
 
     ui_draw_inset(&path_bar, ui_color_canvas());
     ui_draw_button(&up_button, "UP", UI_BUTTON_PRIMARY, 0);

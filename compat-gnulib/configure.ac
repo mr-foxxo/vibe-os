@@ -1,0 +1,5 @@
+AC_INIT([dummy], [0.1])
+AC_CONFIG_SRCDIR([dummy.c])
+AM_INIT_AUTOMAKE([1.11.1])
+AC_PROG_CC
+AC_OUTPUT

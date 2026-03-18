@@ -1,6 +1,7 @@
 #include <userland/modules/include/busybox.h>
 #include <userland/modules/include/console.h>
 #include <userland/modules/include/fs.h>
+#include <userland/modules/include/lang_loader.h>
 #include <userland/sectorc/include/sectorc.h>
 #include <userland/lua/include/lua_main.h>
 #include <userland/modules/include/shell.h> /* for history print */
@@ -16,11 +17,86 @@ static int strcmp(const char *a, const char *b) {
     return (unsigned char)*a - (unsigned char)*b;
 }
 
+static int has_slash(const char *text) {
+    while (text && *text) {
+        if (*text == '/') {
+            return 1;
+        }
+        ++text;
+    }
+    return 0;
+}
+
+static const char *path_basename(const char *path) {
+    const char *last = path;
+
+    while (path && *path) {
+        if (*path == '/') {
+            last = path + 1;
+        }
+        ++path;
+    }
+    return last;
+}
+
+static int try_run_external(int argc, char **argv) {
+    if (has_slash(argv[0])) {
+        int node = fs_resolve(argv[0]);
+        if (node >= 0 && !g_fs_nodes[node].is_dir) {
+            int rc;
+            char *patched_argv[32];
+            int patched_argc = argc;
+
+            if (patched_argc > 31) {
+                patched_argc = 31;
+            }
+            for (int i = 0; i < patched_argc; ++i) {
+                patched_argv[i] = argv[i];
+            }
+            patched_argv[0] = (char *)path_basename(argv[0]);
+            patched_argv[patched_argc] = 0;
+            rc = lang_try_run(patched_argc, patched_argv);
+            if (rc >= 0) {
+                return rc;
+            }
+        }
+        return -1;
+    }
+
+    {
+        int rc = lang_try_run(argc, argv);
+        if (rc >= 0) {
+            return rc;
+        }
+    }
+
+    return -1;
+}
+
+static int should_prefer_external(const char *cmd) {
+    static const char *prefer_external[] = {
+        "echo",
+        "cat",
+        "pwd",
+        "true",
+        "false",
+        "printf"
+    };
+    int i;
+
+    for (i = 0; i < (int)(sizeof(prefer_external) / sizeof(prefer_external[0])); ++i) {
+        if (strcmp(cmd, prefer_external[i]) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* return value: 0 normal, 1 exit shell */
 
 static int cmd_help(int argc, char **argv) {
     (void)argc; (void)argv;
-    const char *list = "commands: pwd ls cd mkdir touch rm cat echo clear uname help exit startx history edit lua sectorc cc\n";
+    const char *list = "commands: pwd ls cd mkdir touch rm cat echo clear uname help exit startx history edit lua sectorc cc hello js ruby python\n";
     console_write(list);
     return 0;
 }
@@ -207,10 +283,23 @@ static const struct command g_commands[] = {
 };
 
 int busybox_main(int argc, char **argv) {
+    if (should_prefer_external(argv[0])) {
+        int ext = try_run_external(argc, argv);
+        if (ext >= 0) {
+            return ext;
+        }
+    }
+
     int count = (int)(sizeof(g_commands) / sizeof(g_commands[0]));
     for (int i = 0; i < count; ++i) {
         if (strcmp(argv[0], g_commands[i].name) == 0) {
             return g_commands[i].handler(argc, argv);
+        }
+    }
+    {
+        int rc = try_run_external(argc, argv);
+        if (rc >= 0) {
+            return rc;
         }
     }
     console_write("unknown command\n");

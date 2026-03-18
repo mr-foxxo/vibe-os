@@ -14,6 +14,8 @@ struct framebuffer {
 };
 
 /* Mode information for compatibility with old code */
+#ifndef VIBE_VIDEO_MODE_DEFINED
+#define VIBE_VIDEO_MODE_DEFINED
 struct video_mode {
     uint32_t fb_addr;
     uint32_t width;
@@ -21,6 +23,7 @@ struct video_mode {
     uint32_t pitch;
     uint8_t  bpp;
 };
+#endif
 
 /* Initialize video subsystem; chooses VESA first and falls back to VGA */
 void kernel_video_init(void);

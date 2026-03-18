@@ -1,0 +1,22 @@
+RS-PARAGRAPH(1)             General Commands Manual            RS-PARAGRAPH(1)
+
+NNAAMMEE
+     RS-paragraph - interaction between regular and indented paragraphs
+
+DDEESSCCRRIIPPTTIIOONN
+     BEGINTEST before paragraph
+
+     regular paragraph
+            indented paragraph
+
+            nested paragraph
+     regular text between displays
+
+            paragraph at the beginning of a display
+     regular text between displays
+            paragraph at the beginning of a display inside a paragraph
+     regular text after display
+     ENDTEST
+     end of file
+
+OpenBSD                          July 2, 2025                  RS-PARAGRAPH(1)

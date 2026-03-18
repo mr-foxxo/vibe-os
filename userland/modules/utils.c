@@ -8,15 +8,22 @@ int str_len(const char *s) {
     return n;
 }
 
+__attribute__((noinline, optimize("O0")))
 int str_eq(const char *a, const char *b) {
-    while (*a != '\0' && *b != '\0') {
-        if (*a != *b) {
+    for (;;) {
+        char ca = *a;
+        char cb = *b;
+
+        if (ca != cb) {
             return 0;
         }
+        if (ca == '\0') {
+            return 1;
+        }
+
         ++a;
         ++b;
     }
-    return *a == '\0' && *b == '\0';
 }
 
 int to_upper(int c) {

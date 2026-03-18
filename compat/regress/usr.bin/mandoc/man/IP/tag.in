@@ -1,0 +1,24 @@
+.\" $OpenBSD: tag.in,v 1.2 2023/11/24 04:53:39 schwarze Exp $
+.TH IP-TAG 1 "November 24, 2023"
+.SH NAME
+IP-tag \- automatic tagging of indented blocks
+.SH DESCRIPTION
+BEGINTEST
+initial
+text
+.IP " strong" 10n
+text
+.IP "-strong"
+text
+.IP "\&\fI \-weak\fP"
+text
+.IP "hyphen-minus"
+text
+.IP "minus\-sign"
+text
+.IP "\-strong"
+text
+.IP " strong"
+text
+.PP
+ENDTEST

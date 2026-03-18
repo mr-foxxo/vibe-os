@@ -50,11 +50,23 @@ irq12_stub:
 ; eax = syscall num
 ; ebx = arg1, ecx = arg2, edx = arg3, esi = arg4, edi = arg5
 syscall_stub:
-    ; Stack layout before we do anything:
-    ; [esp] = return address to userland
-    ; [esp-4] = saved eip (from int)
-    ; Pass arguments to syscall_dispatch_internal(eax, ebx, ecx, edx, esi, edi)
-    ; cdecl calling convention: args pushed right-to-left
+    pusha
+    cld
+    ; Saved registers after pusha:
+    ; [esp + 0]  = edi
+    ; [esp + 4]  = esi
+    ; [esp + 8]  = ebp
+    ; [esp + 12] = original esp
+    ; [esp + 16] = ebx
+    ; [esp + 20] = edx
+    ; [esp + 24] = ecx
+    ; [esp + 28] = eax
+    mov eax, [esp + 28]
+    mov ebx, [esp + 16]
+    mov ecx, [esp + 24]
+    mov edx, [esp + 20]
+    mov esi, [esp + 4]
+    mov edi, [esp + 0]
     push edi
     push esi
     push edx
@@ -62,7 +74,9 @@ syscall_stub:
     push ebx
     push eax
     call syscall_dispatch_internal
-    add esp, 24    ; remove pushed args; esp back to CPU-saved frame
+    add esp, 24
+    mov [esp + 28], eax
+    popa
     iretd
 
 ; exception stubs - invoke C handler and halt (via iretd)

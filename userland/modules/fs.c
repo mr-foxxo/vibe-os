@@ -49,12 +49,48 @@ static uint32_t fs_checksum_bytes(const uint8_t *data, int size) {
 }
 
 static int fs_validate_loaded_tree(void) {
+    int i;
+
     if (g_fs_root < 0 || g_fs_root >= FS_MAX_NODES) {
         return 0;
     }
     if (!g_fs_nodes[g_fs_root].used || !g_fs_nodes[g_fs_root].is_dir) {
         return 0;
     }
+    if (g_fs_nodes[g_fs_root].parent != g_fs_root) {
+        return 0;
+    }
+
+    for (i = 0; i < FS_MAX_NODES; ++i) {
+        int child;
+        int guard = 0;
+
+        if (!g_fs_nodes[i].used) {
+            continue;
+        }
+
+        if (i != g_fs_root) {
+            int p = g_fs_nodes[i].parent;
+            if (p < 0 || p >= FS_MAX_NODES || !g_fs_nodes[p].used || !g_fs_nodes[p].is_dir) {
+                return 0;
+            }
+        }
+
+        child = g_fs_nodes[i].first_child;
+        while (child != -1) {
+            if (++guard > FS_MAX_NODES) {
+                return 0;
+            }
+            if (child < 0 || child >= FS_MAX_NODES || !g_fs_nodes[child].used) {
+                return 0;
+            }
+            if (g_fs_nodes[child].parent != i) {
+                return 0;
+            }
+            child = g_fs_nodes[child].next_sibling;
+        }
+    }
+
     if (g_fs_cwd < 0 || g_fs_cwd >= FS_MAX_NODES || !g_fs_nodes[g_fs_cwd].used) {
         g_fs_cwd = g_fs_root;
     }
@@ -117,8 +153,12 @@ static int fs_alloc_node(void) {
 
 static int fs_find_child(int parent, const char *name) {
     int child = g_fs_nodes[parent].first_child;
+    int guard = 0;
 
     while (child != -1) {
+        if (++guard > FS_MAX_NODES) {
+            return -1;
+        }
         if (g_fs_nodes[child].used && str_eq(g_fs_nodes[child].name, name)) {
             return child;
         }
@@ -137,8 +177,12 @@ static void fs_link_child(int parent, int child) {
 static void fs_unlink_child(int parent, int child) {
     int cur = g_fs_nodes[parent].first_child;
     int prev = -1;
+    int guard = 0;
 
     while (cur != -1) {
+        if (++guard > FS_MAX_NODES) {
+            return;
+        }
         if (cur == child) {
             if (prev == -1) {
                 g_fs_nodes[parent].first_child = g_fs_nodes[cur].next_sibling;
@@ -483,6 +527,11 @@ void fs_build_path(int node, char *out, int max_len) {
         stack[top++] = node;
         node = g_fs_nodes[node].parent;
     }
+    if (top >= FS_MAX_NODES) {
+        out[0] = '/';
+        out[1] = '\0';
+        return;
+    }
 
     out[pos++] = '/';
     for (i = top - 1; i >= 0; --i) {
@@ -499,6 +548,35 @@ void fs_build_path(int node, char *out, int max_len) {
 
 void fs_init(void) {
     int i;
+    static const char *compat_exec_stubs[] = {
+        "/bin/hello",
+        "/bin/js",
+        "/bin/ruby",
+        "/bin/python",
+        "/bin/head",
+        "/bin/tail",
+        "/bin/grep",
+        "/bin/loadkeys",
+        "/bin/pwd",
+        "/bin/sleep",
+        "/bin/rmdir",
+        "/usr/bin/head",
+        "/usr/bin/tail",
+        "/usr/bin/grep",
+        "/usr/bin/pwd",
+        "/usr/bin/sleep",
+        "/usr/bin/rmdir",
+        "/compat/bin/echo",
+        "/compat/bin/cat",
+        "/compat/bin/wc",
+        "/compat/bin/pwd",
+        "/compat/bin/head",
+        "/compat/bin/sleep",
+        "/compat/bin/rmdir",
+        "/compat/bin/tail",
+        "/compat/bin/grep",
+        "/compat/bin/loadkeys"
+    };
 
     g_fs_sync_suspended = 1;
     for (i = 0; i < FS_MAX_NODES; ++i) {
@@ -519,6 +597,10 @@ void fs_init(void) {
 
     /* create a minimal UNIX-like hierarchy */
     (void)fs_create("/bin", 1);
+    (void)fs_create("/usr", 1);
+    (void)fs_create("/usr/bin", 1);
+    (void)fs_create("/compat", 1);
+    (void)fs_create("/compat/bin", 1);
     (void)fs_create("/home", 1);
     (void)fs_create("/home/user", 1);
     (void)fs_create("/tmp", 1);
@@ -536,6 +618,9 @@ void fs_init(void) {
                         "  print(\"hello from sectorc\");\n"
                         "}\n",
                         0);
+    for (i = 0; i < (int)(sizeof(compat_exec_stubs) / sizeof(compat_exec_stubs[0])); ++i) {
+        (void)fs_write_file(compat_exec_stubs[i], "", 0);
+    }
     g_fs_sync_suspended = 0;
     fs_sync();
 }

@@ -1,0 +1,30 @@
+#!/bin/ksh
+#
+# $OpenBSD: spamlogd,v 1.9 2025/12/06 11:04:45 kn Exp $
+
+daemon="/usr/libexec/spamlogd"
+
+. /etc/rc.d/rc.subr
+
+rc_reload=NO
+
+rc_pre() {
+	local _opt pflog=pflog0
+
+	while getopts :l: _opt $daemon_flags; do
+		[[ $_opt == l ]] && pflog=$OPTARG
+	done
+
+	if pfctl -si | grep -q Enabled; then
+		ifconfig $pflog create
+		if ifconfig $pflog; then
+			ifconfig $pflog up
+		else
+			return 1
+		fi
+	else
+		return 1
+	fi
+}
+
+rc_cmd $1

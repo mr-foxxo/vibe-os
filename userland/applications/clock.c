@@ -58,7 +58,7 @@ void clock_draw_window(struct clock_state *c, int active,
     int bar_w;
 
     draw_window_frame(&c->window, "RELOGIO", active, min_hover, max_hover, close_hover);
-    ui_draw_surface(&body, ui_color_panel());
+    ui_draw_surface(&body, theme->window_bg);
     ui_draw_inset(&face, ui_color_canvas());
 
     clock_format(time_text, c->tick_count);

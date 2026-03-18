@@ -1,0 +1,22 @@
+/*	$OpenBSD: uprofile.bt,v 1.2 2025/10/05 22:31:54 sashan Exp $	*/
+
+/*
+ * uprofile.bt	Userland profiling (stack sampling) at 100Hz.
+ *
+ * To produce a FlameGraph process the output with stackcollapse-bpftrace.pl
+ * and flamegraph.pl found in:
+ *	https://github.com/brendangregg/FlameGraph
+ *
+ * The PID of the to be monitored process is the first optional argument to
+ * btrace(8).
+ *
+ * To collect profiling data for process with pid 12345 one uses uprofile.bt
+ * script as follows:
+ *     btrace /usr/share/btrace/uprofile.bt 12345
+ * after hitting Ctrl+C the btrace process terminates  and writes collected
+ * profiling data to standard output.  This only works for ELF objects which
+ * are compiled with -fno-omit-frame-pointer.
+ */
+profile:hz:100 / pid == $1 / {
+	@[ustack] = count();
+}

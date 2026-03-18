@@ -4,9 +4,9 @@
 #include <userland/modules/include/utils.h>
 #include <userland/modules/include/fs.h>
 
-#define TERM_COLS 30
+#define TERM_COLS 256
 #define TERM_ROWS 14
-#define INPUT_MAX 46
+#define INPUT_MAX 128
 
 /* each terminal instance */
 struct terminal_state {

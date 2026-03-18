@@ -1,0 +1,51 @@
+LL-BASIC(1)                 General Commands Manual                LL-BASIC(1)
+
+NNAAMMEE
+     llll--bbaassiicc - changing the line length
+
+DDEESSCCRRIIPPTTIIOONN
+     This is a longer text to demonstrate the default line length.  In ASCII
+     mode, it is expected to break at column 78.
+
+     This is another long text to
+     demonstrate shorter lines.  In
+     ASCII mode, it is expected to
+     break at column 38.
+
+     This is a longer text after switching back to the default line length.
+     In ASCII mode, it is expected to break at column 78.
+
+     This is another long text to demonstrate longer lines.  In ASCII mode, it is not expected to break at all.
+
+     This is a longer text after switching to an invalid line length.  In
+     ASCII mode, it is expected to break at column 78.
+
+     This is another long text after reducing the line
+     length (-18n).  In ASCII mode, it is expected to break
+     at column 60.
+
+     This is another long text after increasing the line length again (+18n).
+     In ASCII mode, it is again expected to break at column 78.
+
+     Now the line length was reduced using two signs
+     (-+18n).  In ASCII mode, this paragraph is expected to
+     break at column 60.
+
+     Now the line length was increased using two signs (++18n).  In ASCII
+     mode, this paragraph is expected to break at column 78.
+
+     Now the line length was reduced using two signs in the
+     opposite order (+-18n).  In ASCII mode, this paragraph
+     is expected to break at column 60.
+
+     Now the line length was increased using double minus (--18n).  In ASCII
+     mode, this paragraph is expected to break at column 78.
+
+     Now the line length was reduced using triple minus
+     (---18n).  In ASCII mode, this paragraph is expected to
+     break at column 60.
+
+     And finally, the line length was increased using tree signs (-+-18n).  In
+     ASCII mode, this paragraph is again expected to break at column 78.
+
+OpenBSD                         January 6, 2026                    LL-BASIC(1)

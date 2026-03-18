@@ -1,0 +1,21 @@
+.\" $OpenBSD: broken.in,v 1.4 2020/09/09 16:57:05 schwarze Exp $
+.TH TP-BROKEN 1 "September 9, 2020"
+.SH NAME
+TP-broken \- broken tagged paragraphs
+.SH DESCRIPTION
+regular
+text
+.RS 4n
+indented
+text
+.TP
+.RE
+regular
+text
+.TP
+
+head
+body
+.TP
+.B
+.I
