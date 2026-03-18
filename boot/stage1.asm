@@ -8,9 +8,8 @@ ORG 0x7C00
 %define E820_BUF 0x8020
 %define MIN_USABLE_ADDR 0x00100000
 ; Number of 512-byte sectors to read for the kernel image.
-; The current kernel.bin is ~170 KiB (~332 sectors) after embedding
-; userland, Lua, SectorC and the desktop apps. Load 384 sectors for headroom.
-%define KERNEL_SECTORS 384
+; DOOM full port significantly increases kernel.bin size, so keep a wide margin.
+%define KERNEL_SECTORS 1024
 
 %define CODE_SEG 0x08
 %define DATA_SEG 0x10

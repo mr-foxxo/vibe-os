@@ -77,7 +77,10 @@ static int should_prefer_external(const char *cmd) {
     static const char *prefer_external[] = {
         "echo",
         "cat",
-        "pwd"
+        "pwd",
+        "true",
+        "false",
+        "printf"
     };
     int i;
 

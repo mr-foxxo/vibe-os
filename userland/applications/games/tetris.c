@@ -1,4 +1,4 @@
-#include <userland/applications/include/tetris.h>
+#include <userland/applications/include/games/tetris.h>
 #include <userland/modules/include/ui.h>
 #include <userland/modules/include/syscalls.h>
 
@@ -266,13 +266,15 @@ void tetris_draw_window(struct tetris_state *tetris, int active,
     const struct desktop_theme *theme = ui_theme_get();
     char score[24];
 
-    draw_window_frame(&tetris->window, "TETRIS", active, min_hover, max_hover, close_hover);
-    sys_rect(tetris->window.x + 4, tetris->window.y + 18, tetris->window.w - 8, tetris->window.h - 22, 0);
-    sys_rect(board.x, board.y, board.w, board.h, 1);
+    draw_window_frame(&tetris->window, "TETRAX", active, min_hover, max_hover, close_hover);
+    ui_draw_surface(&(struct rect){tetris->window.x + 4, tetris->window.y + 18,
+                                   tetris->window.w - 8, tetris->window.h - 22},
+                    ui_color_canvas());
+    ui_draw_inset(&board, ui_color_canvas());
 
     for (int y = 0; y < TETRIS_ROWS; ++y) {
         for (int x = 0; x < TETRIS_COLS; ++x) {
-            uint8_t color = 0;
+            uint8_t color = ui_color_canvas();
             if (tetris->board[y][x] != 0u) {
                 color = g_tetris_colors[tetris->board[y][x] - 1u];
             }

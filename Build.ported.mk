@@ -444,6 +444,117 @@ $(LOADKEYS_APP): $(LOADKEYS_ELF)
 
 ported-loadkeys: $(LOADKEYS_APP)
 
+# === TRUE APP ===
+
+TRUE_SRCS := applications/ported/true/true.c
+TRUE_OBJS := build/ported/true.o \
+	build/app_entry_true.o \
+	build/app_runtime_true.o
+
+TRUE_ELF := build/ported/true.elf
+TRUE_APP := build/ported/true.app
+
+build/app_entry_true.o: $(APP_ENTRY) | build
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(INCLUDES) \
+		-DVIBE_APP_BUILD_NAME=\"true\" \
+		-DVIBE_APP_BUILD_HEAP_SIZE=65536u \
+		-c $< -o $@
+
+build/app_runtime_true.o: $(APP_RUNTIME) | build
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+
+build/ported/true.o: $(TRUE_SRCS) $(COMPAT_LIB) | build
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+
+$(TRUE_ELF): $(TRUE_OBJS) $(COMPAT_LIB) linker/app.ld | build
+	@mkdir -p $(dir $@)
+	$(LD) $(LDFLAGS) $(TRUE_OBJS) $(COMPAT_LIB) -o $@
+
+$(TRUE_APP): $(TRUE_ELF)
+	@mkdir -p $(dir $@)
+	$(OBJCOPY) -O binary $< $@
+	$(PYTHON) tools/patch_app_header.py --nm $(NM) --elf $< --bin $@
+	@echo "✓ True app: $@"
+
+ported-true: $(TRUE_APP)
+
+# === FALSE APP ===
+
+FALSE_SRCS := applications/ported/false/false.c
+FALSE_OBJS := build/ported/false.o \
+	build/app_entry_false.o \
+	build/app_runtime_false.o
+
+FALSE_ELF := build/ported/false.elf
+FALSE_APP := build/ported/false.app
+
+build/app_entry_false.o: $(APP_ENTRY) | build
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(INCLUDES) \
+		-DVIBE_APP_BUILD_NAME=\"false\" \
+		-DVIBE_APP_BUILD_HEAP_SIZE=65536u \
+		-c $< -o $@
+
+build/app_runtime_false.o: $(APP_RUNTIME) | build
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+
+build/ported/false.o: $(FALSE_SRCS) $(COMPAT_LIB) | build
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+
+$(FALSE_ELF): $(FALSE_OBJS) $(COMPAT_LIB) linker/app.ld | build
+	@mkdir -p $(dir $@)
+	$(LD) $(LDFLAGS) $(FALSE_OBJS) $(COMPAT_LIB) -o $@
+
+$(FALSE_APP): $(FALSE_ELF)
+	@mkdir -p $(dir $@)
+	$(OBJCOPY) -O binary $< $@
+	$(PYTHON) tools/patch_app_header.py --nm $(NM) --elf $< --bin $@
+	@echo "✓ False app: $@"
+
+ported-false: $(FALSE_APP)
+
+# === PRINTF APP ===
+
+PRINTF_SRCS := applications/ported/printf/printf.c
+PRINTF_OBJS := build/ported/printf.o \
+	build/app_entry_printf.o \
+	build/app_runtime_printf.o
+
+PRINTF_ELF := build/ported/printf.elf
+PRINTF_APP := build/ported/printf.app
+
+build/app_entry_printf.o: $(APP_ENTRY) | build
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(INCLUDES) \
+		-DVIBE_APP_BUILD_NAME=\"printf\" \
+		-DVIBE_APP_BUILD_HEAP_SIZE=65536u \
+		-c $< -o $@
+
+build/app_runtime_printf.o: $(APP_RUNTIME) | build
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+
+build/ported/printf.o: $(PRINTF_SRCS) $(COMPAT_LIB) | build
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+
+$(PRINTF_ELF): $(PRINTF_OBJS) $(COMPAT_LIB) linker/app.ld | build
+	@mkdir -p $(dir $@)
+	$(LD) $(LDFLAGS) $(PRINTF_OBJS) $(COMPAT_LIB) -o $@
+
+$(PRINTF_APP): $(PRINTF_ELF)
+	@mkdir -p $(dir $@)
+	$(OBJCOPY) -O binary $< $@
+	$(PYTHON) tools/patch_app_header.py --nm $(NM) --elf $< --bin $@
+	@echo "✓ Printf app: $@"
+
+ported-printf: $(PRINTF_APP)
+
 # === SED APP ===
 
 SED_SRCS := $(wildcard applications/ported/sed/*.c)
@@ -518,6 +629,15 @@ ported-sed-clean:
 ported-loadkeys-clean:
 	rm -f $(LOADKEYS_OBJS) $(LOADKEYS_ELF) $(LOADKEYS_APP)
 
-ported-clean: ported-echo-clean ported-cat-clean ported-wc-clean ported-pwd-clean ported-head-clean ported-sleep-clean ported-rmdir-clean ported-tail-clean ported-grep-clean ported-sed-clean ported-loadkeys-clean
+ported-true-clean:
+	rm -f $(TRUE_OBJS) $(TRUE_ELF) $(TRUE_APP)
 
-.PHONY: ported-echo ported-cat ported-wc ported-pwd ported-head ported-sleep ported-rmdir ported-tail ported-grep ported-sed ported-loadkeys ported-clean ported-echo-clean ported-cat-clean ported-wc-clean ported-pwd-clean ported-head-clean ported-sleep-clean ported-rmdir-clean ported-tail-clean ported-grep-clean ported-sed-clean ported-loadkeys-clean
+ported-false-clean:
+	rm -f $(FALSE_OBJS) $(FALSE_ELF) $(FALSE_APP)
+
+ported-printf-clean:
+	rm -f $(PRINTF_OBJS) $(PRINTF_ELF) $(PRINTF_APP)
+
+ported-clean: ported-echo-clean ported-cat-clean ported-wc-clean ported-pwd-clean ported-head-clean ported-sleep-clean ported-rmdir-clean ported-tail-clean ported-grep-clean ported-sed-clean ported-loadkeys-clean ported-true-clean ported-false-clean ported-printf-clean
+
+.PHONY: ported-echo ported-cat ported-wc ported-pwd ported-head ported-sleep ported-rmdir ported-tail ported-grep ported-sed ported-loadkeys ported-true ported-false ported-printf ported-clean ported-echo-clean ported-cat-clean ported-wc-clean ported-pwd-clean ported-head-clean ported-sleep-clean ported-rmdir-clean ported-tail-clean ported-grep-clean ported-sed-clean ported-loadkeys-clean ported-true-clean ported-false-clean ported-printf-clean

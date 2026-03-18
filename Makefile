@@ -121,8 +121,8 @@ BUILD_DIR := build
 BOOT_DIR := boot
 USERLAND_DIR := userland
 LINKER_DIR := linker
-BOOT_KERNEL_SECTORS := 384
-APPFS_DIRECTORY_LBA := 385
+BOOT_KERNEL_SECTORS := 1024
+APPFS_DIRECTORY_LBA := 1025
 APPFS_DIRECTORY_SECTORS := 8
 APPFS_APP_AREA_SECTORS := 1536
 
@@ -192,9 +192,132 @@ USERLAND_SRCS := \
 	$(USERLAND_DIR)/applications/taskmgr.c \
 	$(USERLAND_DIR)/applications/calculator.c \
 	$(USERLAND_DIR)/applications/sketchpad.c \
-	$(USERLAND_DIR)/applications/snake.c \
-	$(USERLAND_DIR)/applications/tetris.c
+	$(USERLAND_DIR)/applications/games/snake.c \
+	$(USERLAND_DIR)/applications/games/tetris.c \
+	$(USERLAND_DIR)/applications/games/pacman.c \
+	$(USERLAND_DIR)/applications/games/space_invaders.c \
+	$(USERLAND_DIR)/applications/games/pong.c \
+	$(USERLAND_DIR)/applications/games/donkey_kong.c \
+	$(USERLAND_DIR)/applications/games/brick_race.c \
+	$(USERLAND_DIR)/applications/games/flap_birb.c \
+	$(USERLAND_DIR)/applications/games/doom.c \
+	$(USERLAND_DIR)/applications/games/doom_port/doom_port_main.c \
+	$(USERLAND_DIR)/applications/games/doom_port/doom_libc_shim.c \
+	$(USERLAND_DIR)/applications/games/doom_port/i_system_vibe.c \
+	$(USERLAND_DIR)/applications/games/doom_port/i_video_vibe.c \
+	$(USERLAND_DIR)/applications/games/doom_port/i_sound_vibe.c \
+	$(USERLAND_DIR)/applications/games/doom_port/i_net_vibe.c
 USERLAND_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(USERLAND_SRCS))
+
+DOOM_SRC_DIR := $(USERLAND_DIR)/applications/games/DOOM/linuxdoom-1.10
+DOOM_CORE_SRCS := \
+	$(DOOM_SRC_DIR)/doomdef.c \
+	$(DOOM_SRC_DIR)/doomstat.c \
+	$(DOOM_SRC_DIR)/dstrings.c \
+	$(DOOM_SRC_DIR)/tables.c \
+	$(DOOM_SRC_DIR)/f_finale.c \
+	$(DOOM_SRC_DIR)/f_wipe.c \
+	$(DOOM_SRC_DIR)/d_main.c \
+	$(DOOM_SRC_DIR)/d_net.c \
+	$(DOOM_SRC_DIR)/d_items.c \
+	$(DOOM_SRC_DIR)/g_game.c \
+	$(DOOM_SRC_DIR)/m_menu.c \
+	$(DOOM_SRC_DIR)/m_misc.c \
+	$(DOOM_SRC_DIR)/m_argv.c \
+	$(DOOM_SRC_DIR)/m_bbox.c \
+	$(DOOM_SRC_DIR)/m_fixed.c \
+	$(DOOM_SRC_DIR)/m_swap.c \
+	$(DOOM_SRC_DIR)/m_cheat.c \
+	$(DOOM_SRC_DIR)/m_random.c \
+	$(DOOM_SRC_DIR)/am_map.c \
+	$(DOOM_SRC_DIR)/p_ceilng.c \
+	$(DOOM_SRC_DIR)/p_doors.c \
+	$(DOOM_SRC_DIR)/p_enemy.c \
+	$(DOOM_SRC_DIR)/p_floor.c \
+	$(DOOM_SRC_DIR)/p_inter.c \
+	$(DOOM_SRC_DIR)/p_lights.c \
+	$(DOOM_SRC_DIR)/p_map.c \
+	$(DOOM_SRC_DIR)/p_maputl.c \
+	$(DOOM_SRC_DIR)/p_plats.c \
+	$(DOOM_SRC_DIR)/p_pspr.c \
+	$(DOOM_SRC_DIR)/p_setup.c \
+	$(DOOM_SRC_DIR)/p_sight.c \
+	$(DOOM_SRC_DIR)/p_spec.c \
+	$(DOOM_SRC_DIR)/p_switch.c \
+	$(DOOM_SRC_DIR)/p_mobj.c \
+	$(DOOM_SRC_DIR)/p_telept.c \
+	$(DOOM_SRC_DIR)/p_tick.c \
+	$(DOOM_SRC_DIR)/p_saveg.c \
+	$(DOOM_SRC_DIR)/p_user.c \
+	$(DOOM_SRC_DIR)/r_bsp.c \
+	$(DOOM_SRC_DIR)/r_data.c \
+	$(DOOM_SRC_DIR)/r_draw.c \
+	$(DOOM_SRC_DIR)/r_main.c \
+	$(DOOM_SRC_DIR)/r_plane.c \
+	$(DOOM_SRC_DIR)/r_segs.c \
+	$(DOOM_SRC_DIR)/r_sky.c \
+	$(DOOM_SRC_DIR)/r_things.c \
+	$(DOOM_SRC_DIR)/w_wad.c \
+	$(DOOM_SRC_DIR)/wi_stuff.c \
+	$(DOOM_SRC_DIR)/v_video.c \
+	$(DOOM_SRC_DIR)/st_lib.c \
+	$(DOOM_SRC_DIR)/st_stuff.c \
+	$(DOOM_SRC_DIR)/hu_stuff.c \
+	$(DOOM_SRC_DIR)/hu_lib.c \
+	$(DOOM_SRC_DIR)/s_sound.c \
+	$(DOOM_SRC_DIR)/z_zone.c \
+	$(DOOM_SRC_DIR)/info.c \
+	$(DOOM_SRC_DIR)/sounds.c
+DOOM_CORE_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(DOOM_CORE_SRCS))
+DOOM_SYMBOL_REMAP = \
+	-Dstdout=doom_stdout \
+	-Dstderr=doom_stderr \
+	-Dsndserver_filename=doom_sndserver_filename \
+	-Datoi=doom_atoi \
+	-Dstrcat=doom_strcat \
+	-Dstrcasecmp=doom_strcasecmp \
+	-Dstrncasecmp=doom_strncasecmp \
+	-Dvsnprintf=doom_vsnprintf \
+	-Dsnprintf=doom_snprintf \
+	-Dvsprintf=doom_vsprintf \
+	-Dsprintf=doom_sprintf \
+	-Dvprintf=doom_vprintf \
+	-Dprintf=doom_printf \
+	-Dvfprintf=doom_vfprintf \
+	-Dfprintf=doom_fprintf \
+	-Dputchar=doom_putchar \
+	-Dgetchar=doom_getchar \
+	-Dputs=doom_puts \
+	-Dfputc=doom_fputc \
+	-Dfwrite=doom_fwrite \
+	-Dfflush=doom_fflush \
+	-Dfseek=doom_fseek \
+	-Dftell=doom_ftell \
+	-Dsetbuf=doom_setbuf \
+	-Dsscanf=doom_sscanf \
+	-Dfscanf=doom_fscanf \
+	-Daccess=doom_access \
+	-Dmkdir=doom_mkdir \
+	-Dopen=doom_open \
+	-Dclose=doom_close \
+	-Dread=doom_read \
+	-Dwrite=doom_write \
+	-Dlseek=doom_lseek \
+	-Dfstat=doom_fstat \
+	-Dexit=doom_exit
+DOOM_CFLAGS = -m32 -Os -ffreestanding -fno-pic -fno-pie -fno-stack-protector -fno-builtin -nostdlib -Wall -Wextra -I. -Iheaders -Iuserland -Ilang/include -Iuserland/lua/include -Iuserland/lua/vendor/lua-5.4.6/src -Ilang/vendor/quickjs-ng -Ilang/vendor/mruby/include -Ilang/vendor/micropython -Ilang/glibc/include -DNORMALUNIX -DLINUX -DSEEK_SET=0 -DSEEK_CUR=1 -DSEEK_END=2 -include stdio.h -include stdlib.h -include string.h -Wno-sequence-point -Wno-unused-const-variable -Wno-unused-but-set-variable $(DOOM_SYMBOL_REMAP)
+DOOM_PORT_SRC_DIR := $(USERLAND_DIR)/applications/games/doom_port
+DOOM_PORT_CFLAGS = $(CFLAGS) $(DOOM_SYMBOL_REMAP)
+
+USERLAND_OBJS += $(DOOM_CORE_OBJS)
+
+$(BUILD_DIR)/$(DOOM_SRC_DIR)/%.o: $(DOOM_SRC_DIR)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(DOOM_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/$(DOOM_PORT_SRC_DIR)/%.o: $(DOOM_PORT_SRC_DIR)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(DOOM_PORT_CFLAGS) -c $< -o $@
 
 # QuickJS wrapper - separate app build (see below)
 # QUICKJS_SRCS := lang/apps/js/quickjs_wrapper.c
@@ -280,8 +403,11 @@ LOADKEYS_APP_BIN := $(BUILD_DIR)/ported/loadkeys.app
 PWD_APP_BIN := $(BUILD_DIR)/ported/pwd.app
 SLEEP_APP_BIN := $(BUILD_DIR)/ported/sleep.app
 RMDIR_APP_BIN := $(BUILD_DIR)/ported/rmdir.app
+TRUE_APP_BIN := $(BUILD_DIR)/ported/true.app
+FALSE_APP_BIN := $(BUILD_DIR)/ported/false.app
+PRINTF_APP_BIN := $(BUILD_DIR)/ported/printf.app
 
-LANG_APP_BINS := $(HELLO_APP_BIN) $(JS_APP_BIN) $(RUBY_APP_BIN) $(PYTHON_APP_BIN) $(ECHO_APP_BIN) $(CAT_APP_BIN) $(WC_APP_BIN) $(PWD_APP_BIN) $(HEAD_APP_BIN) $(SLEEP_APP_BIN) $(RMDIR_APP_BIN) $(TAIL_APP_BIN) $(GREP_APP_BIN) $(LOADKEYS_APP_BIN)
+LANG_APP_BINS := $(HELLO_APP_BIN) $(JS_APP_BIN) $(RUBY_APP_BIN) $(PYTHON_APP_BIN) $(ECHO_APP_BIN) $(CAT_APP_BIN) $(WC_APP_BIN) $(PWD_APP_BIN) $(HEAD_APP_BIN) $(SLEEP_APP_BIN) $(RMDIR_APP_BIN) $(TAIL_APP_BIN) $(GREP_APP_BIN) $(LOADKEYS_APP_BIN) $(TRUE_APP_BIN) $(FALSE_APP_BIN) $(PRINTF_APP_BIN)
 
 # Include compatibility layer build rules
 include Build.compat.mk
@@ -421,10 +547,10 @@ $(PYTHON_APP_BIN): $(PYTHON_APP_ELF)
 
 # Ported GNU apps (echo, cat, wc, head, tail, grep, etc)
 # Built via Build.ported.mk
-$(ECHO_APP_BIN) $(CAT_APP_BIN) $(WC_APP_BIN) $(PWD_APP_BIN) $(HEAD_APP_BIN) $(SLEEP_APP_BIN) $(RMDIR_APP_BIN) $(TAIL_APP_BIN) $(GREP_APP_BIN) $(LOADKEYS_APP_BIN): $(COMPAT_LIB)
+$(ECHO_APP_BIN) $(CAT_APP_BIN) $(WC_APP_BIN) $(PWD_APP_BIN) $(HEAD_APP_BIN) $(SLEEP_APP_BIN) $(RMDIR_APP_BIN) $(TAIL_APP_BIN) $(GREP_APP_BIN) $(LOADKEYS_APP_BIN) $(TRUE_APP_BIN) $(FALSE_APP_BIN) $(PRINTF_APP_BIN): $(COMPAT_LIB)
 	@$(MAKE) -f Build.ported.mk \
 		CC="$(CC)" LD="$(LD)" OBJCOPY="$(OBJCOPY)" NM="$(NM)" AR="$(AR)" RANLIB="$(RANLIB)" \
-		ported-echo ported-cat ported-wc ported-pwd ported-head ported-sleep ported-rmdir ported-tail ported-grep ported-loadkeys 2>&1 | grep -v "^make\|Leaving\|Entering"
+		ported-echo ported-cat ported-wc ported-pwd ported-head ported-sleep ported-rmdir ported-tail ported-grep ported-loadkeys ported-true ported-false ported-printf 2>&1 | grep -v "^make\|Leaving\|Entering"
 
 $(IMAGE): $(BOOT_BIN) $(KERNEL_BIN) $(LANG_APP_BINS)
 	dd if=/dev/zero of=$@ bs=1474560 count=1

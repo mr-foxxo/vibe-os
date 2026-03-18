@@ -23,13 +23,13 @@ static struct {
 } g_wallpaper = {0, -1, 0, 0, {{0}}};
 
 #define TASKBAR_HEIGHT 22
-#define START_MENU_WIDTH 176
-#define START_MENU_HEIGHT 204
-#define START_MENU_ITEM_X 10
-#define START_MENU_ITEM_Y 34
-#define START_MENU_ITEM_W 156
-#define START_MENU_ITEM_H 14
-#define START_MENU_ITEM_STEP 16
+#define START_MENU_WIDTH 368
+#define START_MENU_HEIGHT 390
+#define START_MENU_ITEM_X 16
+#define START_MENU_ITEM_Y 94
+#define START_MENU_ITEM_W 336
+#define START_MENU_ITEM_H 20
+#define START_MENU_ITEM_STEP 26
 #define UI_SETTINGS_PATH "/config/ui.cfg"
 #define UI_CANVAS_COLOR 1u
 #define UI_PANEL_COLOR 8u
@@ -636,9 +636,16 @@ static const char *app_caption(enum app_type type) {
     case APP_CALCULATOR: return "Calc";
     case APP_SKETCHPAD: return "Sketch";
     case APP_SNAKE: return "Snake";
-    case APP_TETRIS: return "Tetris";
+    case APP_TETRIS: return "Tetrax";
+    case APP_PACMAN: return "Pacpac";
+    case APP_SPACE_INVADERS: return "Aliens";
+    case APP_PONG: return "Pong";
+    case APP_DONKEY_KONG: return "Monkey Dong";
+    case APP_BRICK_RACE: return "Race";
+    case APP_FLAP_BIRB: return "Flap";
+    case APP_DOOM: return "DOOM";
     case APP_PERSONALIZE: return "Cores";
-    default: return "App";
+    default: return "";
     }
 }
 
@@ -663,39 +670,6 @@ void draw_window_frame(const struct rect *w, const char *title,
     ui_draw_button(&close, "X", UI_BUTTON_DANGER, close_hover);
 }
 
-static void draw_start_menu(int taskbar_y,
-                            const int *menu_item_hover) {
-    static const char *labels[START_MENU_ITEM_COUNT] = {
-        "Terminal",
-        "Relogio",
-        "Arquivos",
-        "Editor",
-        "Tasks",
-        "Calculadora",
-        "Sketchpad",
-        "Snake",
-        "Tetris",
-        "Encerrar sessao"
-    };
-    const struct rect menu_rect = {2, taskbar_y - START_MENU_HEIGHT, START_MENU_WIDTH, START_MENU_HEIGHT};
-    const struct rect header = {menu_rect.x + 8, menu_rect.y + 8, menu_rect.w - 16, 18};
-
-    ui_draw_surface(&menu_rect, g_theme.menu);
-    ui_draw_button(&header, "VIBE DESKTOP", UI_BUTTON_ACTIVE, 0);
-
-    for (int i = 0; i < START_MENU_ITEM_COUNT; ++i) {
-        struct rect item = ui_start_menu_item_rect(i);
-        if (i == START_MENU_LOGOUT) {
-            sys_rect(item.x, item.y - 6, item.w, 1, UI_MUTED_COLOR);
-        }
-        ui_draw_button(&item,
-                       labels[i],
-                       i == START_MENU_LOGOUT ? UI_BUTTON_DANGER :
-                                                (menu_item_hover[i] ? UI_BUTTON_ACTIVE : UI_BUTTON_NORMAL),
-                       menu_item_hover[i]);
-    }
-}
-
 static void draw_taskbar(const struct window *wins, int win_count, int focused, int start_hover) {
     const int taskbar_y = (int)SCREEN_HEIGHT - TASKBAR_HEIGHT;
     struct rect start_button = ui_taskbar_start_button_rect();
@@ -710,6 +684,9 @@ static void draw_taskbar(const struct window *wins, int win_count, int focused, 
         struct rect button;
 
         if (!wins[i].active) {
+            continue;
+        }
+        if (wins[i].type <= APP_NONE || wins[i].type > APP_PERSONALIZE) {
             continue;
         }
 
@@ -752,8 +729,7 @@ void draw_desktop(const struct mouse_state *mouse,
 
     draw_taskbar(wins, win_count, focused, start_hover);
 
-    if (menu_open) {
-        draw_start_menu((int)SCREEN_HEIGHT - TASKBAR_HEIGHT, menu_item_hover);
-    }
+    (void)menu_open;
+    (void)menu_item_hover;
     (void)mouse;
 }

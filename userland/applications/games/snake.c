@@ -1,4 +1,4 @@
-#include <userland/applications/include/snake.h>
+#include <userland/applications/include/games/snake.h>
 #include <userland/modules/include/ui.h>
 #include <userland/modules/include/syscalls.h>
 
@@ -188,18 +188,20 @@ void snake_draw_window(struct snake_state *snake, int active,
     char score[24];
 
     draw_window_frame(&snake->window, "SNAKE", active, min_hover, max_hover, close_hover);
-    sys_rect(snake->window.x + 4, snake->window.y + 18, snake->window.w - 8, snake->window.h - 22, 0);
-    sys_rect(board.x, board.y, board.w, board.h, 1);
+    ui_draw_surface(&(struct rect){snake->window.x + 4, snake->window.y + 18,
+                                   snake->window.w - 8, snake->window.h - 22},
+                    ui_color_canvas());
+    ui_draw_inset(&board, ui_color_canvas());
 
     for (int y = 0; y < SNAKE_GRID_H; ++y) {
         for (int x = 0; x < SNAKE_GRID_W; ++x) {
-            sys_rect(board.x + (x * 8), board.y + (y * 8), 7, 7, 0);
+            sys_rect(board.x + (x * 8), board.y + (y * 8), 7, 7, ui_color_canvas());
         }
     }
 
-    sys_rect(board.x + (snake->food_x * 8), board.y + (snake->food_y * 8), 7, 7, 12);
+    sys_rect(board.x + (snake->food_x * 8), board.y + (snake->food_y * 8), 7, 7, theme->menu_button_inactive);
     for (int i = snake->length - 1; i >= 0; --i) {
-        uint8_t color = (i == 0) ? 14 : 10;
+        uint8_t color = (i == 0) ? theme->menu_button : theme->window;
         sys_rect(board.x + (snake->body_x[i] * 8), board.y + (snake->body_y[i] * 8), 7, 7, color);
     }
 
