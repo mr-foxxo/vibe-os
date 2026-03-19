@@ -2,8 +2,8 @@
 #include <userland/modules/include/utils.h>
 
 void D_DoomMain(void);
-int myargc;
-char **myargv;
+extern int myargc;
+extern char **myargv;
 
 static int g_quit = 0;
 static int g_code = 0;
