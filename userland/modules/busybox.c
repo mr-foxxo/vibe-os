@@ -9,6 +9,31 @@
 #include <userland/modules/include/syscalls.h>
 #include <stddef.h> /* for size_t */
 
+struct kernel_cpu_topology {
+    uint32_t cpu_count;
+    uint32_t boot_cpu_id;
+    uint32_t apic_supported;
+    uint32_t cpuid_supported;
+    uint32_t cpuid_logical_cpus;
+    char vendor[13];
+};
+
+__attribute__((weak)) const struct kernel_cpu_topology *kernel_cpu_topology(void) {
+    return 0;
+}
+
+__attribute__((weak)) int local_apic_enabled(void) {
+    return 0;
+}
+
+__attribute__((weak)) uint32_t local_apic_id(void) {
+    return 0u;
+}
+
+__attribute__((weak)) uint32_t local_apic_base(void) {
+    return 0u;
+}
+
 __attribute__((weak)) size_t kernel_heap_used(void) {
     return 0u;
 }
@@ -195,6 +220,36 @@ static int cmd_vibefetch(int argc, char **argv) {
     write_fetch_line("Shell:   ", "busybox");
     write_fetch_line("Terminal:", "Vibe Terminal");
     write_fetch_line("Host:    ", "i686 BIOS profile");
+
+    {
+        const struct kernel_cpu_topology *cpu = kernel_cpu_topology();
+        line[0] = '\0';
+        if (cpu && cpu->vendor[0] != '\0') {
+            str_append(line, cpu->vendor, (int)sizeof(line));
+            str_append(line, " cpuid=", (int)sizeof(line));
+            append_uint(line, cpu->cpuid_supported, (int)sizeof(line));
+            str_append(line, " apic=", (int)sizeof(line));
+            append_uint(line, cpu->apic_supported, (int)sizeof(line));
+            str_append(line, " logical=", (int)sizeof(line));
+            append_uint(line, cpu->cpuid_logical_cpus, (int)sizeof(line));
+            str_append(line, " detected=", (int)sizeof(line));
+            append_uint(line, cpu->cpu_count, (int)sizeof(line));
+            str_append(line, " bsp=", (int)sizeof(line));
+            append_uint(line, cpu->boot_cpu_id, (int)sizeof(line));
+        } else {
+            str_append(line, "unknown", (int)sizeof(line));
+        }
+        write_fetch_line("CPU:     ", line);
+    }
+
+    line[0] = '\0';
+    str_append(line, "base=", (int)sizeof(line));
+    append_uint(line, local_apic_base(), (int)sizeof(line));
+    str_append(line, " id=", (int)sizeof(line));
+    append_uint(line, local_apic_id(), (int)sizeof(line));
+    str_append(line, " enabled=", (int)sizeof(line));
+    append_uint(line, (uint32_t)local_apic_enabled(), (int)sizeof(line));
+    write_fetch_line("LAPIC:   ", line);
 
     line[0] = '\0';
     append_uptime(line, sys_ticks(), (int)sizeof(line));
