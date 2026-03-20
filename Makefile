@@ -229,6 +229,7 @@ ifeq ($(CRAFT_UPSTREAM_EXPERIMENTAL),1)
 USERLAND_SRCS += \
 	$(USERLAND_DIR)/applications/games/craft/craft_math_compat.c \
 	$(USERLAND_DIR)/applications/games/craft/craft_util_compat.c \
+	$(USERLAND_DIR)/applications/games/craft/upstream/deps/lodepng/lodepng.c \
 	$(USERLAND_DIR)/applications/games/craft/craft_upstream_map.c \
 	$(USERLAND_DIR)/applications/games/craft/craft_upstream_matrix.c \
 	$(USERLAND_DIR)/applications/games/craft/craft_upstream_ring.c \
@@ -479,6 +480,11 @@ $(BOOT_BIN): $(BOOT_DIR)/stage1.asm | $(BUILD_DIR)
 $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/userland/applications/games/craft/upstream/deps/lodepng/lodepng.o: userland/applications/games/craft/upstream/deps/lodepng/lodepng.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -DLODEPNG_NO_COMPILE_DISK -c $< -o $@
+
 
 $(BUILD_DIR)/%.o: %.asm
 	@mkdir -p $(dir $@)

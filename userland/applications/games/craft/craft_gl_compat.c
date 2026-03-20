@@ -244,6 +244,7 @@ static void craft_gl_reset_state(void) {
 }
 
 void craft_gl_init_window(int width, int height) {
+    sys_text(10, 50, 0, "craft_gl_init_window");
     size_t pixel_count;
 
     if (width <= 0 || height <= 0) {
@@ -267,6 +268,7 @@ void craft_gl_init_window(int width, int height) {
     g_framebuffer = (uint8_t *)malloc(pixel_count);
     g_depthbuffer = (float *)malloc(sizeof(float) * pixel_count);
     if (g_framebuffer) {
+        sys_text(10, 60, 0, "craft_gl_init_window: framebuffer allocated");
         memset(g_framebuffer, 0, pixel_count);
     }
     if (g_depthbuffer) {
@@ -287,6 +289,7 @@ void craft_gl_present(void) {
 }
 
 void craft_gl_blit_to(int x, int y) {
+    sys_text(10, 70, 0, "craft_gl_blit_to");
     if (!g_framebuffer || g_fb_width <= 0 || g_fb_height <= 0) {
         return;
     }
@@ -405,6 +408,7 @@ static void craft_draw_triangle(struct craft_program *program,
                                 const struct craft_vertex *b,
                                 const struct craft_vertex *c,
                                 int mode_kind) {
+    sys_text(10, 80, 0, "craft_draw_triangle");
     float area = craft_edge(a->sx, a->sy, b->sx, b->sy, c->sx, c->sy);
     int min_x;
     int min_y;

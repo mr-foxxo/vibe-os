@@ -44,6 +44,6 @@ void craft_upstream_stop(void);
 void craft_upstream_resize(int width, int height);
 void craft_upstream_queue_key(int key);
 void craft_upstream_set_mouse(int x, int y, uint8_t buttons, int focused, int inside);
-void craft_upstream_blit(int x, int y, int width, int height);
+void craft_upstream_blit(int x, int y);
 
 #endif

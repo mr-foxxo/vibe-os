@@ -105,7 +105,7 @@ void craft_draw_window(struct craft_state *state, int active,
     ui_draw_surface(&client, ui_color_canvas());
 
     if (state->started) {
-        craft_upstream_blit(client.x, client.y, client.w, client.h);
+        craft_upstream_blit(client.x, client.y);
     } else {
         ui_draw_inset(&client, ui_color_canvas());
         sys_text(client.x + 10, client.y + 10, theme->text, state->status);

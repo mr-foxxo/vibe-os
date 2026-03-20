@@ -123,10 +123,10 @@ static Attrib g_block_attrib;
 static Attrib g_line_attrib;
 static Attrib g_text_attrib;
 static Attrib g_sky_attrib;
-static Attrib block_attrib;
-static Attrib line_attrib;
-static Attrib text_attrib;
-static Attrib sky_attrib;
+// static Attrib block_attrib;
+// static Attrib line_attrib;
+// static Attrib text_attrib;
+// static Attrib sky_attrib;
 
 void craft_upstream_resize(int width, int height);
 
