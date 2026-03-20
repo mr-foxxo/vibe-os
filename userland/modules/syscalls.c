@@ -41,6 +41,24 @@ int sys_gfx_set_mode(uint32_t width, uint32_t height) {
     return syscall5(SYSCALL_GFX_SET_MODE, (int)width, (int)height, 0, 0, 0);
 }
 
+int sys_gfx_set_palette(const uint8_t *rgb_triplets) {
+    return syscall5(SYSCALL_GFX_SET_PALETTE, (int)(uintptr_t)rgb_triplets, 0, 0, 0, 0);
+}
+
+int sys_gfx_get_palette(uint8_t *rgb_triplets) {
+    return syscall5(SYSCALL_GFX_GET_PALETTE, (int)(uintptr_t)rgb_triplets, 0, 0, 0, 0);
+}
+
+void sys_gfx_blit8(const uint8_t *src, int src_w, int src_h, int dst_x, int dst_y, int scale) {
+    int packed_wh = ((src_h & 0xFFFF) << 16) | (src_w & 0xFFFF);
+    (void)syscall5(SYSCALL_GFX_BLIT8,
+                   (int)(uintptr_t)src,
+                   packed_wh,
+                   dst_x,
+                   dst_y,
+                   scale);
+}
+
 int sys_storage_load(void *dst, uint32_t size) {
     return syscall5(SYSCALL_STORAGE_LOAD, (int)(uintptr_t)dst, (int)size, 0, 0, 0);
 }
@@ -56,6 +74,19 @@ int sys_storage_read_sectors(uint32_t lba, void *dst, uint32_t sector_count) {
                     (int)sector_count,
                     0,
                     0);
+}
+
+int sys_storage_write_sectors(uint32_t lba, const void *src, uint32_t sector_count) {
+    return syscall5(SYSCALL_STORAGE_WRITE_SECTORS,
+                    (int)lba,
+                    (int)(uintptr_t)src,
+                    (int)sector_count,
+                    0,
+                    0);
+}
+
+uint32_t sys_storage_total_sectors(void) {
+    return (uint32_t)syscall5(SYSCALL_STORAGE_TOTAL_SECTORS, 0, 0, 0, 0, 0);
 }
 
 void sys_sleep(void) {
@@ -95,4 +126,8 @@ int sys_keyboard_get_layout(char *buffer, int size) {
 
 int sys_keyboard_get_available_layouts(char *buffer, int size) {
     return syscall5(SYSCALL_KEYBOARD_GET_AVAILABLE_LAYOUTS, (int)(uintptr_t)buffer, size, 0, 0, 0);
+}
+
+void sys_shutdown(void) {
+    (void)syscall5(SYSCALL_SHUTDOWN, 0, 0, 0, 0, 0);
 }

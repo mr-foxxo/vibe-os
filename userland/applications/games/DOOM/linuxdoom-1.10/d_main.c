@@ -554,6 +554,27 @@ void D_AddFile (char *file)
     wadfiles[numwadfiles] = newfile;
 }
 
+static void D_InferGameModeFromIWAD(void)
+{
+    if (gamemode != indetermined) {
+        return;
+    }
+
+    if (W_CheckNumForName("MAP01") >= 0) {
+        gamemode = commercial;
+        return;
+    }
+    if (W_CheckNumForName("E4M1") >= 0) {
+        gamemode = retail;
+        return;
+    }
+    if (W_CheckNumForName("E2M1") >= 0 || W_CheckNumForName("E3M1") >= 0) {
+        gamemode = registered;
+        return;
+    }
+    gamemode = shareware;
+}
+
 //
 // IdentifyVersion
 // Checks availability of IWAD files by name,
@@ -577,7 +598,7 @@ void IdentifyVersion (void)
     char *doomwaddir;
     doomwaddir = getenv("DOOMWADDIR");
     if (!doomwaddir)
-	doomwaddir = "userland/applications/games/DOOM";
+	doomwaddir = "/DOOM";
 
     // Commercial.
     doom2wad = malloc(strlen(doomwaddir)+1+9+1);
@@ -618,6 +639,13 @@ void IdentifyVersion (void)
       sprintf(basedefault, "%s/.doomrc", home);
     }
 #endif
+
+    if ( !access ("/DOOM/DOOM.WAD",R_OK) )
+    {
+	gamemode = indetermined;
+	D_AddFile ("/DOOM/DOOM.WAD");
+	return;
+    }
 
     if (M_CheckParm ("-shdev"))
     {
@@ -1024,6 +1052,7 @@ void D_DoomMain (void)
 
     printf ("W_Init: Init WADfiles.\n");
     W_InitMultipleFiles (wadfiles);
+    D_InferGameModeFromIWAD();
     
 
     // Check for -file in shareware
@@ -1067,31 +1096,11 @@ void D_DoomMain (void)
 	
 
     // Check and print which version is executed.
-    switch ( gamemode )
-    {
-      case shareware:
-      case indetermined:
-	printf (
-	    "===========================================================================\n"
-	    "                                Shareware!\n"
-	    "===========================================================================\n"
-	);
-	break;
-      case registered:
-      case retail:
-      case commercial:
-	printf (
-	    "===========================================================================\n"
-	    "                 Commercial product - do not distribute!\n"
-	    "         Please report software piracy to the SPA: 1-800-388-PIR8\n"
-	    "===========================================================================\n"
-	);
-	break;
-	
-      default:
-	// Ouch.
-	break;
-    }
+    printf (
+	"===========================================================================\n"
+	"                     Shareware IWAD bundled in VibeOS\n"
+	"===========================================================================\n"
+    );
 
     printf ("M_Init: Init miscellaneous info.\n");
     M_Init ();

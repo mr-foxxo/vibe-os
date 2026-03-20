@@ -41,6 +41,10 @@ static uint8_t g_early_graphics_backbuf[640u * 480u];
 #define BGA_DISABLED 0x0000u
 #define BGA_ENABLED 0x0001u
 
+#define VGA_DAC_READ_INDEX 0x3C7u
+#define VGA_DAC_WRITE_INDEX 0x3C8u
+#define VGA_DAC_DATA 0x3C9u
+
 /* prototypes for driver implementations */
 int vesa_init(struct video_mode *mode);
 int vga_init(struct video_mode *mode);
@@ -558,4 +562,66 @@ void kernel_gfx_draw_text(int x, int y, const char *text, uint8_t color) {
         }
         cx += 6;
     }
+}
+
+void kernel_gfx_blit8(const uint8_t *src, int src_w, int src_h, int dst_x, int dst_y, int scale) {
+    struct video_mode *mode;
+    uint8_t *bb;
+
+    kernel_video_enter_graphics();
+    if (src == NULL || src_w <= 0 || src_h <= 0 || scale <= 0) {
+        return;
+    }
+
+    mode = kernel_video_get_mode();
+    bb = kernel_video_get_backbuffer();
+    if (mode == NULL || bb == NULL) {
+        return;
+    }
+
+    for (int sy = 0; sy < src_h; ++sy) {
+        int py0 = dst_y + (sy * scale);
+        for (int sx = 0; sx < src_w; ++sx) {
+            int px0 = dst_x + (sx * scale);
+            uint8_t color = src[(sy * src_w) + sx];
+
+            for (int oy = 0; oy < scale; ++oy) {
+                int py = py0 + oy;
+                if (py < 0 || py >= (int)mode->height) {
+                    continue;
+                }
+                for (int ox = 0; ox < scale; ++ox) {
+                    int px = px0 + ox;
+                    if (px < 0 || px >= (int)mode->width) {
+                        continue;
+                    }
+                    bb[(py * mode->pitch) + px] = color;
+                }
+            }
+        }
+    }
+}
+
+int kernel_video_set_palette(const uint8_t *rgb_triplets) {
+    if (rgb_triplets == NULL) {
+        return -1;
+    }
+
+    outb(VGA_DAC_WRITE_INDEX, 0u);
+    for (int i = 0; i < 256 * 3; ++i) {
+        outb(VGA_DAC_DATA, (uint8_t)(rgb_triplets[i] >> 2));
+    }
+    return 0;
+}
+
+int kernel_video_get_palette(uint8_t *rgb_triplets) {
+    if (rgb_triplets == NULL) {
+        return -1;
+    }
+
+    outb(VGA_DAC_READ_INDEX, 0u);
+    for (int i = 0; i < 256 * 3; ++i) {
+        rgb_triplets[i] = (uint8_t)(inb(VGA_DAC_DATA) << 2);
+    }
+    return 0;
 }

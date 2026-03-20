@@ -350,27 +350,17 @@ int W_NumLumps (void)
 
 int W_CheckNumForName (char* name)
 {
-    union {
-	char	s[9];
-	int	x[2];
-	
-    } name8;
-    
-    int		v1;
-    int		v2;
+    char	name8[9];
     lumpinfo_t*	lump_p;
 
     // make the name into two integers for easy compares
-    strncpy (name8.s,name,8);
+    strncpy (name8,name,8);
 
     // in case the name was a fill 8 chars
-    name8.s[8] = 0;
+    name8[8] = 0;
 
     // case insensitive
-    strupr (name8.s);		
-
-    v1 = name8.x[0];
-    v2 = name8.x[1];
+    strupr (name8);
 
 
     // scan backwards so patch lump files take precedence
@@ -378,8 +368,7 @@ int W_CheckNumForName (char* name)
 
     while (lump_p-- != lumpinfo)
     {
-	if ( *(int *)lump_p->name == v1
-	     && *(int *)&lump_p->name[4] == v2)
+	if (memcmp(lump_p->name, name8, 8) == 0)
 	{
 	    return lump_p - lumpinfo;
 	}
@@ -401,6 +390,8 @@ int W_GetNumForName (char* name)
     int	i;
 
     i = W_CheckNumForName (name);
+    if (i == -1 && !strcmp(name, "HELP2"))
+        i = W_CheckNumForName("HELP1");
     
     if (i == -1)
       I_Error ("W_GetNumForName: %s not found!", name);
@@ -573,5 +564,3 @@ void W_Profile (void)
     }
     fclose (f);
 }
-
-

@@ -29,12 +29,15 @@ void kernel_video_flip(void);
 void kernel_video_leave_graphics(void);
 int kernel_video_set_mode(uint32_t width, uint32_t height);
 void kernel_video_get_capabilities(struct video_capabilities *caps);
+int kernel_video_set_palette(const uint8_t *rgb_triplets);
+int kernel_video_get_palette(uint8_t *rgb_triplets);
 
 /* Graphics helpers */
 void kernel_gfx_putpixel(int x, int y, uint8_t color);
 void kernel_gfx_rect(int x, int y, int w, int h, uint8_t color);
 void kernel_gfx_clear(uint8_t color);
 void kernel_gfx_draw_text(int x, int y, const char *text, uint8_t color);
+void kernel_gfx_blit8(const uint8_t *src, int src_w, int src_h, int dst_x, int dst_y, int scale);
 
 /* VGA Text mode helpers */
 void kernel_text_init(void);

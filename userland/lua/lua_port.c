@@ -4,7 +4,9 @@
 #include <userland/modules/include/fs.h>
 #include <userland/modules/include/syscalls.h>
 
-#define VIBE_LUA_HEAP_SIZE 65536
+// This allocator is currently shared by the built-in userland runtime,
+// not only by Lua. Keep it large enough for heavier apps such as DOOM.
+#define VIBE_LUA_HEAP_SIZE (16u * 1024u * 1024u)
 
 struct heap_block {
     size_t size;
@@ -768,28 +770,29 @@ FILE *freopen(const char *path, const char *mode, FILE *stream) {
 
 size_t fread(void *ptr, size_t size, size_t count, FILE *stream) {
     size_t total = size * count;
-    int remaining;
+    int read_count;
 
     if (!stream || stream->node < 0 || !ptr) {
         return 0u;
     }
-
-    remaining = g_fs_nodes[stream->node].size - stream->pos;
-    if (remaining <= 0) {
+    if (stream->pos >= g_fs_nodes[stream->node].size) {
         stream->eof = 1;
         return 0u;
     }
-    if ((int)total > remaining) {
-        total = (size_t)remaining;
+
+    read_count = fs_read_node_bytes(stream->node, stream->pos, ptr, (int)total);
+    if (read_count <= 0) {
+        stream->eof = 1;
+        return 0u;
+    }
+    stream->pos += read_count;
+    if ((size_t)read_count < total) {
         stream->eof = 1;
     }
-
-    memcpy(ptr, g_fs_nodes[stream->node].data + stream->pos, total);
-    stream->pos += (int)total;
     if (size == 0u) {
         return 0u;
     }
-    return total / size;
+    return (size_t)read_count / size;
 }
 
 int getc(FILE *stream) {
@@ -803,7 +806,15 @@ int getc(FILE *stream) {
         stream->eof = 1;
         return EOF;
     }
-    return (unsigned char)g_fs_nodes[stream->node].data[stream->pos++];
+    {
+        unsigned char value = 0;
+        if (fs_read_node_bytes(stream->node, stream->pos, &value, 1) != 1) {
+            stream->eof = 1;
+            return EOF;
+        }
+        stream->pos += 1;
+        return value;
+    }
 }
 
 int fclose(FILE *stream) {

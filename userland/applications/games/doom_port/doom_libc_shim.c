@@ -97,6 +97,7 @@ static int doom_try_resolve_path(const char *path) {
 
 static int doom_try_resolve_wad_candidate(const char *path, const char **resolved_path_out) {
     static const char *doom_wad_candidates[] = {
+        "/DOOM/DOOM.WAD",
         "/doom/DOOM.WAD",
         "/doom/doom.wad",
         "/doom.wad",
@@ -382,96 +383,142 @@ static int vsnprintf_internal(char *str, size_t size, const char *fmt, va_list a
             continue;
         }
 
-        if (*fmt == 's') {
-            const char *s = va_arg(ap, const char *);
-            if (!s) {
-                s = "(null)";
+        {
+            int zero_pad = 0;
+            int width = 0;
+            int precision = -1;
+
+            if (*fmt == '0') {
+                zero_pad = 1;
+                ++fmt;
             }
-            while (*s && written + 1u < size) {
+            while (*fmt >= '0' && *fmt <= '9') {
+                width = (width * 10) + (*fmt - '0');
+                ++fmt;
+            }
+            if (*fmt == '.') {
+                precision = 0;
+                ++fmt;
+                while (*fmt >= '0' && *fmt <= '9') {
+                    precision = (precision * 10) + (*fmt - '0');
+                    ++fmt;
+                }
+            }
+
+            if (*fmt == 's') {
+                const char *s = va_arg(ap, const char *);
+                if (!s) {
+                    s = "(null)";
+                }
+                while (*s && written + 1u < size) {
+                    if (str) {
+                        str[written] = *s;
+                    }
+                    ++written;
+                    ++s;
+                }
+                ++fmt;
+                continue;
+            }
+
+            if (*fmt == 'c') {
+                int c = va_arg(ap, int);
                 if (str) {
-                    str[written] = *s;
+                    str[written] = (char)c;
                 }
                 ++written;
-                ++s;
-            }
-            ++fmt;
-            continue;
-        }
-
-        if (*fmt == 'c') {
-            int c = va_arg(ap, int);
-            if (str) {
-                str[written] = (char)c;
-            }
-            ++written;
-            ++fmt;
-            continue;
-        }
-
-        if (*fmt == 'd' || *fmt == 'i' || *fmt == 'u' || *fmt == 'x' || *fmt == 'X' || *fmt == 'p') {
-            unsigned int base = 10u;
-            unsigned int value_u = 0u;
-            char tmp[32];
-            int pos = 0;
-            int upper = (*fmt == 'X');
-
-            if (*fmt == 'x' || *fmt == 'X' || *fmt == 'p') {
-                base = 16u;
+                ++fmt;
+                continue;
             }
 
-            if (*fmt == 'p') {
-                uintptr_t p = (uintptr_t)va_arg(ap, void *);
-                value_u = (unsigned int)p;
-            } else if (*fmt == 'd' || *fmt == 'i') {
-                int value_s = va_arg(ap, int);
-                if (value_s < 0) {
+            if (*fmt == 'd' || *fmt == 'i' || *fmt == 'u' || *fmt == 'x' || *fmt == 'X' || *fmt == 'p') {
+                unsigned int base = 10u;
+                unsigned int value_u = 0u;
+                char tmp[32];
+                int pos = 0;
+                int upper = (*fmt == 'X');
+                int negative = 0;
+                int digits;
+                int pad_count;
+
+                if (*fmt == 'x' || *fmt == 'X' || *fmt == 'p') {
+                    base = 16u;
+                }
+
+                if (*fmt == 'p') {
+                    uintptr_t p = (uintptr_t)va_arg(ap, void *);
+                    value_u = (unsigned int)p;
+                } else if (*fmt == 'd' || *fmt == 'i') {
+                    int value_s = va_arg(ap, int);
+                    if (value_s < 0) {
+                        negative = 1;
+                        value_u = (unsigned int)(-value_s);
+                    } else {
+                        value_u = (unsigned int)value_s;
+                    }
+                } else {
+                    value_u = va_arg(ap, unsigned int);
+                }
+
+                if (value_u == 0u) {
+                    tmp[pos++] = '0';
+                } else {
+                    while (value_u > 0u && pos < (int)sizeof(tmp)) {
+                        unsigned int d = value_u % base;
+                        tmp[pos++] = (char)(d < 10u ? ('0' + d) : ((upper ? 'A' : 'a') + (d - 10u)));
+                        value_u /= base;
+                    }
+                }
+
+                digits = pos;
+                if (precision > digits) {
+                    pad_count = precision - digits;
+                } else if (zero_pad && width > digits + negative) {
+                    pad_count = width - digits - negative;
+                } else {
+                    pad_count = 0;
+                }
+
+                if (negative) {
                     if (str && written + 1u < size) {
                         str[written] = '-';
                     }
                     ++written;
-                    value_u = (unsigned int)(-value_s);
-                } else {
-                    value_u = (unsigned int)value_s;
                 }
-            } else {
-                value_u = va_arg(ap, unsigned int);
+
+                if (*fmt == 'p') {
+                    if (str && written + 1u < size) {
+                        str[written] = '0';
+                    }
+                    ++written;
+                    if (str && written + 1u < size) {
+                        str[written] = 'x';
+                    }
+                    ++written;
+                }
+
+                while (pad_count-- > 0 && written + 1u < size) {
+                    if (str) {
+                        str[written] = '0';
+                    }
+                    ++written;
+                }
+                while (pos > 0 && written + 1u < size) {
+                    if (str) {
+                        str[written] = tmp[--pos];
+                    }
+                    ++written;
+                }
+                ++fmt;
+                continue;
             }
 
-            if (*fmt == 'p') {
-                if (str && written + 1u < size) {
-                    str[written] = '0';
-                }
-                ++written;
-                if (str && written + 1u < size) {
-                    str[written] = 'x';
-                }
-                ++written;
+            if (str) {
+                str[written] = *fmt;
             }
-
-            if (value_u == 0u) {
-                tmp[pos++] = '0';
-            } else {
-                while (value_u > 0u && pos < (int)sizeof(tmp)) {
-                    unsigned int d = value_u % base;
-                    tmp[pos++] = (char)(d < 10u ? ('0' + d) : ((upper ? 'A' : 'a') + (d - 10u)));
-                    value_u /= base;
-                }
-            }
-            while (pos > 0 && written + 1u < size) {
-                if (str) {
-                    str[written] = tmp[--pos];
-                }
-                ++written;
-            }
+            ++written;
             ++fmt;
-            continue;
         }
-
-        if (str) {
-            str[written] = *fmt;
-        }
-        ++written;
-        ++fmt;
     }
 
     if (str && size > 0u) {
@@ -699,11 +746,14 @@ int access(const char *path, int mode) {
     if (!path) {
         return -1;
     }
+    node = doom_try_resolve_wad_candidate(path, 0);
+    if (node >= 0 && !g_fs_nodes[node].is_dir) {
+        return 0;
+    }
     if (doom_path_is_embedded_wad(path) && doom_embedded_detect_wad()) {
         return 0;
     }
-    node = doom_try_resolve_wad_candidate(path, 0);
-    return (node >= 0) ? 0 : -1;
+    return -1;
 }
 
 void vibe_app_console_putc(char c) {
@@ -803,6 +853,27 @@ int open(const char *path, int flags, ...) {
     if ((flags & DOOM_O_ACCMODE) != DOOM_O_RDONLY) {
         return -1;
     }
+    node = doom_try_resolve_wad_candidate(path, &resolved_path);
+    if (node >= 0 && !g_fs_nodes[node].is_dir) {
+        fd = doom_alloc_fd();
+        if (fd < 0) {
+            return -1;
+        }
+        g_doom_fds[fd].used = 1;
+        g_doom_fds[fd].embedded_kind = DOOM_EMBEDDED_FILE_NONE;
+        g_doom_fds[fd].data = g_fs_nodes[node].data;
+        g_doom_fds[fd].size = g_fs_nodes[node].size;
+        g_doom_fds[fd].pos = 0;
+        g_doom_fds[fd].start_lba = 0u;
+        g_doom_fds[fd].cached_sector = 0u;
+        g_doom_fds[fd].cache_valid = 0;
+        if (g_fs_nodes[node].storage_kind == FS_NODE_STORAGE_IMAGE) {
+            g_doom_fds[fd].embedded_kind = DOOM_EMBEDDED_FILE_WAD;
+            g_doom_fds[fd].data = 0;
+            g_doom_fds[fd].start_lba = g_fs_nodes[node].image_lba;
+        }
+        return fd;
+    }
     if (doom_path_is_embedded_wad(path) && doom_embedded_detect_wad()) {
         fd = doom_alloc_fd();
         if (fd < 0) {
@@ -818,26 +889,7 @@ int open(const char *path, int flags, ...) {
         g_doom_fds[fd].cache_valid = 0;
         return fd;
     }
-    node = doom_try_resolve_wad_candidate(path, &resolved_path);
-    if (node < 0 || g_fs_nodes[node].is_dir) {
-        return -1;
-    }
-
-    fd = doom_alloc_fd();
-    if (fd < 0) {
-        return -1;
-    }
-
-    g_doom_fds[fd].used = 1;
-    g_doom_fds[fd].embedded_kind = DOOM_EMBEDDED_FILE_NONE;
-    g_doom_fds[fd].data = g_fs_nodes[node].data;
-    g_doom_fds[fd].size = g_fs_nodes[node].size;
-    g_doom_fds[fd].pos = 0;
-    g_doom_fds[fd].start_lba = 0u;
-    g_doom_fds[fd].cached_sector = 0u;
-    g_doom_fds[fd].cache_valid = 0;
-    (void)resolved_path;
-    return fd;
+    return -1;
 }
 
 int close(int fd) {

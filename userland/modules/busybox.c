@@ -6,6 +6,7 @@
 #include <userland/lua/include/lua_main.h>
 #include <userland/modules/include/shell.h> /* for history print */
 #include <userland/modules/include/ui.h>    /* for startx */
+#include <userland/modules/include/syscalls.h>
 #include <stddef.h> /* for size_t */
 
 /* minimal string compare so we don't depend on libc */
@@ -96,7 +97,7 @@ static int should_prefer_external(const char *cmd) {
 
 static int cmd_help(int argc, char **argv) {
     (void)argc; (void)argv;
-    const char *list = "commands: pwd ls cd mkdir touch rm cat echo clear uname help exit startx history edit nano lua sectorc cc hello js ruby python\n";
+    const char *list = "commands: pwd ls cd mkdir touch rm cat echo clear uname help exit shutdown startx history edit nano lua sectorc cc hello js ruby python\n";
     console_write(list);
     return 0;
 }
@@ -191,7 +192,15 @@ static int cmd_cat(int argc, char **argv) {
         } else if (g_fs_nodes[idx].size == 0) {
             console_write("(empty)\n");
         } else {
-            console_write(g_fs_nodes[idx].data);
+            char buf[129];
+            int offset = 0;
+            int read_count;
+
+            while ((read_count = fs_read_node_bytes(idx, offset, buf, 128)) > 0) {
+                buf[read_count] = '\0';
+                console_write(buf);
+                offset += read_count;
+            }
             console_putc('\n');
         }
     }
@@ -222,6 +231,13 @@ static int cmd_uname(int argc, char **argv) {
 static int cmd_exit(int argc, char **argv) {
     (void)argc; (void)argv;
     return 1; /* signal shell to quit */
+}
+
+static int cmd_shutdown(int argc, char **argv) {
+    (void)argc; (void)argv;
+    console_write("Shutting down...\n");
+    sys_shutdown();
+    return 1;
 }
 
 static int cmd_startx(int argc, char **argv) {
@@ -284,6 +300,7 @@ static const struct command g_commands[] = {
     {"uname", cmd_uname},
     {"help", cmd_help},
     {"exit", cmd_exit},
+    {"shutdown", cmd_shutdown},
     {"startx", cmd_startx},
     {"history", cmd_history},
     {"edit", cmd_edit},

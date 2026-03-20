@@ -6,6 +6,7 @@
 #include <kernel/drivers/input/input.h>
 #include <kernel/drivers/timer/timer.h>
 #include <kernel/process.h>
+#include <kernel/hal/io.h>
 #include <stdint.h>
 #include <include/userland_api.h> /* syscall IDs */
 #include <string.h>
@@ -47,6 +48,19 @@ static uint32_t sys_gfx_flip(uint32_t a, uint32_t b, uint32_t c,
     return 0;
 }
 
+static uint32_t sys_gfx_blit8(uint32_t src_ptr, uint32_t packed_wh, uint32_t dst_x,
+                              uint32_t dst_y, uint32_t scale) {
+    int src_w = (int)(packed_wh & 0xFFFFu);
+    int src_h = (int)((packed_wh >> 16) & 0xFFFFu);
+    kernel_gfx_blit8((const uint8_t *)(uintptr_t)src_ptr,
+                     src_w,
+                     src_h,
+                     (int)dst_x,
+                     (int)dst_y,
+                     (int)scale);
+    return 0;
+}
+
 static uint32_t sys_gfx_leave(uint32_t a, uint32_t b, uint32_t c,
                               uint32_t d, uint32_t e) {
     (void)a; (void)b; (void)c; (void)d; (void)e;
@@ -58,6 +72,18 @@ static uint32_t sys_gfx_set_mode(uint32_t width, uint32_t height, uint32_t c,
                                  uint32_t d, uint32_t e) {
     (void)c; (void)d; (void)e;
     return (uint32_t)kernel_video_set_mode(width, height);
+}
+
+static uint32_t sys_gfx_set_palette(uint32_t ptr, uint32_t b, uint32_t c,
+                                    uint32_t d, uint32_t e) {
+    (void)b; (void)c; (void)d; (void)e;
+    return (uint32_t)kernel_video_set_palette((const uint8_t *)(uintptr_t)ptr);
+}
+
+static uint32_t sys_gfx_get_palette(uint32_t ptr, uint32_t b, uint32_t c,
+                                    uint32_t d, uint32_t e) {
+    (void)b; (void)c; (void)d; (void)e;
+    return (uint32_t)kernel_video_get_palette((uint8_t *)(uintptr_t)ptr);
 }
 
 static uint32_t sys_storage_load(uint32_t ptr, uint32_t size, uint32_t c,
@@ -76,6 +102,18 @@ static uint32_t sys_storage_read_sectors(uint32_t lba, uint32_t ptr, uint32_t se
                                          uint32_t d, uint32_t e) {
     (void)d; (void)e;
     return (uint32_t)kernel_storage_read_sectors(lba, (void *)(uintptr_t)ptr, sector_count);
+}
+
+static uint32_t sys_storage_write_sectors(uint32_t lba, uint32_t ptr, uint32_t sector_count,
+                                          uint32_t d, uint32_t e) {
+    (void)d; (void)e;
+    return (uint32_t)kernel_storage_write_sectors(lba, (const void *)(uintptr_t)ptr, sector_count);
+}
+
+static uint32_t sys_storage_total_sectors(uint32_t a, uint32_t b, uint32_t c,
+                                          uint32_t d, uint32_t e) {
+    (void)a; (void)b; (void)c; (void)d; (void)e;
+    return kernel_storage_total_sectors();
 }
 
 static uint32_t sys_input_mouse(uint32_t state_ptr, uint32_t b, uint32_t c,
@@ -219,6 +257,24 @@ static uint32_t sys_keyboard_get_available_layouts(uint32_t buffer_ptr, uint32_t
     return 0;
 }
 
+static uint32_t sys_shutdown(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e) {
+    (void)a; (void)b; (void)c; (void)d; (void)e;
+
+    kernel_debug_puts("sys_shutdown: poweroff requested\n");
+
+    /* Common ACPI/QEMU/Bochs poweroff ports. */
+    outw(0x604, 0x2000);
+    outw(0xB004, 0x2000);
+    outw(0x4004, 0x3400);
+
+    __asm__ volatile("cli" : : : "memory");
+    for (;;) {
+        __asm__ volatile("hlt");
+    }
+
+    __builtin_unreachable();
+}
+
 void syscall_init(void) {
     /* register new kernel syscalls; numbers are defined in
        include/userland_api.h */
@@ -226,11 +282,16 @@ void syscall_init(void) {
     syscall_table[SYSCALL_GFX_RECT] = sys_gfx_rect;
     syscall_table[SYSCALL_GFX_TEXT] = sys_gfx_text;
     syscall_table[SYSCALL_GFX_FLIP] = sys_gfx_flip;
+    syscall_table[SYSCALL_GFX_BLIT8] = sys_gfx_blit8;
     syscall_table[SYSCALL_GFX_LEAVE] = sys_gfx_leave;
     syscall_table[SYSCALL_GFX_SET_MODE] = sys_gfx_set_mode;
+    syscall_table[SYSCALL_GFX_SET_PALETTE] = sys_gfx_set_palette;
+    syscall_table[SYSCALL_GFX_GET_PALETTE] = sys_gfx_get_palette;
     syscall_table[SYSCALL_STORAGE_LOAD] = sys_storage_load;
     syscall_table[SYSCALL_STORAGE_SAVE] = sys_storage_save;
     syscall_table[SYSCALL_STORAGE_READ_SECTORS] = sys_storage_read_sectors;
+    syscall_table[SYSCALL_STORAGE_WRITE_SECTORS] = sys_storage_write_sectors;
+    syscall_table[SYSCALL_STORAGE_TOTAL_SECTORS] = sys_storage_total_sectors;
     syscall_table[SYSCALL_INPUT_MOUSE] = sys_input_mouse;
     syscall_table[SYSCALL_INPUT_KEY] = sys_input_key;
     syscall_table[12] = sys_text_putc;     /* legacy text mode */
@@ -246,6 +307,7 @@ void syscall_init(void) {
     syscall_table[SYSCALL_KEYBOARD_SET_LAYOUT] = sys_keyboard_set_layout;
     syscall_table[SYSCALL_KEYBOARD_GET_LAYOUT] = sys_keyboard_get_layout;
     syscall_table[SYSCALL_KEYBOARD_GET_AVAILABLE_LAYOUTS] = sys_keyboard_get_available_layouts;
+    syscall_table[SYSCALL_SHUTDOWN] = sys_shutdown;
 }
 
 /* dispatch routine called by ISR */

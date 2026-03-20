@@ -29,6 +29,7 @@
 #define ATA_TIMEOUT 100000u
 
 static int g_ata_ready = 0;
+static uint32_t g_ata_total_sectors = 0u;
 
 static int ata_wait_not_busy(void) {
     for (uint32_t i = 0; i < ATA_TIMEOUT; ++i) {
@@ -83,6 +84,8 @@ static void ata_select_lba(uint32_t lba) {
 }
 
 static int ata_identify(void) {
+    uint16_t identify_data[256];
+
     ata_select_lba(0u);
     outb(ATA_PRIMARY_CTRL, 0u);
     outb(ATA_REG_SECCOUNT0, 0u);
@@ -105,8 +108,10 @@ static int ata_identify(void) {
     }
 
     for (int i = 0; i < 256; ++i) {
-        (void)inw(ATA_REG_DATA);
+        identify_data[i] = inw(ATA_REG_DATA);
     }
+    g_ata_total_sectors = (uint32_t)identify_data[60] |
+                          ((uint32_t)identify_data[61] << 16);
     return 0;
 }
 
@@ -190,6 +195,26 @@ int kernel_storage_read_sectors(uint32_t lba, void *dst, uint32_t sector_count) 
     }
 
     return 0;
+}
+
+int kernel_storage_write_sectors(uint32_t lba, const void *src, uint32_t sector_count) {
+    const uint8_t *in = (const uint8_t *)src;
+
+    if (!g_ata_ready || src == 0 || sector_count == 0u) {
+        return -1;
+    }
+
+    for (uint32_t i = 0; i < sector_count; ++i) {
+        if (ata_write_sector(lba + i, in + (i * KERNEL_PERSIST_SECTOR_SIZE)) != 0) {
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+uint32_t kernel_storage_total_sectors(void) {
+    return g_ata_total_sectors;
 }
 
 int kernel_storage_load(void *dst, uint32_t size) {

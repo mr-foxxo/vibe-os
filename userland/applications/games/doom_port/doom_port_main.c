@@ -11,7 +11,8 @@ static int g_quit = 0;
 static int g_code = 0;
 static int g_run_active = 0;
 static char g_error[96] = "";
-static uint8_t g_palette_map[256];
+static uint8_t g_saved_palette[256 * 3];
+static int g_saved_palette_valid = 0;
 static jmp_buf g_run_jmp;
 
 int doom_port_should_quit(void) {
@@ -45,18 +46,26 @@ int doom_port_last_code(void) {
     return g_code;
 }
 
+void doom_port_capture_palette(void) {
+    if (!g_saved_palette_valid && sys_gfx_get_palette(g_saved_palette) == 0) {
+        g_saved_palette_valid = 1;
+    }
+}
+
+void doom_port_restore_palette(void) {
+    if (g_saved_palette_valid) {
+        (void)sys_gfx_set_palette(g_saved_palette);
+    }
+}
+
 void doom_port_set_palette(const uint8_t *pal) {
-    for (int i = 0; i < 256; ++i) {
-        int r = pal[i * 3 + 0];
-        int g = pal[i * 3 + 1];
-        int b = pal[i * 3 + 2];
-        int gray = (r + g + b) / 3;
-        g_palette_map[i] = (uint8_t)(gray);
+    if (pal) {
+        (void)sys_gfx_set_palette(pal);
     }
 }
 
 uint8_t doom_port_map_color(uint8_t idx) {
-    return g_palette_map[idx];
+    return idx;
 }
 
 int doom_port_run_full(void) {
@@ -67,10 +76,6 @@ int doom_port_run_full(void) {
     g_quit = 0;
     g_code = 0;
     g_error[0] = '\0';
-    for (int i = 0; i < 256; ++i) {
-        g_palette_map[i] = (uint8_t)i;
-    }
-
     myargc = 2;
     myargv = argv;
     g_run_active = 1;

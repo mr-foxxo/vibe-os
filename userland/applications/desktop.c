@@ -494,7 +494,7 @@ static int clone_node_to_directory(int src_node, int dst_parent) {
         return created;
     }
 
-    if (fs_write_bytes(path, (const uint8_t *)g_fs_nodes[src_node].data, g_fs_nodes[src_node].size) != 0) {
+    if (fs_copy_node_to_path(src_node, path) != 0) {
         return -1;
     }
     return fs_resolve(path);
@@ -2760,9 +2760,6 @@ void desktop_main(void) {
         if (dirty) {
             draw_desktop(&mouse, menu_open, start_hover,
                          menu_hover, g_windows, MAX_WINDOWS, focused);
-            if (menu_open) {
-                draw_start_menu_with_tab(start_menu_tab, menu_hover, apps_tab_hover, games_tab_hover);
-            }
 
             for (int i = 0; i < MAX_WINDOWS; ++i) {
                 int close_hover;
@@ -2856,6 +2853,10 @@ void desktop_main(void) {
                 default:
                     break;
                 }
+            }
+
+            if (menu_open) {
+                draw_start_menu_with_tab(start_menu_tab, menu_hover, apps_tab_hover, games_tab_hover);
             }
 
             if (context_open) {

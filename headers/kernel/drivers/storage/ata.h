@@ -15,6 +15,8 @@
 void kernel_storage_init(void);
 int kernel_storage_ready(void);
 int kernel_storage_read_sectors(uint32_t lba, void *dst, uint32_t sector_count);
+int kernel_storage_write_sectors(uint32_t lba, const void *src, uint32_t sector_count);
+uint32_t kernel_storage_total_sectors(void);
 int kernel_storage_load(void *dst, uint32_t size);
 int kernel_storage_save(const void *src, uint32_t size);
 

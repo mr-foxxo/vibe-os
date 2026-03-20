@@ -18,6 +18,7 @@ static int doom_iwad_available(void) {
         "doom2.wad",
         "plutonia.wad",
         "tnt.wad",
+        "/DOOM/DOOM.WAD",
         "/doom1.wad",
         "/doom.wad",
         "/doom/DOOM.WAD",
@@ -48,7 +49,7 @@ void doom_init_state(struct doom_state *s) {
     if (doom_iwad_available()) {
         str_copy_limited(s->status, "Pressione Enter para iniciar", (int)sizeof(s->status));
     } else {
-        str_copy_limited(s->status, "IWAD ausente: copie doom.wad ou use o asset embutido", (int)sizeof(s->status));
+        str_copy_limited(s->status, "Tentara iniciar pelo FS ou pelo WAD embutido", (int)sizeof(s->status));
     }
 }
 
@@ -68,11 +69,6 @@ int doom_handle_key(struct doom_state *s, int key) {
     }
 
     if (key == '\n' || key == ' ') {
-        if (!doom_iwad_available()) {
-            str_copy_limited(s->status, "Sem IWAD valido: doom.wad nao encontrado no FS nem na imagem", (int)sizeof(s->status));
-            s->last_code = 1;
-            return 1;
-        }
         s->running = 1;
         str_copy_limited(s->status, "Executando DOOM...", (int)sizeof(s->status));
         s->last_code = doom_port_run_full();

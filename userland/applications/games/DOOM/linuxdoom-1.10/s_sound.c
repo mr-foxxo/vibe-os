@@ -164,25 +164,19 @@ void S_Init
 {  
   int		i;
 
-  fprintf( stderr, "S_Init: default sfx volume %d\n", sfxVolume);
+  (void)sfxVolume;
+  (void)musicVolume;
+
+  fprintf( stderr, "S_Init: audio backend disabled in VibeOS port\n");
 
   // Whatever these did with DMX, these are rather dummies now.
   I_SetChannels();
-  
-  S_SetSfxVolume(sfxVolume);
-  // No music with Linux - another dummy.
-  S_SetMusicVolume(musicVolume);
 
-  // Allocating the internal channels for mixing
-  // (the maximum numer of sounds rendered
-  // simultaneously) within zone memory.
-  channels =
-    (channel_t *) Z_Malloc(numChannels*sizeof(channel_t), PU_STATIC, 0);
-  
-  // Free all channels for use
-  for (i=0 ; i<numChannels ; i++)
-    channels[i].sfxinfo = 0;
-  
+  snd_SfxVolume = 0;
+  snd_MusicVolume = 0;
+  numChannels = 0;
+  channels = 0;
+
   // no sounds are playing, and they are not mus_paused
   mus_paused = 0;
 
@@ -212,6 +206,8 @@ void S_Start(void)
   
   // start new music for the level
   mus_paused = 0;
+  if (snd_MusicVolume <= 0)
+    return;
   
   if (gamemode == commercial)
     mnum = mus_runnin + gamemap - 1;
@@ -257,6 +253,8 @@ S_StartSoundAtVolume
   int		sfx_id,
   int		volume )
 {
+  if (snd_SfxVolume <= 0 || numChannels <= 0)
+    return;
 
   int		rc;
   int		sep;
@@ -368,15 +366,9 @@ S_StartSoundAtVolume
   // cache data if necessary
   if (!sfx->data)
   {
-    fprintf( stderr,
-	     "S_StartSoundAtVolume: 16bit and not pre-cached - wtf?\n");
-
-    // DOS remains, 8bit handling
-    //sfx->data = (void *) W_CacheLumpNum(sfx->lumpnum, PU_MUSIC);
-    // fprintf( stderr,
-    //	     "S_StartSoundAtVolume: loading %d (lump %d) : 0x%x\n",
-    //       sfx_id, sfx->lumpnum, (int)sfx->data );
-    
+    // The Vibe port does not have a full sound cache backend yet,
+    // so fall back to the classic lump cache instead of spamming stderr.
+    sfx->data = (void *) W_CacheLumpNum(sfx->lumpnum, PU_MUSIC);
   }
 #endif
   
@@ -873,7 +865,5 @@ S_getChannel
 
     return cnum;
 }
-
-
 
 
