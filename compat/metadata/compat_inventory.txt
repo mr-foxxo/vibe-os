@@ -1,27 +1,96 @@
-# compat_inventory.txt - Inventario da arvore compat/
-# Formato: diretorio | tipo | dependencias provaveis | viabilidade de port
+compat/bin
+type: utilitario userland
+dependencias provaveis: libc basica, argv, stdio, fs
+viabilidade: alta
 
-compat/bin | utilitario userland | libc, stdio, VFS, parser CLI | alta (Tier 1-2)
-compat/sbin | utilitario administracao | ioctls, rede, mount, privilegios | baixa/medio prazo (Tier 4-5)
-compat/usr.bin | utilitario userland | libc, regex, locale, stdio | media/alta (Tier 1-3)
-compat/usr.sbin | utilitario administracao | rede, processos, daemons, syscalls avancadas | baixa (Tier 4-5)
-compat/lib | biblioteca sistema | ABI libc completa, linker, locale, threads | baixa (referencia)
-compat/libexec | daemons/helpers | fork/exec/sinais/sockets | baixa (Tier 5)
-compat/include | headers | padronizacao API compat, mapeamento libc/posix | media (suporte incremental)
-compat/sys | kernel code | kernel OpenBSD, ABI interna, MMU/VM OpenBSD | nao viavel (somente referencia)
-compat/etc | configuracao | runtime e daemons compat | nao aplicavel direto
-compat/share | docs/dados | manpages, locales, assets | nao aplicavel direto
-compat/gnu | toolchain/utilitarios GNU | libc/posix ampla, build system GNU | media (caso a caso)
-compat/games | utilitarios userland | libc, tty, arquivos | baixa prioridade
-compat/regress | testes | harness OpenBSD | nao aplicavel direto
-compat/src | codigo base extra | depende da subarvore de origem | media (apoio ao port)
-compat/libc | camada compat local | VFS, console, runtime app | alta (incremental)
-compat/posix | camada compat local | VFS, fds, errno, stat | alta (incremental)
-compat/metadata | controle de port | atualizacao manual | alta
+compat/etc
+type: configuracao e dados
+dependencias provaveis: instalacao no VFS
+viabilidade: media
 
-# Status de viabilidade resumido por tier no VibeOS atual
-# Tier 1 (muito faceis): echo, cat, wc, true, printf
-# Tier 2 (faceis): head, tail, grep, cut, tr
-# Tier 3 (medios): sed, sort, find, uniq
-# Tier 4 (complexos): less, vi, awk
-# Tier 5 (nao suportados ainda): dependencias de fork/exec/signals/tty complexo/mmap
+compat/games
+type: aplicativos userland
+dependencias provaveis: libc, terminal, possivel tty/input
+viabilidade: media
+
+compat/gnu
+type: codigo importado de terceiros
+dependencias provaveis: toolchain, headers, libc
+viabilidade: media
+
+compat/include
+type: headers de compatibilidade
+dependencias provaveis: integracao com build e compat runtime
+viabilidade: alta
+
+compat/lib
+type: bibliotecas
+dependencias provaveis: libc, posix, linker
+viabilidade: media
+
+compat/libc
+type: biblioteca base
+dependencias provaveis: memory, string, stdio, errno
+viabilidade: alta
+
+compat/libexec
+type: utilitarios auxiliares
+dependencias provaveis: processo, fs, runtime externo
+viabilidade: baixa
+
+compat/metadata
+type: metadados do port
+dependencias provaveis: nenhuma
+viabilidade: alta
+
+compat/posix
+type: camada posix
+dependencias provaveis: open, read, write, close, lseek, stat, isatty
+viabilidade: alta
+
+compat/regress
+type: testes
+dependencias provaveis: harness de testes, processo
+viabilidade: baixa
+
+compat/sbin
+type: utilitario administrativo
+dependencias provaveis: sistema, privilegios, fs
+viabilidade: baixa
+
+compat/share
+type: dados, docs, terminfo, dicionarios
+dependencias provaveis: instalacao no VFS
+viabilidade: alta
+
+compat/src
+type: runtime adaptado do sistema
+dependencias provaveis: libc, posix, build compat
+viabilidade: alta
+
+compat/sys
+type: codigo de kernel de referencia
+dependencias provaveis: kernel OpenBSD
+viabilidade: nao portar para o kernel VibeOS
+
+compat/unistd
+type: wrappers de chamadas de sistema
+dependencias provaveis: shell, VFS, syscalls
+viabilidade: alta
+
+compat/usr.bin
+type: utilitarios userland
+dependencias provaveis: libc, stdio, fs, terminal
+viabilidade: alta para utilitarios pequenos, media/baixa para complexos
+
+compat/usr.sbin
+type: utilitarios administrativos
+dependencias provaveis: rede, processo, privilegios
+viabilidade: baixa
+
+tiers iniciais sugeridos
+tier1: echo, cat, wc, true, false, printf, pwd, uname
+tier2: head, tail, grep, cut, tr
+tier3: sort, uniq, sed, find
+tier4: less, vi, awk
+tier5: utilitarios que exigem fork, exec, signals, tty complexo, mmap

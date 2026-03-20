@@ -46,6 +46,7 @@ enum start_menu_item {
     START_MENU_ITEM_7,
     START_MENU_ITEM_8,
     START_MENU_ITEM_9,
+    START_MENU_ITEM_10,
     START_MENU_ITEM_COUNT
 };
 
@@ -83,6 +84,8 @@ int ui_wallpaper_source_node(void);
 struct rect ui_taskbar_start_button_rect(void);
 struct rect ui_start_menu_rect(void);
 struct rect ui_start_menu_item_rect(int index);
+struct rect ui_desktop_files_icon_rect(void);
+struct rect ui_desktop_craft_icon_rect(void);
 uint8_t ui_color_canvas(void);
 uint8_t ui_color_panel(void);
 uint8_t ui_color_muted(void);

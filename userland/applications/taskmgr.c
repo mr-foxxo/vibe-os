@@ -100,6 +100,7 @@ void taskmgr_draw_window(struct taskmgr_state *tm,
         case APP_BRICK_RACE: name = "RACE"; break;
         case APP_FLAP_BIRB: name = "FLAP"; break;
         case APP_DOOM: name = "DOOM"; break;
+        case APP_CRAFT: name = "CRAFT"; break;
         case APP_PERSONALIZE: name = "PERS"; break;
         default: name = "???"; break;
         }

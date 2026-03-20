@@ -24,7 +24,7 @@ static struct {
 
 #define TASKBAR_HEIGHT 22
 #define START_MENU_WIDTH 368
-#define START_MENU_HEIGHT 390
+#define START_MENU_HEIGHT 420
 #define START_MENU_ITEM_X 16
 #define START_MENU_ITEM_Y 94
 #define START_MENU_ITEM_W 336
@@ -505,6 +505,16 @@ struct rect ui_start_menu_item_rect(int index) {
     return r;
 }
 
+struct rect ui_desktop_files_icon_rect(void) {
+    struct rect r = {(int)SCREEN_WIDTH - 110, 20, 84, 86};
+    return r;
+}
+
+struct rect ui_desktop_craft_icon_rect(void) {
+    struct rect r = {(int)SCREEN_WIDTH - 110, 116, 84, 86};
+    return r;
+}
+
 uint8_t ui_color_canvas(void) {
     return g_theme.window_bg;
 }
@@ -640,6 +650,7 @@ static const char *app_caption(enum app_type type) {
     case APP_BRICK_RACE: return "Race";
     case APP_FLAP_BIRB: return "Flap";
     case APP_DOOM: return "DOOM";
+    case APP_CRAFT: return "Craft";
     case APP_PERSONALIZE: return "Cores";
     default: return "";
     }
@@ -714,18 +725,24 @@ void draw_desktop(const struct mouse_state *mouse,
     draw_wallpaper(desktop_h);
     {
         struct rect banner = {18, 18, 154, 20};
-        struct rect icon_card = {(int)SCREEN_WIDTH - 110, 20, 84, 86};
-        struct rect icon_plate = {icon_card.x + 16, icon_card.y + 10, 52, 40};
+        struct rect files_icon = ui_desktop_files_icon_rect();
+        struct rect craft_icon = ui_desktop_craft_icon_rect();
+        struct rect files_plate = {files_icon.x + 16, files_icon.y + 10, 52, 40};
+        struct rect craft_plate = {craft_icon.x + 16, craft_icon.y + 10, 52, 40};
+        int files_hover = point_in_rect(&files_icon, mouse->x, mouse->y);
+        int craft_hover = point_in_rect(&craft_icon, mouse->x, mouse->y);
 
         ui_draw_button(&banner, "VIBE DESKTOP", UI_BUTTON_ACTIVE, 0);
-        ui_draw_surface(&icon_card, ui_color_panel());
-        ui_draw_surface(&icon_plate, g_theme.window);
-        sys_text(icon_card.x + 24, icon_card.y + 60, g_theme.text, "Arquivos");
+        ui_draw_button(&files_icon, "", files_hover ? UI_BUTTON_ACTIVE : UI_BUTTON_NORMAL, files_hover);
+        ui_draw_surface(&files_plate, g_theme.window);
+        sys_text(files_icon.x + 24, files_icon.y + 60, g_theme.text, "Arquivos");
+        ui_draw_button(&craft_icon, "", craft_hover ? UI_BUTTON_ACTIVE : UI_BUTTON_NORMAL, craft_hover);
+        ui_draw_surface(&craft_plate, 10);
+        sys_text(craft_icon.x + 32, craft_icon.y + 60, g_theme.text, "Craft");
     }
 
     draw_taskbar(wins, win_count, focused, start_hover);
 
     (void)menu_open;
     (void)menu_item_hover;
-    (void)mouse;
 }

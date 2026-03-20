@@ -10,8 +10,8 @@ ORG 0x7C00
 %define VESA_MODEINFO_ADDR 0x9000
 %define MIN_USABLE_ADDR 0x00100000
 ; Number of 512-byte sectors to read for the kernel image.
-; DOOM full port significantly increases kernel.bin size, so keep a wide margin.
-%define KERNEL_SECTORS 1024
+; Keep enough room for the monolithic userland while preserving the disk layout.
+%define KERNEL_SECTORS 1280
 
 %define CODE_SEG 0x08
 %define DATA_SEG 0x10

@@ -22,6 +22,7 @@ enum app_type {
     APP_BRICK_RACE,
     APP_FLAP_BIRB,
     APP_DOOM,
+    APP_CRAFT,
     APP_PERSONALIZE,
 };
 
@@ -42,6 +43,7 @@ enum app_type {
 #define MAX_BRICK_RACE 1
 #define MAX_FLAP_BIRB 1
 #define MAX_DOOM 1
+#define MAX_CRAFT 1
 
 /* generic window descriptor used by desktop_main and task manager */
 struct window {

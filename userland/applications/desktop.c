@@ -18,6 +18,7 @@
 #include <userland/applications/include/games/brick_race.h>
 #include <userland/applications/include/games/flap_birb.h>
 #include <userland/applications/include/games/doom.h>
+#include <userland/applications/include/games/craft.h>
 #include <userland/modules/include/utils.h>
 #include <userland/modules/include/fs.h>
 
@@ -54,6 +55,8 @@ static struct flap_birb_state g_flap_birb[MAX_FLAP_BIRB];
 static int g_flap_birb_used[MAX_FLAP_BIRB];
 static struct doom_state g_doom[MAX_DOOM];
 static int g_doom_used[MAX_DOOM];
+static struct craft_state g_craft[MAX_CRAFT];
+static int g_craft_used[MAX_CRAFT];
 struct personalize_state {
     struct rect window;
     enum theme_slot selected_slot;
@@ -177,6 +180,7 @@ static int window_instance_valid(enum app_type type, int instance) {
     case APP_BRICK_RACE: return instance >= 0 && instance < MAX_BRICK_RACE;
     case APP_FLAP_BIRB: return instance >= 0 && instance < MAX_FLAP_BIRB;
     case APP_DOOM: return instance >= 0 && instance < MAX_DOOM;
+    case APP_CRAFT: return instance >= 0 && instance < MAX_CRAFT;
     case APP_PERSONALIZE: return instance == 0;
     default: return 0;
     }
@@ -199,6 +203,7 @@ static int sanitize_windows(int *focused) {
     int brick_race_used[MAX_BRICK_RACE] = {0};
     int flap_birb_used[MAX_FLAP_BIRB] = {0};
     int doom_used[MAX_DOOM] = {0};
+    int craft_used[MAX_CRAFT] = {0};
     int pers_used = 0;
     int changed = 0;
 
@@ -284,6 +289,10 @@ static int sanitize_windows(int *focused) {
             duplicate = doom_used[g_windows[i].instance];
             doom_used[g_windows[i].instance] = 1;
             break;
+        case APP_CRAFT:
+            duplicate = craft_used[g_windows[i].instance];
+            craft_used[g_windows[i].instance] = 1;
+            break;
         case APP_PERSONALIZE:
             duplicate = pers_used;
             pers_used = 1;
@@ -319,6 +328,7 @@ static int sanitize_windows(int *focused) {
     for (int i = 0; i < MAX_BRICK_RACE; ++i) g_brick_race_used[i] = brick_race_used[i];
     for (int i = 0; i < MAX_FLAP_BIRB; ++i) g_flap_birb_used[i] = flap_birb_used[i];
     for (int i = 0; i < MAX_DOOM; ++i) g_doom_used[i] = doom_used[i];
+    for (int i = 0; i < MAX_CRAFT; ++i) g_craft_used[i] = craft_used[i];
     g_pers_used = pers_used;
 
     return changed;
@@ -1068,6 +1078,17 @@ static int alloc_doom(void) {
     return -1;
 }
 
+static int alloc_craft(void) {
+    for (int i = 0; i < MAX_CRAFT; ++i) {
+        if (!g_craft_used[i]) {
+            g_craft_used[i] = 1;
+            craft_init_state(&g_craft[i]);
+            return i;
+        }
+    }
+    return -1;
+}
+
 void desktop_request_open_editor(const char *path) {
     if (path == 0) {
         g_launch_editor_path[0] = '\0';
@@ -1137,6 +1158,9 @@ static void sync_window_instance_rect(int widx) {
         break;
     case APP_DOOM:
         g_doom[g_windows[widx].instance].window = g_windows[widx].rect;
+        break;
+    case APP_CRAFT:
+        g_craft[g_windows[widx].instance].window = g_windows[widx].rect;
         break;
     case APP_PERSONALIZE:
         g_pers.window = g_windows[widx].rect;
@@ -1283,6 +1307,12 @@ static int alloc_window(enum app_type type) {
                 instance = idx;
                 rect = g_doom[idx].window;
             } break;
+            case APP_CRAFT: {
+                int idx = alloc_craft();
+                if (idx < 0) return -1;
+                instance = idx;
+                rect = g_craft[idx].window;
+            } break;
             case APP_PERSONALIZE:
                 if (g_pers_used) return -1;
                 g_pers_used = 1;
@@ -1360,6 +1390,10 @@ static void free_window(int widx) {
     case APP_BRICK_RACE: g_brick_race_used[w->instance] = 0; break;
     case APP_FLAP_BIRB: g_flap_birb_used[w->instance] = 0; break;
     case APP_DOOM: g_doom_used[w->instance] = 0; break;
+    case APP_CRAFT:
+        craft_shutdown_state(&g_craft[w->instance]);
+        g_craft_used[w->instance] = 0;
+        break;
     case APP_PERSONALIZE: g_pers_used = 0; break;
     default: break;
     }
@@ -1507,7 +1541,8 @@ static void draw_start_menu_with_tab(enum start_menu_tab active_tab,
         "Calculadora",
         "Sketchpad",
         "Personalizar",
-        "Nano"
+        "Nano",
+        "Terminal 2"
     };
     static const char *games_labels[START_MENU_ITEM_COUNT - 1] = {
         "Snake",
@@ -1518,7 +1553,8 @@ static void draw_start_menu_with_tab(enum start_menu_tab active_tab,
         "Monkey Dong",
         "Brick Race",
         "Flap Birb",
-        "DOOM"
+        "DOOM",
+        "Craft"
     };
     struct rect menu_rect = ui_start_menu_rect();
     struct rect header = {menu_rect.x + 12, menu_rect.y + 10, menu_rect.w - 24, 24};
@@ -1574,7 +1610,8 @@ static const enum app_type g_start_apps[START_MENU_ITEM_COUNT - 1] = {
     APP_CALCULATOR,
     APP_SKETCHPAD,
     APP_PERSONALIZE,
-    APP_EDITOR
+    APP_EDITOR,
+    APP_TERMINAL
 };
 
 static const enum app_type g_start_games[START_MENU_ITEM_COUNT - 1] = {
@@ -1586,7 +1623,8 @@ static const enum app_type g_start_games[START_MENU_ITEM_COUNT - 1] = {
     APP_DONKEY_KONG,
     APP_BRICK_RACE,
     APP_FLAP_BIRB,
-    APP_DOOM
+    APP_DOOM,
+    APP_CRAFT
 };
 
 static void draw_personalize_window(struct personalize_state *state,
@@ -1816,6 +1854,7 @@ void desktop_main(void) {
     for (int i = 0; i < MAX_BRICK_RACE; ++i) g_brick_race_used[i] = 0;
     for (int i = 0; i < MAX_FLAP_BIRB; ++i) g_flap_birb_used[i] = 0;
     for (int i = 0; i < MAX_DOOM; ++i) g_doom_used[i] = 0;
+    for (int i = 0; i < MAX_CRAFT; ++i) g_craft_used[i] = 0;
     g_clipboard_node = -1;
 
     if (g_launch_editor_pending) {
@@ -2011,6 +2050,21 @@ void desktop_main(void) {
                 g_doom_used[i] = 0;
             } else if (g_doom_used[i] && doom_step(&g_doom[i], ticks)) {
                 dirty = 1;
+            }
+        }
+        for (int i = 0; i < MAX_CRAFT; ++i) {
+            if (g_craft_used[i] && !has_active_window_instance(APP_CRAFT, i)) {
+                craft_shutdown_state(&g_craft[i]);
+                g_craft_used[i] = 0;
+            } else if (g_craft_used[i]) {
+                craft_update_input(&g_craft[i],
+                                   focused >= 0 &&
+                                   g_windows[focused].type == APP_CRAFT &&
+                                   g_windows[focused].instance == i,
+                                   mouse.x, mouse.y, mouse.buttons);
+                if (craft_step(&g_craft[i], ticks)) {
+                    dirty = 1;
+                }
             }
         }
 
@@ -2305,7 +2359,30 @@ void desktop_main(void) {
                 app_context.open = 0;
                 dirty = 1;
             } else {
-                if (menu_open) {
+                struct rect files_icon = ui_desktop_files_icon_rect();
+                struct rect craft_icon = ui_desktop_craft_icon_rect();
+
+                if (point_in_rect(&files_icon, click_x, click_y)) {
+                    if (open_window_or_focus_existing(APP_FILEMANAGER, &focused) >= 0) {
+                        dirty = 1;
+                    }
+                    menu_open = 0;
+                    context_open = 0;
+                    fm_context_open = 0;
+                    app_context.open = 0;
+                    handled = 1;
+                } else if (point_in_rect(&craft_icon, click_x, click_y)) {
+                    if (open_window_or_focus_existing(APP_CRAFT, &focused) >= 0) {
+                        dirty = 1;
+                    }
+                    menu_open = 0;
+                    context_open = 0;
+                    fm_context_open = 0;
+                    app_context.open = 0;
+                    handled = 1;
+                }
+
+                if (!handled && menu_open) {
                     enum app_type launch_type = APP_NONE;
                     struct rect apps_tab = start_menu_tab_rect(START_MENU_TAB_APPS);
                     struct rect games_tab = start_menu_tab_rect(START_MENU_TAB_GAMES);
@@ -2538,6 +2615,10 @@ void desktop_main(void) {
                             if (doom_handle_click(&g_doom[g_windows[hit_window].instance])) {
                                 dirty = 1;
                             }
+                        } else if (type == APP_CRAFT) {
+                            if (craft_handle_click(&g_craft[g_windows[hit_window].instance])) {
+                                dirty = 1;
+                            }
                         } else if (type == APP_PERSONALIZE) {
                             int bmp_nodes[4];
                             int bmp_count = find_bmp_nodes(bmp_nodes, 4);
@@ -2754,6 +2835,10 @@ void desktop_main(void) {
                 if (doom_handle_key(&g_doom[g_windows[focused].instance], key)) {
                     dirty = 1;
                 }
+            } else if (g_windows[focused].type == APP_CRAFT) {
+                if (craft_handle_key(&g_craft[g_windows[focused].instance], key)) {
+                    dirty = 1;
+                }
             }
         }
 
@@ -2846,6 +2931,10 @@ void desktop_main(void) {
                 case APP_DOOM:
                     doom_draw_window(&g_doom[g_windows[i].instance], active,
                                      min_hover, max_hover, close_hover);
+                    break;
+                case APP_CRAFT:
+                    craft_draw_window(&g_craft[g_windows[i].instance], active,
+                                      min_hover, max_hover, close_hover);
                     break;
                 case APP_PERSONALIZE:
                     draw_personalize_window(&g_pers, active, min_hover, max_hover, close_hover, &mouse);

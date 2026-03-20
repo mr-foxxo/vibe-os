@@ -121,16 +121,17 @@ BUILD_DIR := build
 BOOT_DIR := boot
 USERLAND_DIR := userland
 LINKER_DIR := linker
-BOOT_KERNEL_SECTORS := 1024
-APPFS_DIRECTORY_LBA := 1025
+BOOT_KERNEL_SECTORS := 1280
+APPFS_DIRECTORY_LBA := 1281
 APPFS_DIRECTORY_SECTORS := 8
 APPFS_APP_AREA_SECTORS := 1536
 PERSIST_SECTOR_COUNT := 640
-IMAGE_ASSET_START_LBA := 3209
+IMAGE_ASSET_START_LBA := 3465
 IMAGE_TOTAL_SECTORS := 65536
 DOOM_WAD_SRC := userland/applications/games/DOOM/DOOM.WAD
 DOOM_WAD_IMAGE_LBA := $(IMAGE_ASSET_START_LBA)
 IMAGE_ASSET_MANIFEST := $(BUILD_DIR)/image-assets.manifest
+CRAFT_UPSTREAM_EXPERIMENTAL ?= 1
 
 # Kernel sources - kernel only, no stage2
 KERNEL_SRCS := $(shell find kernel -name '*.c')
@@ -207,12 +208,35 @@ USERLAND_SRCS := \
 	$(USERLAND_DIR)/applications/games/brick_race.c \
 	$(USERLAND_DIR)/applications/games/flap_birb.c \
 	$(USERLAND_DIR)/applications/games/doom.c \
+	$(USERLAND_DIR)/applications/games/craft/craft_app.c \
+	$(USERLAND_DIR)/applications/games/craft/craft_gl_compat.c \
+	$(USERLAND_DIR)/applications/games/craft/craft_glfw_compat.c \
+	$(USERLAND_DIR)/applications/games/craft/craft_curl_compat.c \
+	$(USERLAND_DIR)/applications/games/craft/craft_thread_compat.c \
+	$(USERLAND_DIR)/applications/games/craft/craft_auth_compat.c \
+	$(USERLAND_DIR)/applications/games/craft/craft_client_compat.c \
+	$(USERLAND_DIR)/applications/games/craft/craft_db_compat.c \
+	$(USERLAND_DIR)/applications/games/craft/world.c \
+	$(USERLAND_DIR)/applications/games/craft/noise.c \
 	$(USERLAND_DIR)/applications/games/doom_port/doom_port_main.c \
 	$(USERLAND_DIR)/applications/games/doom_port/doom_libc_shim.c \
 	$(USERLAND_DIR)/applications/games/doom_port/i_system_vibe.c \
 	$(USERLAND_DIR)/applications/games/doom_port/i_video_vibe.c \
 	$(USERLAND_DIR)/applications/games/doom_port/i_sound_vibe.c \
 	$(USERLAND_DIR)/applications/games/doom_port/i_net_vibe.c
+
+ifeq ($(CRAFT_UPSTREAM_EXPERIMENTAL),1)
+USERLAND_SRCS += \
+	$(USERLAND_DIR)/applications/games/craft/craft_math_compat.c \
+	$(USERLAND_DIR)/applications/games/craft/craft_util_compat.c \
+	$(USERLAND_DIR)/applications/games/craft/craft_upstream_map.c \
+	$(USERLAND_DIR)/applications/games/craft/craft_upstream_matrix.c \
+	$(USERLAND_DIR)/applications/games/craft/craft_upstream_ring.c \
+	$(USERLAND_DIR)/applications/games/craft/craft_upstream_sign.c \
+	$(USERLAND_DIR)/applications/games/craft/craft_upstream_item.c \
+	$(USERLAND_DIR)/applications/games/craft/craft_upstream_cube.c \
+	$(USERLAND_DIR)/applications/games/craft/craft_upstream_runner.c
+endif
 USERLAND_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(USERLAND_SRCS))
 
 DOOM_SRC_DIR := $(USERLAND_DIR)/applications/games/DOOM/linuxdoom-1.10
