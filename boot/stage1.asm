@@ -1,5 +1,8 @@
 BITS 16
-ORG 0x7C00
+%ifndef BOOT_LOAD_ADDR
+%define BOOT_LOAD_ADDR 0x7C00
+%endif
+ORG BOOT_LOAD_ADDR
 
 %define KERNEL_SEG 0x1000
 %define KERNEL_OFF 0x0000
@@ -11,7 +14,12 @@ ORG 0x7C00
 %define MIN_USABLE_ADDR 0x00100000
 ; Number of 512-byte sectors to read for the kernel image.
 ; Keep enough room for the monolithic userland while preserving the disk layout.
+%ifndef KERNEL_SECTORS
 %define KERNEL_SECTORS 1280
+%endif
+%ifndef KERNEL_START_LBA
+%define KERNEL_START_LBA 1
+%endif
 
 %define CODE_SEG 0x08
 %define DATA_SEG 0x10
@@ -27,7 +35,6 @@ start:
     ; keep interrupts disabled until IDT is set by the kernel
 
     mov [boot_drive],dl
-    mov word [VESA_INFO_ADDR + 0], 0
 
     call load_kernel
     jc disk_error
@@ -86,7 +93,7 @@ load_kernel_chs:
 
     mov ax,KERNEL_SEG
     mov es,ax
-    mov dword [chs_lba],1
+    mov dword [chs_lba],KERNEL_START_LBA
     mov word [chs_remaining],KERNEL_SECTORS
 
 .next:

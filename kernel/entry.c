@@ -49,23 +49,27 @@ __attribute__((noreturn, section(".entry"))) void kernel_entry(void) {
     for (uint8_t *p = __bss_start; p < __bss_end; ++p) {
         *p = 0;
     }
-    /* Initialize text mode for console output */
-    kernel_text_init();
-
-    kernel_text_puts("VIBE OS Booting...\n");
     kernel_debug_init(); /* registers debug driver */
     hal_init();
     cpu_init();
     gdt_init();
+    kernel_video_init(); /* preserve boot LFB when available */
+    kernel_text_init();
+    kernel_text_puts("VIBE OS Booting...\n");
     if (kernel_cpu_count() > 1u) {
-        kernel_text_puts("CPU topology: SMP-capable hardware detected\n");
+        if (kernel_cpu_is_smp_capable()) {
+            kernel_text_puts("CPU topology: multiprocessor platform verified\n");
+        } else {
+            kernel_text_puts("CPU topology: multiple cores detected, SMP bring-up deferred\n");
+        }
     } else {
         kernel_text_puts("CPU topology: single processor\n");
     }
-    local_apic_init();
-
-    kernel_text_puts("Initializing video...\n");
-    kernel_video_init(); /* VESA with VGA fallback */
+    if (kernel_cpu_is_smp_capable()) {
+        local_apic_init();
+    } else {
+        kernel_text_puts("LAPIC/SMP deferred on this platform\n");
+    }
     kernel_text_puts("Video OK\n");
 
     kernel_text_puts("Setting up interrupts...\n");
@@ -107,9 +111,13 @@ __attribute__((noreturn, section(".entry"))) void kernel_entry(void) {
     driver_manager_init(); /* second call to debug init performs HW setup */
     kernel_text_puts("Scheduler OK\n");
 
-    kernel_text_puts("Bringing up SMP...\n");
-    smp_init();
-    kernel_text_puts("SMP OK\n");
+    if (kernel_cpu_is_smp_capable() && local_apic_enabled()) {
+        kernel_text_puts("Bringing up SMP...\n");
+        smp_init();
+        kernel_text_puts("SMP OK\n");
+    } else {
+        kernel_text_puts("SMP skipped\n");
+    }
 
     kernel_text_puts("Initializing VFS...\n");
     vfs_init();

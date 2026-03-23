@@ -123,11 +123,11 @@ BOOT_DIR := boot
 USERLAND_DIR := userland
 LINKER_DIR := linker
 BOOT_KERNEL_SECTORS := 1280
-APPFS_DIRECTORY_LBA := 1281
+APPFS_DIRECTORY_LBA := 1282
 APPFS_DIRECTORY_SECTORS := 8
 APPFS_APP_AREA_SECTORS := 1536
 PERSIST_SECTOR_COUNT := 640
-IMAGE_ASSET_START_LBA := 3465
+IMAGE_ASSET_START_LBA := 3466
 IMAGE_TOTAL_SECTORS := 3417969
 DOOM_WAD_SRC := userland/applications/games/DOOM/DOOM.WAD
 DOOM_WAD_IMAGE_LBA := $(IMAGE_ASSET_START_LBA)
@@ -389,6 +389,7 @@ $(BUILD_DIR)/lang_apps_python_%.o: lang/apps/python/%.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 BOOT_BIN := $(BUILD_DIR)/boot.bin
+MBR_BIN := $(BUILD_DIR)/mbr.bin
 AP_TRAMPOLINE_BIN := $(BUILD_DIR)/ap_trampoline.bin
 AP_TRAMPOLINE_OBJ := $(BUILD_DIR)/ap_trampoline_blob.o
 KERNEL_ELF := $(BUILD_DIR)/kernel.elf
@@ -502,8 +503,16 @@ check-tools:
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
+$(MBR_BIN): $(BOOT_DIR)/mbr.asm | $(BUILD_DIR)
+	$(AS) -f bin -DIMAGE_TOTAL_SECTORS=$(IMAGE_TOTAL_SECTORS) $< -o $@
+	@mbr_size=$$(wc -c < $@); \
+	if [ "$$mbr_size" -ne 512 ]; then \
+		echo "Erro: MBR precisa ter 512 bytes (atual: $$mbr_size)."; \
+		exit 1; \
+	fi
+
 $(BOOT_BIN): $(BOOT_DIR)/stage1.asm | $(BUILD_DIR)
-	$(AS) -f bin $< -o $@
+	$(AS) -f bin -DBOOT_LOAD_ADDR=0x7E00 -DKERNEL_START_LBA=2 -DKERNEL_SECTORS=$(BOOT_KERNEL_SECTORS) $< -o $@
 	@boot_size=$$(wc -c < $@); \
 	if [ "$$boot_size" -ne 512 ]; then \
 		echo "Erro: boot sector precisa ter 512 bytes (atual: $$boot_size)."; \
@@ -682,7 +691,7 @@ $(PORTED_APPS_STAMP): $(COMPAT_LIB)
 
 $(ECHO_APP_BIN) $(CAT_APP_BIN) $(WC_APP_BIN) $(PWD_APP_BIN) $(HEAD_APP_BIN) $(SLEEP_APP_BIN) $(RMDIR_APP_BIN) $(TAIL_APP_BIN) $(GREP_APP_BIN) $(LOADKEYS_APP_BIN) $(TRUE_APP_BIN) $(FALSE_APP_BIN) $(PRINTF_APP_BIN): $(PORTED_APPS_STAMP)
 
-$(IMAGE): $(BOOT_BIN) $(KERNEL_BIN) $(LANG_APP_BINS) $(DOOM_WAD_SRC) $(CRAFT_TEXTURE_SRC) $(CRAFT_FONT_SRC) $(CRAFT_SKY_SRC) $(CRAFT_SIGN_SRC)
+$(IMAGE): $(MBR_BIN) $(BOOT_BIN) $(KERNEL_BIN) $(LANG_APP_BINS) $(DOOM_WAD_SRC) $(CRAFT_TEXTURE_SRC) $(CRAFT_FONT_SRC) $(CRAFT_SKY_SRC) $(CRAFT_SIGN_SRC)
 	@rm -f $@
 	@bytes=$$(( $(IMAGE_TOTAL_SECTORS) * 512 )); \
 		if command -v truncate >/dev/null 2>&1; then \
@@ -692,8 +701,9 @@ $(IMAGE): $(BOOT_BIN) $(KERNEL_BIN) $(LANG_APP_BINS) $(DOOM_WAD_SRC) $(CRAFT_TEX
 		else \
 			dd if=/dev/zero of=$@ bs=512 count=0 seek=$(IMAGE_TOTAL_SECTORS); \
 		fi
-	dd if=$(BOOT_BIN) of=$@ bs=512 count=1 conv=notrunc
-	dd if=$(KERNEL_BIN) of=$@ bs=512 seek=1 conv=notrunc
+	dd if=$(MBR_BIN) of=$@ bs=512 count=1 conv=notrunc
+	dd if=$(BOOT_BIN) of=$@ bs=512 seek=1 count=1 conv=notrunc
+	dd if=$(KERNEL_BIN) of=$@ bs=512 seek=2 conv=notrunc
 	$(PYTHON) tools/build_appfs.py --image $@ --directory-lba $(APPFS_DIRECTORY_LBA) --directory-sectors $(APPFS_DIRECTORY_SECTORS) --app-area-sectors $(APPFS_APP_AREA_SECTORS) $(LANG_APP_BINS)
 	@mkdir -p $(BUILD_DIR)
 	@echo "# bundled assets" > $(IMAGE_ASSET_MANIFEST)

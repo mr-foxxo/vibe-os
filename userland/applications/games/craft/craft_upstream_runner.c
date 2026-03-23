@@ -614,3 +614,7 @@ void craft_upstream_set_mouse(int x, int y, uint8_t buttons, int focused, int in
 void craft_upstream_blit(int x, int y) {
     craft_gl_blit_to(x, y);
 }
+
+void craft_upstream_request_close(void) {
+    craft_glfw_request_close();
+}

@@ -3,8 +3,6 @@
 #include <userland/modules/include/ui.h>
 #include <userland/modules/include/utils.h>
 
-static const struct rect DEFAULT_CRAFT_WINDOW = {40, 24, 520, 372};
-
 static struct rect craft_client_rect(const struct craft_state *state) {
     return (struct rect){
         state->window.x + 4,
@@ -48,7 +46,10 @@ static int craft_storage_available(void) {
 }
 
 void craft_init_state(struct craft_state *state) {
-    state->window = DEFAULT_CRAFT_WINDOW;
+    state->window.x = 0;
+    state->window.y = 0;
+    state->window.w = (int)SCREEN_WIDTH;
+    state->window.h = (int)SCREEN_HEIGHT - 22;
     state->running = 0;
     state->last_code = 0;
     state->started = 0;
@@ -143,6 +144,12 @@ int craft_handle_click(struct craft_state *state) {
 int craft_handle_key(struct craft_state *state, int key) {
     if (!state->started) {
         return 0;
+    }
+    if (key == 27) {
+        craft_upstream_request_close();
+        state->running = 0;
+        str_copy_limited(state->status, "Craft encerrado por ESC", (int)sizeof(state->status));
+        return 1;
     }
     craft_upstream_queue_key(key);
     return 1;

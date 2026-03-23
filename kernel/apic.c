@@ -71,7 +71,7 @@ void local_apic_init(void) {
     uint32_t base;
     uint32_t svr;
 
-    if (!kernel_cpu_topology()->apic_supported) {
+    if (!kernel_cpu_topology()->apic_supported || !kernel_cpu_is_smp_capable()) {
         return;
     }
 

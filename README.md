@@ -7,7 +7,7 @@ Não leve esse repositório a sério, foi uma demonstração de como criar códi
 
 Projeto mínimo de bootloader x86 em dois estágios com arquitetura modular:
 
-- **Stage 1 (`boot/stage1.asm`)**: boot sector BIOS (512 bytes), carrega o stage 2 da mídia e entra em protected mode (32-bit).
+- **MBR + Stage 1 (`boot/mbr.asm`, `boot/stage1.asm`)**: bootstrap BIOS em dois setores. O MBR ativa particao bootavel e tenta preservar um modo VESA linear; o stage 1 carrega o kernel e entra em protected mode (32-bit).
 - Suporte a múltiplas linguagens (C, Lua)
 - Sistema de compatibilidade Unix/BSD (em desenvolvimento)
 - Arquitetura modular
@@ -26,7 +26,7 @@ Projeto mínimo de bootloader x86 em dois estágios com arquitetura modular:
   - **busybox**: dispatcher single-binary com comandos internos (`pwd`, `ls`, `cd`, `mkdir`, `touch`, `rm`, `cat`, `echo`, `clear`, `uname`, `help`, `exit`, `startx`, `history`).
   - **desktop**: interface gráfica invocada com `startx`.
 
-De forma padrão o sistema inicializa em console de texto, roda o shell e espera comandos.
+De forma padrão o sistema inicializa no shell/console, mas preserva o modo grafico de boot quando o hardware expõe um framebuffer linear compatível. Isso evita que `startx` dependa de uma troca tardia de modo de vídeo em hardware real.
 
 ## Estrutura
 
@@ -250,7 +250,8 @@ make
 
 Isso gera:
 
-- `build/boot.bin` (boot sector)
+- `build/mbr.bin` (master boot record)
+- `build/boot.bin` (stage 1/VBR)
 - `build/userland.bin` (binário da userland)
 - `build/stage2.bin` (kernel + blob da userland embutido)
 - `build/boot.img` (imagem final bootável)

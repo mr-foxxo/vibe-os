@@ -39,6 +39,12 @@
 #define AHCI_CMD_READ_DMA_EXT 0x25u
 #define AHCI_CMD_WRITE_DMA_EXT 0x35u
 
+enum storage_backend {
+    STORAGE_BACKEND_NONE = 0,
+    STORAGE_BACKEND_ATA = 1,
+    STORAGE_BACKEND_AHCI = 2
+};
+
 static int g_ata_ready = 0;
 static uint32_t g_ata_total_sectors = 0u;
 static uint16_t g_ata_io_base = ATA_PRIMARY_IO;
@@ -48,7 +54,7 @@ static uint16_t g_ata_primary_io = ATA_PRIMARY_IO;
 static uint16_t g_ata_primary_ctrl = ATA_PRIMARY_CTRL;
 static uint16_t g_ata_secondary_io = ATA_SECONDARY_IO;
 static uint16_t g_ata_secondary_ctrl = ATA_SECONDARY_CTRL;
-static int g_storage_use_ahci = 0;
+static enum storage_backend g_storage_backend = STORAGE_BACKEND_NONE;
 static volatile uint32_t *g_ahci_abar = 0;
 static volatile uint8_t *g_ahci_port = 0;
 static uint32_t g_ahci_port_index = 0u;
@@ -59,6 +65,8 @@ static uint8_t *g_ahci_ctba = 0;
 
 static uint32_t pci_config_read32(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset);
 static uint16_t pci_bar_io_base(uint32_t bar, uint16_t fallback);
+static int storage_backend_read_sector(uint32_t lba, uint8_t *buf);
+static int storage_backend_write_sector(uint32_t lba, const uint8_t *buf);
 
 struct ahci_hba_port {
     uint32_t clb;
@@ -301,18 +309,30 @@ static int ahci_issue_cmd(uint8_t command, uint64_t lba, uint16_t count, void *b
 
 static int ahci_identify_selected(void) {
     uint16_t identify_data[256];
+    uint64_t total_sectors;
 
     memset(identify_data, 0, sizeof(identify_data));
     if (ahci_issue_cmd(AHCI_CMD_IDENTIFY, 0u, 1u, identify_data, 0) != 0) {
         return -1;
     }
-    g_ahci_total_sectors = (uint32_t)identify_data[60] |
-                           ((uint32_t)identify_data[61] << 16);
+    total_sectors = (uint64_t)identify_data[100] |
+                    ((uint64_t)identify_data[101] << 16) |
+                    ((uint64_t)identify_data[102] << 32) |
+                    ((uint64_t)identify_data[103] << 48);
+    if (total_sectors == 0u) {
+        total_sectors = (uint64_t)identify_data[60] |
+                        ((uint64_t)identify_data[61] << 16);
+    }
+    g_ahci_total_sectors = (uint32_t)total_sectors;
     return g_ahci_total_sectors != 0u ? 0 : -1;
 }
 
 static int ahci_read_sector(uint32_t lba, uint8_t *buf) {
     return ahci_issue_cmd(AHCI_CMD_READ_DMA_EXT, lba, 1u, buf, 0);
+}
+
+static int ahci_write_sector(uint32_t lba, const uint8_t *buf) {
+    return ahci_issue_cmd(AHCI_CMD_WRITE_DMA_EXT, lba, 1u, (void *)(uintptr_t)buf, 1);
 }
 
 static int ahci_init_probe(void) {
@@ -368,7 +388,6 @@ static int ahci_init_probe(void) {
                         kernel_debug_printf("ahci: sata port=%d sectors=%d\n",
                                             (int)port_idx,
                                             (int)g_ahci_total_sectors);
-                        g_storage_use_ahci = 1;
                         return 0;
                     }
                 }
@@ -535,6 +554,7 @@ static void ata_select_lba(uint32_t lba) {
 
 static int ata_identify_current(void) {
     uint16_t identify_data[256];
+    uint64_t total_sectors;
 
     ata_select_lba(0u);
     outb(g_ata_ctrl_base, 0u);
@@ -560,8 +580,15 @@ static int ata_identify_current(void) {
     for (int i = 0; i < 256; ++i) {
         identify_data[i] = inw(ata_reg_data());
     }
-    g_ata_total_sectors = (uint32_t)identify_data[60] |
-                          ((uint32_t)identify_data[61] << 16);
+    total_sectors = (uint64_t)identify_data[100] |
+                    ((uint64_t)identify_data[101] << 16) |
+                    ((uint64_t)identify_data[102] << 32) |
+                    ((uint64_t)identify_data[103] << 48);
+    if (total_sectors == 0u) {
+        total_sectors = (uint64_t)identify_data[60] |
+                        ((uint64_t)identify_data[61] << 16);
+    }
+    g_ata_total_sectors = (uint32_t)total_sectors;
     return 0;
 }
 
@@ -655,18 +682,44 @@ static int ata_write_sector(uint32_t lba, const uint8_t *buf) {
     return ata_wait_command_done();
 }
 
+static int storage_backend_read_sector(uint32_t lba, uint8_t *buf) {
+    if (g_storage_backend == STORAGE_BACKEND_AHCI) {
+        return ahci_read_sector(lba, buf);
+    }
+    if (g_storage_backend == STORAGE_BACKEND_ATA) {
+        return ata_read_sector(lba, buf);
+    }
+    return -1;
+}
+
+static int storage_backend_write_sector(uint32_t lba, const uint8_t *buf) {
+    if (g_storage_backend == STORAGE_BACKEND_AHCI) {
+        return ahci_write_sector(lba, buf);
+    }
+    if (g_storage_backend == STORAGE_BACKEND_ATA) {
+        return ata_write_sector(lba, buf);
+    }
+    return -1;
+}
+
 void kernel_storage_init(void) {
     ata_probe_pci_layout();
-    if (ata_identify_probe() == 0) {
-        g_ata_ready = 1;
-        g_storage_use_ahci = 0;
-        return;
-    }
     if (ahci_init_probe() == 0) {
         g_ata_ready = 1;
+        g_storage_backend = STORAGE_BACKEND_AHCI;
+        kernel_debug_printf("storage: backend=ahci port=%d sectors=%d\n",
+                            (int)g_ahci_port_index,
+                            (int)g_ahci_total_sectors);
+        return;
+    }
+    if (ata_identify_probe() == 0) {
+        g_ata_ready = 1;
+        g_storage_backend = STORAGE_BACKEND_ATA;
+        kernel_debug_printf("storage: backend=ata sectors=%d\n", (int)g_ata_total_sectors);
         return;
     }
     g_ata_ready = 0;
+    g_storage_backend = STORAGE_BACKEND_NONE;
 }
 
 int kernel_storage_ready(void) {
@@ -681,10 +734,7 @@ int kernel_storage_read_sectors(uint32_t lba, void *dst, uint32_t sector_count) 
     }
 
     for (uint32_t i = 0; i < sector_count; ++i) {
-        int rc = g_storage_use_ahci
-                     ? ahci_read_sector(lba + i, out + (i * KERNEL_PERSIST_SECTOR_SIZE))
-                     : ata_read_sector(lba + i, out + (i * KERNEL_PERSIST_SECTOR_SIZE));
-        if (rc != 0) {
+        if (storage_backend_read_sector(lba + i, out + (i * KERNEL_PERSIST_SECTOR_SIZE)) != 0) {
             return -1;
         }
     }
@@ -699,12 +749,8 @@ int kernel_storage_write_sectors(uint32_t lba, const void *src, uint32_t sector_
         return -1;
     }
 
-    if (g_storage_use_ahci) {
-        return -1;
-    }
-
     for (uint32_t i = 0; i < sector_count; ++i) {
-        if (ata_write_sector(lba + i, in + (i * KERNEL_PERSIST_SECTOR_SIZE)) != 0) {
+        if (storage_backend_write_sector(lba + i, in + (i * KERNEL_PERSIST_SECTOR_SIZE)) != 0) {
             return -1;
         }
     }
@@ -713,7 +759,13 @@ int kernel_storage_write_sectors(uint32_t lba, const void *src, uint32_t sector_
 }
 
 uint32_t kernel_storage_total_sectors(void) {
-    return g_storage_use_ahci ? g_ahci_total_sectors : g_ata_total_sectors;
+    if (g_storage_backend == STORAGE_BACKEND_AHCI) {
+        return g_ahci_total_sectors;
+    }
+    if (g_storage_backend == STORAGE_BACKEND_ATA) {
+        return g_ata_total_sectors;
+    }
+    return 0u;
 }
 
 int kernel_storage_load(void *dst, uint32_t size) {
@@ -730,7 +782,7 @@ int kernel_storage_load(void *dst, uint32_t size) {
     remaining = size;
     for (uint32_t i = 0; i < sectors; ++i) {
         uint32_t chunk = remaining > KERNEL_PERSIST_SECTOR_SIZE ? KERNEL_PERSIST_SECTOR_SIZE : remaining;
-        if (ata_read_sector(KERNEL_PERSIST_START_LBA + i, sector) != 0) {
+        if (storage_backend_read_sector(KERNEL_PERSIST_START_LBA + i, sector) != 0) {
             return -1;
         }
         memcpy(out + (i * KERNEL_PERSIST_SECTOR_SIZE), sector, chunk);
@@ -756,7 +808,7 @@ int kernel_storage_save(const void *src, uint32_t size) {
         uint32_t chunk = remaining > KERNEL_PERSIST_SECTOR_SIZE ? KERNEL_PERSIST_SECTOR_SIZE : remaining;
         memset(sector, 0, sizeof(sector));
         memcpy(sector, in + (i * KERNEL_PERSIST_SECTOR_SIZE), chunk);
-        if (ata_write_sector(KERNEL_PERSIST_START_LBA + i, sector) != 0) {
+        if (storage_backend_write_sector(KERNEL_PERSIST_START_LBA + i, sector) != 0) {
             return -1;
         }
         remaining -= chunk;
