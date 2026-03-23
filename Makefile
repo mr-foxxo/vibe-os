@@ -404,6 +404,12 @@ LDFLAGS_KERNEL := -m elf_i386 -T $(LINKER_DIR)/kernel.ld -nostdlib -N --allow-mu
 LDFLAGS_USERLAND := -m elf_i386 -T $(LINKER_DIR)/userland.ld -nostdlib -N
 LDFLAGS_APP := -m elf_i386 -T $(LINKER_DIR)/app.ld -nostdlib -N
 
+ifeq ($(UNAME_S),Linux)
+LIBGCC_A := $(shell $(CC) -m32 -print-libgcc-file-name 2>/dev/null)
+else
+LIBGCC_A :=
+endif
+
 HELLO_APP_BUILD_DIR := $(BUILD_DIR)/lang/hello
 HELLO_APP_OBJS := \
 	$(HELLO_APP_BUILD_DIR)/app_entry.o \
@@ -624,42 +630,42 @@ $(USERLAND_MAIN_BIN): $(USERLAND_MAIN_ELF)
 	$(OBJCOPY) -O binary $< $@
 
 $(HELLO_APP_ELF): $(HELLO_APP_OBJS) $(LINKER_DIR)/app.ld
-	$(LD) $(LDFLAGS_APP) $(HELLO_APP_OBJS) -o $@
+	$(LD) $(LDFLAGS_APP) $(HELLO_APP_OBJS) -o $@ $(LIBGCC_A)
 
 $(HELLO_APP_BIN): $(HELLO_APP_ELF)
 	$(OBJCOPY) -O binary $< $@
 	$(PYTHON) tools/patch_app_header.py --nm $(NM) --elf $< --bin $@
 
 $(JS_APP_ELF): $(JS_APP_OBJS) $(LINKER_DIR)/app.ld
-	$(LD) $(LDFLAGS_APP) $(JS_APP_OBJS) -o $@
+	$(LD) $(LDFLAGS_APP) $(JS_APP_OBJS) -o $@ $(LIBGCC_A)
 
 $(JS_APP_BIN): $(JS_APP_ELF)
 	$(OBJCOPY) -O binary $< $@
 	$(PYTHON) tools/patch_app_header.py --nm $(NM) --elf $< --bin $@
 
 $(RUBY_APP_ELF): $(RUBY_APP_OBJS) $(LINKER_DIR)/app.ld
-	$(LD) $(LDFLAGS_APP) $(RUBY_APP_OBJS) -o $@
+	$(LD) $(LDFLAGS_APP) $(RUBY_APP_OBJS) -o $@ $(LIBGCC_A)
 
 $(RUBY_APP_BIN): $(RUBY_APP_ELF)
 	$(OBJCOPY) -O binary $< $@
 	$(PYTHON) tools/patch_app_header.py --nm $(NM) --elf $< --bin $@
 
 $(PYTHON_APP_ELF): $(PYTHON_APP_OBJS) $(LINKER_DIR)/app.ld
-	$(LD) $(LDFLAGS_APP) $(PYTHON_APP_OBJS) -o $@
+	$(LD) $(LDFLAGS_APP) $(PYTHON_APP_OBJS) -o $@ $(LIBGCC_A)
 
 $(PYTHON_APP_BIN): $(PYTHON_APP_ELF)
 	$(OBJCOPY) -O binary $< $@
 	$(PYTHON) tools/patch_app_header.py --nm $(NM) --elf $< --bin $@
 
 $(JAVA_APP_ELF): $(JAVA_APP_OBJS) $(LINKER_DIR)/app.ld
-	$(LD) $(LDFLAGS_APP) $(JAVA_APP_OBJS) -o $@
+	$(LD) $(LDFLAGS_APP) $(JAVA_APP_OBJS) -o $@ $(LIBGCC_A)
 
 $(JAVA_APP_BIN): $(JAVA_APP_ELF)
 	$(OBJCOPY) -O binary $< $@
 	$(PYTHON) tools/patch_app_header.py --nm $(NM) --elf $< --bin $@
 
 $(JAVAC_APP_ELF): $(JAVAC_APP_OBJS) $(LINKER_DIR)/app.ld
-	$(LD) $(LDFLAGS_APP) $(JAVAC_APP_OBJS) -o $@
+	$(LD) $(LDFLAGS_APP) $(JAVAC_APP_OBJS) -o $@ $(LIBGCC_A)
 
 $(JAVAC_APP_BIN): $(JAVAC_APP_ELF)
 	$(OBJCOPY) -O binary $< $@
