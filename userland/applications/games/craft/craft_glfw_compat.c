@@ -41,6 +41,8 @@ static int g_mouse_prev_y = 0;
 static uint8_t g_mouse_prev_buttons = 0u;
 static int g_mouse_x = 0;
 static int g_mouse_y = 0;
+static int g_mouse_dx = 0;
+static int g_mouse_dy = 0;
 static uint8_t g_mouse_buttons = 0u;
 static int g_mouse_inside = 0;
 static int g_window_focused = 0;
@@ -199,8 +201,8 @@ void glfwPollEvents(void) {
             g_mouse_ready = 1;
         }
         if (g_window.cursor_mode == GLFW_CURSOR_DISABLED) {
-            g_window.cursor_x += (double)(g_mouse_x - g_mouse_prev_x);
-            g_window.cursor_y += (double)(g_mouse_y - g_mouse_prev_y);
+            g_window.cursor_x += (double)g_mouse_dx;
+            g_window.cursor_y += (double)g_mouse_dy;
         } else {
             g_window.cursor_x = (double)g_mouse_x;
             g_window.cursor_y = (double)g_mouse_y;
@@ -242,12 +244,15 @@ void craft_glfw_inject_key(int raw) {
     g_pending_keys[g_pending_key_count++] = raw;
 }
 
-void craft_glfw_set_mouse_state(int x, int y, uint8_t buttons, int focused, int inside) {
+void craft_glfw_set_mouse_state(int x, int y, int dx, int dy,
+                                uint8_t buttons, int focused, int inside) {
     g_mouse_x = x;
     g_mouse_y = y;
+    g_mouse_dx = dx;
+    g_mouse_dy = dy;
     g_mouse_buttons = buttons;
-    g_window_focused = focused;
-    g_mouse_inside = inside;
+    g_window_focused = focused || g_window.cursor_mode == GLFW_CURSOR_DISABLED;
+    g_mouse_inside = inside || g_window.cursor_mode == GLFW_CURSOR_DISABLED;
 }
 
 void craft_glfw_set_window_size(int width, int height) {

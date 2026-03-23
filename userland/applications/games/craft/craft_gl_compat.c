@@ -128,11 +128,9 @@ static int g_reported_alloc_failure = 0;
 
 #define CRAFT_MIN_RENDER_WIDTH 200
 #define CRAFT_MIN_RENDER_HEIGHT 150
-#define CRAFT_MAX_RENDER_WIDTH 320
-#define CRAFT_MAX_RENDER_HEIGHT 240
 
 static int craft_choose_render_dim(int output, int minimum, int maximum) {
-    int value = output / 2;
+    int value = output;
     if (value < minimum) {
         value = minimum;
     }
@@ -289,8 +287,8 @@ void craft_gl_init_window(int width, int height) {
 
     g_output_width = width;
     g_output_height = height;
-    render_width = craft_choose_render_dim(width, CRAFT_MIN_RENDER_WIDTH, CRAFT_MAX_RENDER_WIDTH);
-    render_height = craft_choose_render_dim(height, CRAFT_MIN_RENDER_HEIGHT, CRAFT_MAX_RENDER_HEIGHT);
+    render_width = craft_choose_render_dim(width, CRAFT_MIN_RENDER_WIDTH, width);
+    render_height = craft_choose_render_dim(height, CRAFT_MIN_RENDER_HEIGHT, height);
 
     if (render_width == g_fb_width && render_height == g_fb_height && g_framebuffer && g_depthbuffer) {
         if (!g_saved_palette_valid) {
@@ -340,25 +338,11 @@ void craft_gl_present(void) {
 }
 
 void craft_gl_blit_to(int x, int y) {
-    int scale_x;
-    int scale_y;
-    int scale;
-    int blit_x;
-    int blit_y;
-
     if (!g_framebuffer || g_fb_width <= 0 || g_fb_height <= 0) {
         return;
     }
     craft_make_rgb332_palette();
-    scale_x = g_output_width / g_fb_width;
-    scale_y = g_output_height / g_fb_height;
-    scale = scale_x < scale_y ? scale_x : scale_y;
-    if (scale < 1) {
-        scale = 1;
-    }
-    blit_x = x + (g_output_width - g_fb_width * scale) / 2;
-    blit_y = y + (g_output_height - g_fb_height * scale) / 2;
-    sys_gfx_blit8(g_framebuffer, g_fb_width, g_fb_height, blit_x, blit_y, scale);
+    sys_gfx_blit8(g_framebuffer, g_fb_width, g_fb_height, x, y, 1);
 }
 
 void craft_gl_shutdown_window(void) {

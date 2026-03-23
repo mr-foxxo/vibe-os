@@ -30,6 +30,8 @@ static void kernel_mouse_queue_event_unlocked(void) {
 
     g_mouse_event_queue[g_mouse_event_tail].x = g_kernel_mouse.x;
     g_mouse_event_queue[g_mouse_event_tail].y = g_kernel_mouse.y;
+    g_mouse_event_queue[g_mouse_event_tail].dx = g_kernel_mouse.dx;
+    g_mouse_event_queue[g_mouse_event_tail].dy = g_kernel_mouse.dy;
     g_mouse_event_queue[g_mouse_event_tail].buttons = g_kernel_mouse.buttons;
     g_mouse_event_tail = next;
 }
@@ -169,13 +171,17 @@ int kernel_mouse_has_data(void) {
     return updated;
 }
 
-void kernel_mouse_read(int *x, int *y, uint8_t *buttons) {
+void kernel_mouse_read(int *x, int *y, int *dx, int *dy, uint8_t *buttons) {
     uint32_t flags = kernel_irq_save();
-    struct mouse_state state = {(int)g_kernel_mouse.x, (int)g_kernel_mouse.y, (uint8_t)g_kernel_mouse.buttons};
+    struct mouse_state state = {(int)g_kernel_mouse.x, (int)g_kernel_mouse.y,
+                                (int)g_kernel_mouse.dx, (int)g_kernel_mouse.dy,
+                                (uint8_t)g_kernel_mouse.buttons};
 
     if (g_mouse_event_head != g_mouse_event_tail) {
         state.x = g_mouse_event_queue[g_mouse_event_head].x;
         state.y = g_mouse_event_queue[g_mouse_event_head].y;
+        state.dx = g_mouse_event_queue[g_mouse_event_head].dx;
+        state.dy = g_mouse_event_queue[g_mouse_event_head].dy;
         state.buttons = g_mouse_event_queue[g_mouse_event_head].buttons;
         g_mouse_event_head = (uint8_t)((g_mouse_event_head + 1u) % MOUSE_EVENT_QUEUE_CAPACITY);
     }
@@ -185,6 +191,12 @@ void kernel_mouse_read(int *x, int *y, uint8_t *buttons) {
     }
     if (y != NULL) {
         *y = state.y;
+    }
+    if (dx != NULL) {
+        *dx = state.dx;
+    }
+    if (dy != NULL) {
+        *dy = state.dy;
     }
     if (buttons != NULL) {
         *buttons = state.buttons;
@@ -203,6 +215,8 @@ void kernel_mouse_sync_to_video(void) {
         g_kernel_mouse.x = 0;
         g_kernel_mouse.y = 0;
     }
+    g_kernel_mouse.dx = 0;
+    g_kernel_mouse.dy = 0;
     kernel_mouse_queue_event_unlocked();
     kernel_irq_restore(flags);
 }
@@ -240,8 +254,10 @@ void kernel_mouse_irq_handler(void) {
 
     g_kernel_mouse_packet_index = 0u;
 
-    g_kernel_mouse.x += ((int)(int8_t)g_kernel_mouse_packet[1]) * 2;
-    g_kernel_mouse.y -= ((int)(int8_t)g_kernel_mouse_packet[2]) * 2;
+    g_kernel_mouse.dx = ((int)(int8_t)g_kernel_mouse_packet[1]) * 2;
+    g_kernel_mouse.dy = -((int)(int8_t)g_kernel_mouse_packet[2]) * 2;
+    g_kernel_mouse.x += g_kernel_mouse.dx;
+    g_kernel_mouse.y += g_kernel_mouse.dy;
     kernel_mouse_clamp_to_mode(mode);
 
     g_kernel_mouse.buttons = g_kernel_mouse_packet[0] & 0x07u;
@@ -254,6 +270,8 @@ void kernel_mouse_prepare_for_graphics(void) {
     uint32_t flags = kernel_irq_save();
 
     g_kernel_mouse_packet_index = 0u;
+    g_kernel_mouse.dx = 0;
+    g_kernel_mouse.dy = 0;
     ps2_drain_output();
 
     kernel_irq_restore(flags);

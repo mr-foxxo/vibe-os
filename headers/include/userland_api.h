@@ -55,6 +55,8 @@ enum input_keycode {
 struct mouse_state {
     int x;
     int y;
+    int dx;
+    int dy;
     uint8_t buttons;
 };
 
@@ -65,6 +67,8 @@ struct video_mode {
     uint32_t pitch;
     uint8_t bpp;
 };
+
+#define VIDEO_MODE_LIST_MAX 5u
 
 enum video_capability_flags {
     VIDEO_CAPS_TEXT_ONLY = 1u << 0,
@@ -87,6 +91,9 @@ struct video_capabilities {
     uint32_t active_width;
     uint32_t active_height;
     uint32_t active_bpp;
+    uint32_t mode_count;
+    uint16_t mode_width[VIDEO_MODE_LIST_MAX];
+    uint16_t mode_height[VIDEO_MODE_LIST_MAX];
 };
 
 typedef void (*userland_entry_t)(void);

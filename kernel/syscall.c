@@ -122,13 +122,15 @@ static uint32_t sys_input_mouse(uint32_t state_ptr, uint32_t b, uint32_t c,
     if (state_ptr == 0)
         return 0;
     struct mouse_state *out = (struct mouse_state *)(uintptr_t)state_ptr;
-    int x = 0, y = 0;
+    int x = 0, y = 0, dx = 0, dy = 0;
     uint8_t buttons = 0;
     if (!kernel_mouse_has_data())
         return 0;
-    kernel_mouse_read(&x, &y, &buttons);
+    kernel_mouse_read(&x, &y, &dx, &dy, &buttons);
     out->x = x;
     out->y = y;
+    out->dx = dx;
+    out->dy = dy;
     out->buttons = buttons;
     return 1;
 }

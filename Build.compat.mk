@@ -57,9 +57,10 @@ COMPAT_SRCS := \
 
 COMPAT_OBJS := $(COMPAT_SRCS:%.c=build/%.o)
 COMPAT_LIB := build/libcompat.a
+CPU_ARCH_CFLAGS := -march=i586 -mtune=generic -mno-mmx -mno-sse -mno-sse2
 
 # Compilation flags (same as kernel/apps)
-COMPAT_CFLAGS := -m32 -Os -ffreestanding -fno-pic -fno-pie \
+COMPAT_CFLAGS := -m32 $(CPU_ARCH_CFLAGS) -Os -ffreestanding -fno-pic -fno-pie \
 	-fno-stack-protector -fno-builtin -nostdlib \
 	-Wall -Wextra -Werror \
 	-I. -Icompat/include -Iheaders -Ilang/include

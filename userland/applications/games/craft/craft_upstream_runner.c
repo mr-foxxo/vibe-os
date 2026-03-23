@@ -15,7 +15,8 @@ float sinf(float x);
 float atan2f(float y, float x);
 float sqrtf(float x);
 void craft_glfw_inject_key(int raw);
-void craft_glfw_set_mouse_state(int x, int y, uint8_t buttons, int focused, int inside);
+void craft_glfw_set_mouse_state(int x, int y, int dx, int dy,
+                                uint8_t buttons, int focused, int inside);
 void craft_glfw_set_window_size(int width, int height);
 void craft_glfw_request_close(void);
 void craft_glfw_reset_embedded(void);
@@ -607,10 +608,15 @@ void craft_upstream_queue_key(int key) {
     craft_glfw_inject_key(key);
 }
 
-void craft_upstream_set_mouse(int x, int y, uint8_t buttons, int focused, int inside) {
-    craft_glfw_set_mouse_state(x, y, buttons, focused, inside);
+void craft_upstream_set_mouse(int x, int y, int dx, int dy,
+                              uint8_t buttons, int focused, int inside) {
+    craft_glfw_set_mouse_state(x, y, dx, dy, buttons, focused, inside);
 }
 
 void craft_upstream_blit(int x, int y) {
     craft_gl_blit_to(x, y);
+}
+
+void craft_upstream_request_close(void) {
+    craft_glfw_request_close();
 }

@@ -52,9 +52,11 @@ endif
 ifeq ($(strip $(QEMU)),)
 QEMU := qemu-system-i386
 endif
+QEMU_MEMORY_MB ?= 3072
 ifeq ($(strip $(PYTHON)),)
 PYTHON := python3
 endif
+CPU_ARCH_CFLAGS := -march=i586 -mtune=generic -mno-mmx -mno-sse -mno-sse2
 
 ifeq ($(strip $(CC)),)
 ifeq ($(HAS_CROSS_TOOLCHAIN),1)
@@ -122,12 +124,12 @@ BOOT_DIR := boot
 USERLAND_DIR := userland
 LINKER_DIR := linker
 BOOT_KERNEL_SECTORS := 1280
-APPFS_DIRECTORY_LBA := 1281
+APPFS_DIRECTORY_LBA := $(shell echo $$((1 + $(BOOT_KERNEL_SECTORS) )))
 APPFS_DIRECTORY_SECTORS := 8
 APPFS_APP_AREA_SECTORS := 1536
 PERSIST_SECTOR_COUNT := 640
-IMAGE_ASSET_START_LBA := 3465
-IMAGE_TOTAL_SECTORS := 3417969
+IMAGE_ASSET_START_LBA := $(shell echo $$(( $(APPFS_DIRECTORY_LBA) + $(APPFS_DIRECTORY_SECTORS) + $(APPFS_APP_AREA_SECTORS) + $(PERSIST_SECTOR_COUNT) )))
+IMAGE_TOTAL_SECTORS := 65536
 DOOM_WAD_SRC := userland/applications/games/DOOM/DOOM.WAD
 DOOM_WAD_IMAGE_LBA := $(IMAGE_ASSET_START_LBA)
 CRAFT_TEXTURE_SRC := userland/applications/games/craft/upstream/textures/texture.png
@@ -344,7 +346,7 @@ DOOM_SYMBOL_REMAP = \
 	-Dlseek=doom_lseek \
 	-Dfstat=doom_fstat \
 	-Dexit=doom_exit
-DOOM_CFLAGS = -std=gnu17 -m32 -Os -ffreestanding -fno-pic -fno-pie -fno-stack-protector -fno-builtin -nostdlib -Wall -Wextra -I. -Iheaders -Iuserland -Ilang/include -Iuserland/lua/include -Iuserland/lua/vendor/lua-5.4.6/src -Ilang/vendor/quickjs-ng -Ilang/vendor/mruby/include -Ilang/vendor/micropython -Ilang/glibc/include -DNORMALUNIX -DLINUX -DSEEK_SET=0 -DSEEK_CUR=1 -DSEEK_END=2 -include stdio.h -include stdlib.h -include string.h -include userland/applications/games/doom_port/doom_libc_shim.h -Wno-sequence-point -Wno-unused-const-variable -Wno-unused-but-set-variable $(DOOM_SYMBOL_REMAP)
+DOOM_CFLAGS = -std=gnu17 -m32 $(CPU_ARCH_CFLAGS) -Os -ffreestanding -fno-pic -fno-pie -fno-stack-protector -fno-builtin -fcf-protection=none -nostdlib -Wall -Wextra -I. -Iheaders -Iuserland -Ilang/include -Iuserland/lua/include -Iuserland/lua/vendor/lua-5.4.6/src -Ilang/vendor/quickjs-ng -Ilang/vendor/mruby/include -Ilang/vendor/micropython -Ilang/glibc/include -DNORMALUNIX -DLINUX -DSEEK_SET=0 -DSEEK_CUR=1 -DSEEK_END=2 -include stdio.h -include stdlib.h -include string.h -include userland/applications/games/doom_port/doom_libc_shim.h -Wno-sequence-point -Wno-unused-const-variable -Wno-unused-but-set-variable $(DOOM_SYMBOL_REMAP)
 DOOM_PORT_SRC_DIR := $(USERLAND_DIR)/applications/games/doom_port
 DOOM_PORT_CFLAGS = $(CFLAGS) -include userland/applications/games/doom_port/doom_libc_shim.h $(DOOM_SYMBOL_REMAP)
 
@@ -388,6 +390,7 @@ $(BUILD_DIR)/lang_apps_python_%.o: lang/apps/python/%.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 BOOT_BIN := $(BUILD_DIR)/boot.bin
+MBR_BIN := $(BUILD_DIR)/mbr.bin
 AP_TRAMPOLINE_BIN := $(BUILD_DIR)/ap_trampoline.bin
 AP_TRAMPOLINE_OBJ := $(BUILD_DIR)/ap_trampoline_blob.o
 KERNEL_ELF := $(BUILD_DIR)/kernel.elf
@@ -396,12 +399,18 @@ USERLAND_MAIN_ELF := $(BUILD_DIR)/userland-main.elf
 USERLAND_MAIN_BIN := $(BUILD_DIR)/userland-main.bin
 IMAGE := $(BUILD_DIR)/boot.img
 
-CFLAGS := -std=gnu17 -m32 -Os -ffreestanding -fno-pic -fno-pie -fno-stack-protector -fno-builtin -nostdlib -Wall -Wextra -Werror -I. -Iheaders -Iuserland -Ilang/include -Iuserland/lua/include -Iuserland/lua/vendor/lua-5.4.6/src -Ilang/vendor/quickjs-ng -Ilang/vendor/mruby/include -Ilang/vendor/micropython
+CFLAGS := -std=gnu17 -m32 $(CPU_ARCH_CFLAGS) -Os -ffreestanding -fno-pic -fno-pie -fno-stack-protector -fno-builtin -fcf-protection=none -nostdlib -Wall -Wextra -Werror -I. -Iheaders -Iuserland -Ilang/include -Iuserland/lua/include -Iuserland/lua/vendor/lua-5.4.6/src -Ilang/vendor/quickjs-ng -Ilang/vendor/mruby/include -Ilang/vendor/micropython
 CFLAGS += -Ilang/glibc/include
 CFLAGS += -MMD -MP
 LDFLAGS_KERNEL := -m elf_i386 -T $(LINKER_DIR)/kernel.ld -nostdlib -N --allow-multiple-definition
 LDFLAGS_USERLAND := -m elf_i386 -T $(LINKER_DIR)/userland.ld -nostdlib -N
 LDFLAGS_APP := -m elf_i386 -T $(LINKER_DIR)/app.ld -nostdlib -N
+
+ifeq ($(UNAME_S),Linux)
+LIBGCC_A := $(shell $(CC) -m32 $(CPU_ARCH_CFLAGS) -print-libgcc-file-name 2>/dev/null)
+else
+LIBGCC_A :=
+endif
 
 HELLO_APP_BUILD_DIR := $(BUILD_DIR)/lang/hello
 HELLO_APP_OBJS := \
@@ -495,11 +504,21 @@ check-tools:
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
+$(MBR_BIN): $(BOOT_DIR)/mbr.asm | $(BUILD_DIR)
+	$(AS) -f bin \
+		-DIMAGE_TOTAL_SECTORS=$(IMAGE_TOTAL_SECTORS) \
+		$< -o $@
+	@mbr_size=$$(wc -c < $@); \
+	if [ "$$mbr_size" -ne 512 ]; then \
+		echo "Erro: MBR precisa ter 512 bytes (atual: $$mbr_size)."; \
+		exit 1; \
+	fi
+
 $(BOOT_BIN): $(BOOT_DIR)/stage1.asm | $(BUILD_DIR)
-	$(AS) -f bin $< -o $@
+	$(AS) -f bin -DKERNEL_START_LBA=1 -DKERNEL_SECTORS=$(BOOT_KERNEL_SECTORS) $< -o $@
 	@boot_size=$$(wc -c < $@); \
 	if [ "$$boot_size" -ne 512 ]; then \
-		echo "Erro: boot sector precisa ter 512 bytes (atual: $$boot_size)."; \
+		echo "Erro: stage1 precisa ter 512 bytes (atual: $$boot_size)."; \
 		exit 1; \
 	fi
 
@@ -623,42 +642,42 @@ $(USERLAND_MAIN_BIN): $(USERLAND_MAIN_ELF)
 	$(OBJCOPY) -O binary $< $@
 
 $(HELLO_APP_ELF): $(HELLO_APP_OBJS) $(LINKER_DIR)/app.ld
-	$(LD) $(LDFLAGS_APP) $(HELLO_APP_OBJS) -o $@
+	$(LD) $(LDFLAGS_APP) $(HELLO_APP_OBJS) -o $@ $(LIBGCC_A)
 
 $(HELLO_APP_BIN): $(HELLO_APP_ELF)
 	$(OBJCOPY) -O binary $< $@
 	$(PYTHON) tools/patch_app_header.py --nm $(NM) --elf $< --bin $@
 
 $(JS_APP_ELF): $(JS_APP_OBJS) $(LINKER_DIR)/app.ld
-	$(LD) $(LDFLAGS_APP) $(JS_APP_OBJS) -o $@
+	$(LD) $(LDFLAGS_APP) $(JS_APP_OBJS) -o $@ $(LIBGCC_A)
 
 $(JS_APP_BIN): $(JS_APP_ELF)
 	$(OBJCOPY) -O binary $< $@
 	$(PYTHON) tools/patch_app_header.py --nm $(NM) --elf $< --bin $@
 
 $(RUBY_APP_ELF): $(RUBY_APP_OBJS) $(LINKER_DIR)/app.ld
-	$(LD) $(LDFLAGS_APP) $(RUBY_APP_OBJS) -o $@
+	$(LD) $(LDFLAGS_APP) $(RUBY_APP_OBJS) -o $@ $(LIBGCC_A)
 
 $(RUBY_APP_BIN): $(RUBY_APP_ELF)
 	$(OBJCOPY) -O binary $< $@
 	$(PYTHON) tools/patch_app_header.py --nm $(NM) --elf $< --bin $@
 
 $(PYTHON_APP_ELF): $(PYTHON_APP_OBJS) $(LINKER_DIR)/app.ld
-	$(LD) $(LDFLAGS_APP) $(PYTHON_APP_OBJS) -o $@
+	$(LD) $(LDFLAGS_APP) $(PYTHON_APP_OBJS) -o $@ $(LIBGCC_A)
 
 $(PYTHON_APP_BIN): $(PYTHON_APP_ELF)
 	$(OBJCOPY) -O binary $< $@
 	$(PYTHON) tools/patch_app_header.py --nm $(NM) --elf $< --bin $@
 
 $(JAVA_APP_ELF): $(JAVA_APP_OBJS) $(LINKER_DIR)/app.ld
-	$(LD) $(LDFLAGS_APP) $(JAVA_APP_OBJS) -o $@
+	$(LD) $(LDFLAGS_APP) $(JAVA_APP_OBJS) -o $@ $(LIBGCC_A)
 
 $(JAVA_APP_BIN): $(JAVA_APP_ELF)
 	$(OBJCOPY) -O binary $< $@
 	$(PYTHON) tools/patch_app_header.py --nm $(NM) --elf $< --bin $@
 
 $(JAVAC_APP_ELF): $(JAVAC_APP_OBJS) $(LINKER_DIR)/app.ld
-	$(LD) $(LDFLAGS_APP) $(JAVAC_APP_OBJS) -o $@
+	$(LD) $(LDFLAGS_APP) $(JAVAC_APP_OBJS) -o $@ $(LIBGCC_A)
 
 $(JAVAC_APP_BIN): $(JAVAC_APP_ELF)
 	$(OBJCOPY) -O binary $< $@
@@ -724,12 +743,12 @@ $(IMAGE): $(BOOT_BIN) $(KERNEL_BIN) $(LANG_APP_BINS) $(DOOM_WAD_SRC) $(CRAFT_TEX
 
 run: $(IMAGE)
 	@if command -v $(QEMU) >/dev/null 2>&1; then \
-		$(QEMU) -drive format=raw,file=$(IMAGE) -boot c; \
+		$(QEMU) -m $(QEMU_MEMORY_MB) -drive format=raw,file=$(IMAGE) -boot c; \
 	else \
 		echo "Aviso: $(QEMU) não encontrado. Tentando qemu-system-x86_64..."; \
 		if command -v qemu-system-x86_64 >/dev/null 2>&1; then \
 			echo "Usando qemu-system-x86_64"; \
-			qemu-system-x86_64 -drive format=raw,file=$(IMAGE) -boot c; \
+			qemu-system-x86_64 -m $(QEMU_MEMORY_MB) -drive format=raw,file=$(IMAGE) -boot c; \
 		else \
 			echo "Erro: QEMU não encontrado no sistema."; \
 			echo "macOS (Homebrew): brew install qemu"; \
@@ -739,10 +758,10 @@ run: $(IMAGE)
 
 run-debug: $(IMAGE)
 	@if command -v $(QEMU) >/dev/null 2>&1; then \
-		$(QEMU) -drive format=raw,file=$(IMAGE) -boot c -serial stdio; \
+		$(QEMU) -m $(QEMU_MEMORY_MB) -drive format=raw,file=$(IMAGE) -boot c -serial stdio; \
 	else \
 		if command -v qemu-system-x86_64 >/dev/null 2>&1; then \
-			qemu-system-x86_64 -drive format=raw,file=$(IMAGE) -boot c -serial stdio; \
+			qemu-system-x86_64 -m $(QEMU_MEMORY_MB) -drive format=raw,file=$(IMAGE) -boot c -serial stdio; \
 		else \
 			echo "Erro: QEMU não encontrado"; \
 			exit 1; \
@@ -751,12 +770,12 @@ run-debug: $(IMAGE)
 
 debug: $(IMAGE)
 	@if command -v $(QEMU) >/dev/null 2>&1; then \
-		$(QEMU) -drive format=raw,file=$(IMAGE) -boot c -s -S; \
+		$(QEMU) -m $(QEMU_MEMORY_MB) -drive format=raw,file=$(IMAGE) -boot c -s -S; \
 	else \
 		echo "Aviso: $(QEMU) não encontrado. Tentando qemu-system-x86_64..."; \
 		if command -v qemu-system-x86_64 >/dev/null 2>&1; then \
 			echo "Usando qemu-system-x86_64 com debug"; \
-			qemu-system-x86_64 -drive format=raw,file=$(IMAGE) -boot c -s -S; \
+			qemu-system-x86_64 -m $(QEMU_MEMORY_MB) -drive format=raw,file=$(IMAGE) -boot c -s -S; \
 		else \
 			echo "Erro: QEMU não encontrado no sistema."; \
 			echo "macOS (Homebrew): brew install qemu"; \

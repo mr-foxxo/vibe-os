@@ -27,9 +27,9 @@
 #define ATA_SR_BSY 0x80u
 
 #define ATA_TIMEOUT 100000u
+#define ATA_TOTAL_SECTORS 65536u
 
 static int g_ata_ready = 0;
-static uint32_t g_ata_total_sectors = 0u;
 
 static int ata_wait_not_busy(void) {
     for (uint32_t i = 0; i < ATA_TIMEOUT; ++i) {
@@ -84,8 +84,6 @@ static void ata_select_lba(uint32_t lba) {
 }
 
 static int ata_identify(void) {
-    uint16_t identify_data[256];
-
     ata_select_lba(0u);
     outb(ATA_PRIMARY_CTRL, 0u);
     outb(ATA_REG_SECCOUNT0, 0u);
@@ -108,10 +106,8 @@ static int ata_identify(void) {
     }
 
     for (int i = 0; i < 256; ++i) {
-        identify_data[i] = inw(ATA_REG_DATA);
+        (void)inw(ATA_REG_DATA);
     }
-    g_ata_total_sectors = (uint32_t)identify_data[60] |
-                          ((uint32_t)identify_data[61] << 16);
     return 0;
 }
 
@@ -214,7 +210,7 @@ int kernel_storage_write_sectors(uint32_t lba, const void *src, uint32_t sector_
 }
 
 uint32_t kernel_storage_total_sectors(void) {
-    return g_ata_total_sectors;
+    return ATA_TOTAL_SECTORS;
 }
 
 int kernel_storage_load(void *dst, uint32_t size) {

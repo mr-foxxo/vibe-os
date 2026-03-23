@@ -143,13 +143,73 @@ struct resolution_option {
     uint16_t height;
 };
 
-static const struct resolution_option g_resolution_options[] = {
+static const struct resolution_option g_resolution_fallbacks[] = {
     {640u, 480u},
     {800u, 600u},
     {1024u, 768u},
     {1360u, 720u},
     {1920u, 1080u}
 };
+static struct resolution_option g_resolution_options[VIDEO_MODE_LIST_MAX];
+static int g_resolution_option_count = 0;
+static int g_resolution_can_set = 0;
+
+static void refresh_resolution_options(void) {
+    struct video_capabilities caps;
+    int count = 0;
+
+    g_resolution_can_set = 0;
+    if (sys_gfx_caps(&caps) == 0) {
+        g_resolution_can_set = (caps.flags & VIDEO_CAPS_CAN_SET_MODE) != 0u;
+        for (uint32_t i = 0; i < caps.mode_count && count < (int)VIDEO_MODE_LIST_MAX; ++i) {
+            uint16_t width = caps.mode_width[i];
+            uint16_t height = caps.mode_height[i];
+            int duplicate = 0;
+
+            if (width == 0u || height == 0u) {
+                continue;
+            }
+            for (int j = 0; j < count; ++j) {
+                if (g_resolution_options[j].width == width &&
+                    g_resolution_options[j].height == height) {
+                    duplicate = 1;
+                    break;
+                }
+            }
+            if (duplicate) {
+                continue;
+            }
+
+            g_resolution_options[count].width = width;
+            g_resolution_options[count].height = height;
+            ++count;
+        }
+    }
+
+    if (count == 0) {
+        count = (int)(sizeof(g_resolution_fallbacks) / sizeof(g_resolution_fallbacks[0]));
+        for (int i = 0; i < count; ++i) {
+            g_resolution_options[i] = g_resolution_fallbacks[i];
+        }
+        g_resolution_can_set = 1;
+    }
+
+    for (int i = 0; i < count; ++i) {
+        for (int j = i + 1; j < count; ++j) {
+            uint32_t area_i = (uint32_t)g_resolution_options[i].width * (uint32_t)g_resolution_options[i].height;
+            uint32_t area_j = (uint32_t)g_resolution_options[j].width * (uint32_t)g_resolution_options[j].height;
+
+            if (area_j < area_i ||
+                (area_j == area_i && g_resolution_options[j].width < g_resolution_options[i].width)) {
+                struct resolution_option temp = g_resolution_options[i];
+                g_resolution_options[i] = g_resolution_options[j];
+                g_resolution_options[j] = temp;
+            }
+        }
+    }
+
+    g_resolution_option_count = count;
+}
 
 static void sync_window_instance_rect(int widx);
 static int alloc_window(enum app_type type);
@@ -1640,6 +1700,7 @@ static void draw_personalize_window(struct personalize_state *state,
     int bmp_count = find_bmp_nodes(bmp_nodes, 4);
     int current_wallpaper = ui_wallpaper_source_node();
     uint8_t selected_color = theme->background;
+    refresh_resolution_options();
     struct rect body = {state->window.x + 6, state->window.y + 20, state->window.w - 12, state->window.h - 26};
     struct rect theme_panel = {body.x + 8, body.y + 8, 216, 190};
     struct rect preview_panel = {body.x + 232, body.y + 8, body.w - 240, 62};
@@ -1728,7 +1789,7 @@ static void draw_personalize_window(struct personalize_state *state,
         sys_text(wallpaper_panel.x + 8, wallpaper_panel.y + wallpaper_panel.h - 16, theme->text, "nenhum .bmp encontrado");
     }
 
-    for (int i = 0; i < (int)(sizeof(g_resolution_options) / sizeof(g_resolution_options[0])); ++i) {
+    for (int i = 0; i < g_resolution_option_count; ++i) {
         struct rect button = personalize_window_resolution_button_rect(&state->window, i);
         char label[16] = "";
         int hover = point_in_rect(&button, mouse->x, mouse->y);
@@ -1740,10 +1801,11 @@ static void draw_personalize_window(struct personalize_state *state,
         append_uint_limited(label, g_resolution_options[i].height, (int)sizeof(label));
         ui_draw_button(&button,
                        label,
-                       selected ? UI_BUTTON_ACTIVE : UI_BUTTON_PRIMARY,
+                       selected ? UI_BUTTON_ACTIVE :
+                       (g_resolution_can_set ? UI_BUTTON_PRIMARY : UI_BUTTON_NORMAL),
                        hover);
     }
-    const char *res_text = "Aplicacao imediata";
+    const char *res_text = g_resolution_can_set ? "Aplicacao imediata" : "modos VESA detectados no boot";
     int res_text_w = str_len(res_text) * 6;
     sys_text(resolution_panel.x + (resolution_panel.w - res_text_w) / 2,
              resolution_panel.y + resolution_panel.h - 14, theme->text,
@@ -2074,7 +2136,8 @@ void desktop_main(void) {
                                    focused >= 0 &&
                                    g_windows[focused].type == APP_CRAFT &&
                                    g_windows[focused].instance == i,
-                                   mouse.x, mouse.y, mouse.buttons);
+                                   mouse.x, mouse.y, mouse.dx, mouse.dy,
+                                   mouse.buttons);
                 if (craft_step(&g_craft[i], ticks)) {
                     dirty = 1;
                 }
@@ -2693,9 +2756,13 @@ void desktop_main(void) {
                                     dirty = 1;
                                 }
                             }
-                            for (int i = 0; i < (int)(sizeof(g_resolution_options) / sizeof(g_resolution_options[0])); ++i) {
+                            refresh_resolution_options();
+                            for (int i = 0; i < g_resolution_option_count; ++i) {
                                 struct rect button = personalize_window_resolution_button_rect(&g_windows[hit_window].rect, i);
                                 if (point_in_rect(&button, click_x, click_y)) {
+                                    if (!g_resolution_can_set) {
+                                        break;
+                                    }
                                     if (ui_set_resolution(g_resolution_options[i].width,
                                                           g_resolution_options[i].height) == 0) {
                                         for (int w = 0; w < MAX_WINDOWS; ++w) {
@@ -2858,7 +2925,7 @@ void desktop_main(void) {
                     dirty = 1;
                 }
             } else if (g_windows[focused].type == APP_CRAFT) {
-                if (key == 27) {
+                if (key == 'q' || key == 'Q') {
                     free_window(focused);
                     focused = -1;
                     dirty = 1;
@@ -3023,7 +3090,13 @@ void desktop_main(void) {
                 draw_file_dialog(&file_dialog, &mouse);
             }
 
-            cursor_draw(mouse.x, mouse.y);
+            if (!(focused >= 0 &&
+                  g_windows[focused].active &&
+                  !g_windows[focused].minimized &&
+                  g_windows[focused].type == APP_CRAFT &&
+                  g_craft[g_windows[focused].instance].started)) {
+                cursor_draw(mouse.x, mouse.y);
+            }
             sys_present();
             dirty = 0;
         }

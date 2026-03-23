@@ -12,6 +12,7 @@ APPS := js ruby python hello java javac
 # Glibc library (to be created)
 GLIBC_SO := $(LIB_DIR)/libglibc.so
 GLIBC_A := $(LIB_DIR)/libglibc.a
+CPU_ARCH_CFLAGS := -march=i586 -mtune=generic -mno-mmx -mno-sse -mno-sse2
 
 # App build rules
 define build_app
@@ -22,7 +23,7 @@ $1_OBJS := $(BIN_DIR)/$1.o
 $$(BIN_DIR)/$1: $1_MAIN
 	@mkdir -p $(BIN_DIR)
 	@echo "Building $$@..."
-	gcc -m32 -Os -I. -Iheaders -Ilang/vendor/glibc/include \
+	gcc -m32 $(CPU_ARCH_CFLAGS) -Os -I. -Iheaders -Ilang/vendor/glibc/include \
 		-static $$< -o $$@ 2>/dev/null || \
 	echo "  (requires glibc headers)"
 
@@ -34,7 +35,7 @@ $(foreach app,$(APPS),$(eval $(call build_app,$(app))))
 $(GLIBC_SO): build/libglibc-full.a
 	@mkdir -p $(LIB_DIR)
 	@echo "Creating dynamic glibc library..."
-	@gcc -m32 -shared -fPIC $< -o $@ 2>/dev/null || \
+	@gcc -m32 $(CPU_ARCH_CFLAGS) -shared -fPIC $< -o $@ 2>/dev/null || \
 	echo "  (requires libglibc-full.a from make -f Build.glibc.mk glibc-full-build)"
 
 # Build all apps

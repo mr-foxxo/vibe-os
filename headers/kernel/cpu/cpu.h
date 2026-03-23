@@ -14,6 +14,8 @@ struct kernel_cpu_topology {
     uint32_t apic_supported;
     uint32_t cpuid_supported;
     uint32_t cpuid_logical_cpus;
+    uint32_t cpuid_core_cpus;
+    uint32_t mp_table_present;
     char vendor[13];
 };
 

@@ -17,6 +17,8 @@ struct video_mode {
 struct mouse_state {
     int x;
     int y;
+    int dx;
+    int dy;
     uint8_t buttons;
 };
 

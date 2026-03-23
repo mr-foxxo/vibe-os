@@ -44,7 +44,7 @@ struct mp_processor_entry {
 } __attribute__((packed));
 
 static struct kernel_cpu_topology g_cpu_topology = {
-    1u, 0u, 0u, 0u, 1u, "unknown"
+    1u, 0u, 0u, 0u, 1u, 1u, 0u, "unknown"
 };
 static struct kernel_cpu_state g_cpu_states[32];
 
@@ -222,6 +222,8 @@ void cpu_init(void) {
     g_cpu_topology.apic_supported = 0u;
     g_cpu_topology.cpuid_supported = cpu_has_cpuid() ? 1u : 0u;
     g_cpu_topology.cpuid_logical_cpus = 1u;
+    g_cpu_topology.cpuid_core_cpus = 1u;
+    g_cpu_topology.mp_table_present = 0u;
     g_cpu_topology.vendor[0] = 'u';
     g_cpu_topology.vendor[1] = 'n';
     g_cpu_topology.vendor[2] = 'k';
@@ -253,20 +255,33 @@ void cpu_init(void) {
             }
             g_cpu_topology.boot_cpu_id = (ebx >> 24) & 0xFFu;
         }
+
+        cpu_cpuid(0u, &eax, &ebx, &ecx, &edx);
+        if (eax >= 4u &&
+            g_cpu_topology.vendor[0] == 'G' &&
+            g_cpu_topology.vendor[1] == 'e' &&
+            g_cpu_topology.vendor[2] == 'n') {
+            cpu_cpuid(4u, &eax, &ebx, &ecx, &edx);
+            if ((eax & 0x1Fu) != 0u) {
+                uint32_t cores = ((eax >> 26) & 0x3Fu) + 1u;
+                if (cores > g_cpu_topology.cpuid_core_cpus) {
+                    g_cpu_topology.cpuid_core_cpus = cores;
+                }
+            }
+        }
+
+        if (g_cpu_topology.cpuid_logical_cpus > g_cpu_topology.cpuid_core_cpus) {
+            g_cpu_topology.cpuid_core_cpus = g_cpu_topology.cpuid_logical_cpus;
+        }
     }
 
     mp_cpu_count = cpu_detect_from_mp_table(&boot_cpu_id);
     if (mp_cpu_count > 0u) {
         g_cpu_topology.cpu_count = mp_cpu_count;
         g_cpu_topology.boot_cpu_id = boot_cpu_id;
-    } else if (g_cpu_topology.cpuid_logical_cpus > 1u) {
-        g_cpu_topology.cpu_count = g_cpu_topology.cpuid_logical_cpus;
-        for (uint32_t i = 0; i < g_cpu_topology.cpu_count && i < 32u; ++i) {
-            g_cpu_states[i].logical_index = i;
-            g_cpu_states[i].apic_id = i;
-            g_cpu_states[i].started = 0u;
-            g_cpu_states[i].is_boot_cpu = (i == 0u) ? 1u : 0u;
-        }
+        g_cpu_topology.mp_table_present = 1u;
+    } else if (g_cpu_topology.cpuid_core_cpus > 1u) {
+        g_cpu_topology.cpu_count = g_cpu_topology.cpuid_core_cpus;
     }
     if (g_cpu_topology.cpu_count > 32u) {
         g_cpu_topology.cpu_count = 32u;
@@ -280,15 +295,19 @@ void cpu_init(void) {
         g_cpu_states[i].is_boot_cpu = 0u;
     }
 
-    kernel_debug_printf("cpu: vendor=%s cpuid=%d apic=%d logical=%d detected=%d bsp=%d\n",
+    kernel_debug_printf("cpu: vendor=%s cpuid=%d apic=%d logical=%d cores=%d detected=%d bsp=%d mp=%d\n",
                         g_cpu_topology.vendor,
                         (int)g_cpu_topology.cpuid_supported,
                         (int)g_cpu_topology.apic_supported,
                         (int)g_cpu_topology.cpuid_logical_cpus,
+                        (int)g_cpu_topology.cpuid_core_cpus,
                         (int)g_cpu_topology.cpu_count,
-                        (int)g_cpu_topology.boot_cpu_id);
-    if (g_cpu_topology.cpu_count > 1u) {
-        kernel_debug_puts("cpu: multiprocessor hardware detected; SMP scheduling not enabled yet\n");
+                        (int)g_cpu_topology.boot_cpu_id,
+                        (int)g_cpu_topology.mp_table_present);
+    if (g_cpu_topology.cpu_count > 1u && mp_cpu_count == 0u) {
+        kernel_debug_puts("cpu: multiple CPUs detected via CPUID, but no MP table was found; reporting topology while keeping BSP-only bring-up\n");
+    } else if (g_cpu_topology.cpu_count > 1u) {
+        kernel_debug_puts("cpu: MP table detected; LAPIC/SMP bring-up allowed\n");
     }
 }
 
@@ -328,7 +347,9 @@ uint32_t kernel_cpu_index(void) {
 }
 
 int kernel_cpu_is_smp_capable(void) {
-    return g_cpu_topology.cpu_count > 1u && g_cpu_topology.apic_supported;
+    return g_cpu_topology.cpu_count > 1u &&
+           g_cpu_topology.apic_supported &&
+           g_cpu_topology.mp_table_present;
 }
 
 int kernel_cpu_mark_started(uint32_t apic_id) {

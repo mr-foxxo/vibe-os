@@ -3,8 +3,6 @@
 #include <userland/modules/include/ui.h>
 #include <userland/modules/include/utils.h>
 
-static const struct rect DEFAULT_CRAFT_WINDOW = {40, 24, 520, 372};
-
 static struct rect craft_client_rect(const struct craft_state *state) {
     return (struct rect){
         state->window.x + 4,
@@ -48,13 +46,18 @@ static int craft_storage_available(void) {
 }
 
 void craft_init_state(struct craft_state *state) {
-    state->window = DEFAULT_CRAFT_WINDOW;
+    state->window.x = 0;
+    state->window.y = 0;
+    state->window.w = (int)SCREEN_WIDTH;
+    state->window.h = (int)SCREEN_HEIGHT - 22;
     state->running = 0;
     state->last_code = 0;
     state->started = 0;
     state->focused = 0;
     state->mouse_x = 0;
     state->mouse_y = 0;
+    state->mouse_dx = 0;
+    state->mouse_dy = 0;
     state->mouse_buttons = 0u;
     if (craft_storage_available()) {
         str_copy_limited(state->status, "Inicializando renderer do Craft", (int)sizeof(state->status));
@@ -64,10 +67,13 @@ void craft_init_state(struct craft_state *state) {
 }
 
 void craft_update_input(struct craft_state *state, int focused,
-                        int mouse_x, int mouse_y, uint8_t mouse_buttons) {
+                        int mouse_x, int mouse_y, int mouse_dx, int mouse_dy,
+                        uint8_t mouse_buttons) {
     state->focused = focused;
     state->mouse_x = mouse_x;
     state->mouse_y = mouse_y;
+    state->mouse_dx = mouse_dx;
+    state->mouse_dy = mouse_dy;
     state->mouse_buttons = mouse_buttons;
 }
 
@@ -78,6 +84,8 @@ void craft_shutdown_state(struct craft_state *state) {
     state->running = 0;
     state->started = 0;
     state->focused = 0;
+    state->mouse_dx = 0;
+    state->mouse_dy = 0;
     state->mouse_buttons = 0u;
     str_copy_limited(state->status, "Craft encerrado", (int)sizeof(state->status));
 }
@@ -114,7 +122,9 @@ int craft_step(struct craft_state *state, uint32_t ticks) {
     }
 
     craft_upstream_resize(client.w, client.h);
-    craft_upstream_set_mouse(local_x, local_y, state->mouse_buttons, state->focused, inside);
+    craft_upstream_set_mouse(local_x, local_y,
+                             state->mouse_dx, state->mouse_dy,
+                             state->mouse_buttons, state->focused, inside);
     state->last_code = craft_upstream_frame();
     {
         static int logged_first_frame = 0;
