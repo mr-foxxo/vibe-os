@@ -1,516 +1,284 @@
-# VIBE OS - Sistema Operacional Vibe Coded
+# VIBE OS - Um sistema operacional x86 simples usando IA e vibe coding (e muitas patas de raposo e mãos humanas)
 
-## AVISO
-Não leve esse repositório a sério, foi uma demonstração de como criar código low-level com IA de modo a mostrar as falhas e problemas existentes. O código quebrou no final quando foi solicitada a criação de um sistema de arquivos simples, portanto isso aqui vale para melhorias e avaliação da qualidade de código!!!
+## Aviso
 
-## Descrição
+Este repositório é um projeto experimental de sistema operacional x86 BIOS feito com forte apoio de IA. Há bastante código funcional, mas também há áreas incompletas, inconsistentes ou ainda em transição arquitetural.
 
-Projeto mínimo de bootloader x86 em dois estágios com arquitetura modular:
+Leia o projeto como:
 
-- **MBR + Stage 1 (`boot/mbr.asm`, `boot/stage1.asm`)**: bootstrap BIOS em dois setores. O MBR ativa particao bootavel e tenta preservar um modo VESA linear; o stage 1 carrega o kernel e entra em protected mode (32-bit).
-- Suporte a múltiplas linguagens (C, Lua)
-- Sistema de compatibilidade Unix/BSD (em desenvolvimento)
-- Arquitetura modular
-- **Kernel (`kernel/`)**: subsistema de kernel modularizado com:
-  - Driver manager e drivers específicos (video, input, timer, interrupt)
-  - Executivo (ELF loader)
-  - Gerenciador de memória (paging, heap, physical memory)
-  - Processador e scheduler
-  - IPC (Inter-Process Communication)
-  - Sistema de arquivos (VFS)
-- **Userland**: módulos e aplicações em C rodam em ring3:
-  - **bibliotecas/utilitários** (`syscalls`, `utils`, `fs`, `terminal`, `ui`, etc.)
-  - **Aplicações** construídas no blob: `console`, `shell`, `busybox`, `desktop`, `filemanager`, `taskmgr`, `clock`.
-  - **Console**: driver de modo-texto usado pelo shell.
-  - **Shell**: prompt interativo com histórico e parser de argumentos.
-  - **busybox**: dispatcher single-binary com comandos internos (`pwd`, `ls`, `cd`, `mkdir`, `touch`, `rm`, `cat`, `echo`, `clear`, `uname`, `help`, `exit`, `startx`, `history`).
-  - **desktop**: interface gráfica invocada com `startx`.
+- experimento de bootloader + kernel + runtime modular
+- base para estudo, depuração e refatoração
+- código que ainda não representa um sistema operacional "acabado"
 
-De forma padrão o sistema inicializa no shell/console, mas preserva o modo grafico de boot quando o hardware expõe um framebuffer linear compatível. Isso evita que `startx` dependa de uma troca tardia de modo de vídeo em hardware real.
+## Resumo
 
-## Estrutura
+O estado atual do projeto é este:
 
-A estrutura de diretórios reflete a arquitetura modular com headers centralizados:
+- boot **BIOS legado**, em múltiplos estágios
+- **MBR -> VBR -> stage2 -> `KERNEL.BIN`**
+- partição de boot **FAT32**
+- segunda partição **raw** para **AppFS**, persistência e assets
+- kernel 32-bit com:
+  - inicialização de CPU, GDT, IDT, PIC e PIT
+  - drivers de vídeo, teclado, mouse e storage
+  - scheduler simples
+  - camada de serviços estilo microkernel
+  - tabela de syscalls
+- bootstrap de userland via serviço interno `init`
+- carregamento de apps externos via **AppFS**
+- shell modular e caminho gráfico com `startx` e desktop
+
+Em outras palavras: o sistema não é mais um blob único "kernel + userland embutida" no sentido antigo do README. Hoje o fluxo real é:
+
+`BIOS -> MBR -> stage1/VBR -> stage2 -> KERNEL.BIN -> kernel -> init -> AppFS -> userland.app/startx -> shell e apps`
+
+## Aviso sobre a documentação detalhada
+
+Os arquivos detalhados em `docs/` estão **somente em inglês**.
+
+Se você quer a visão técnica mais fiel ao código atual, comece por eles:
+
+- [docs/overview.md](docs/overview.md)
+- [docs/workflow.md](docs/workflow.md)
+- [docs/mbr.md](docs/mbr.md)
+- [docs/stage1.md](docs/stage1.md)
+- [docs/stage2.md](docs/stage2.md)
+- [docs/memory_map.md](docs/memory_map.md)
+- [docs/kernel_init.md](docs/kernel_init.md)
+- [docs/drivers.md](docs/drivers.md)
+- [docs/runtime_and_services.md](docs/runtime_and_services.md)
+- [docs/apps_and_modules.md](docs/apps_and_modules.md)
+
+## Índice rápido
+
+- [Arquitetura atual](#arquitetura-atual)
+- [Mapa de diretórios](#mapa-de-diretórios)
+- [Build](#build)
+- [Execução no QEMU](#execução-no-qemu)
+- [Artefatos gerados](#artefatos-gerados)
+- [Documentação](#documentação)
+- [Status real do projeto](#status-real-do-projeto)
+- [English version](README.en.md)
+
+## Arquitetura atual
+
+### Boot
+
+- [`boot/mbr.asm`](boot/mbr.asm)
+  - relocação do MBR
+  - inicialização de `BOOTINFO`
+  - descoberta da partição ativa
+  - carga do VBR
+- [`boot/stage1.asm`](boot/stage1.asm)
+  - leitura do `stage2` a partir dos setores reservados da partição FAT32
+  - trace persistente de boot em RAM baixa
+- [`boot/stage2.asm`](boot/stage2.asm)
+  - parse mínimo de FAT32
+  - leitura de `VIBEBG.BIN` e `KERNEL.BIN`
+  - enumeração VESA
+  - detecção de memória
+  - ativação de A20
+  - menu de boot
+  - retorno para real mode para uso de BIOS e handoff final ao kernel
+
+### Kernel
+
+O kernel atual entra por [`kernel/entry.c`](kernel/entry.c) e faz:
+
+- bring-up básico de CPU/GDT/IDT/PIC/PIT
+- inicialização de vídeo e console de texto
+- teclado PS/2 e mouse PS/2
+- descoberta de storage nativo:
+  - AHCI primeiro
+  - ATA depois
+- inicialização de memória, heap e arenas para apps externos
+- scheduler
+- registro e bootstrap de serviços
+- syscalls
+- lançamento do `init` interno
+
+### Runtime e apps
+
+O caminho atual de execução de apps não depende de um VFS completo no kernel.
+
+O fluxo é:
+
+- o kernel sobe o serviço interno `init`
+- `init` prepara console e filesystem de userland
+- `init` tenta lançar `userland.app` via AppFS
+- `userland.app` sobe o shell
+- em boot normal para desktop, `userland.app` autoexecuta `startx`
+- `startx` e o desktop lançam apps gráficos modulares
+
+### Storage em tempo de execução
+
+Hoje existem dois "mundos" de storage:
+
+1. partição de boot FAT32
+   - usada pelo loader BIOS
+   - contém `KERNEL.BIN`, `STAGE2.BIN`, manifests e assets de boot
+2. partição raw de dados
+   - AppFS
+   - área de persistência
+   - assets raw como wallpaper e dados de jogos
+
+## Mapa de diretórios
 
 ```text
 .
-├── boot/
-│   └── stage1.asm              # Boot sector (BIOS)
-├── headers/                    # CENTRALIZADO: todos os headers
-│   ├── include/
-│   │   └── userland_api.h      # Definições de syscalls
-│   ├── kernel/                 # Headers do kernel
-│   │   ├── cpu/
-│   │   ├── drivers/            # video, input, interrupt, timer, debug
-│   │   ├── exec/               # ELF loader
-│   │   ├── fs/                 # Filesystem
-│   │   ├── ipc/                # Inter-process communication
-│   │   ├── memory/             # heap, paging, physmem
-│   │   ├── process/            # Process management
-│   │   └── *.h                 # Headers de topo (kernel.h, hal.h, etc.)
-│   ├── stage2/                 # Headers do stage2
-│   │   └── include/            # graphics, io, irq, keyboard, mouse, syscalls, timer, types, userland, video
-│   └── userland/               # Headers de userland
-│       ├── applications/       # apps, clock, filemanager, taskmgr
-│       └── modules/            # busybox, console, fs, shell, ui, utils, syscalls, etc.
-├── kernel/                     # Implementação: apenas .c (headers em headers/kernel/)
-│   ├── cpu/
-│   ├── drivers/
-│   ├── exec/
-│   ├── fs/
-│   ├── ipc/
-│   ├── memory/
-│   ├── process/
-│   ├── entry.c
-│   ├── hal.c
-│   ├── panic.c
-│   └── syscall.c
-├── kernel_asm/                 # Assembly do kernel
-│   ├── context_switch.asm
-│   └── isr.asm
-├── stage2/                     # Implementação: apenas .c (headers em headers/stage2/)
-│   ├── *.c                     # Implementações (mouse, timer, graphics, syscalls, etc.)
-│   └── isr.asm                 # Stubs de interrupção
-├── userland/                   # Implementação: apenas .c (headers em headers/userland/)
-│   ├── userland.c
-│   ├── applications/           # desktop, terminal, clock, filemanager, taskmgr
-│   └── modules/                # console, shell, busybox, ui, fs, etc.
-├── linker/
-│   ├── stage2.ld
-│   └── userland.ld
-├── Makefile
-├── README.md
-├── compat/                     # Código de compatibilidade UNIX/BSD
-└── lang/                       # Runtimes de linguagem (Lua)
+├── boot/                # MBR, VBR/stage1 e stage2 em assembly
+├── kernel/              # kernel C
+├── kernel_asm/          # assembly do kernel
+├── headers/             # headers centralizados
+├── userland/            # bootstrap, módulos e apps nativos
+├── lang/                # runtime/AppFS SDK e apps de linguagem
+├── applications/        # apps/ports auxiliares usados no build
+├── compat/              # árvore de compatibilidade/ports
+├── tools/               # empacotamento da imagem, AppFS e validações
+├── linker/              # scripts de link
+├── assets/              # imagens de boot e runtime
+└── docs/
+    ├── *.md             # documentação técnica detalhada (em inglês)
+    └── guidelines/      # planos, guidelines e docs voltados a agentes
 ```
-
-### Organização de Headers
-
-Todos os arquivos `.h` (headers) foram centralizados em `headers/` mantendo hierarquia por subsistema:
-
-- **`headers/kernel/`**: 19 headers - Kernel e seus módulos
-- **`headers/stage2/`**: 12 headers - Boot e fase 2
-- **`headers/userland/`**: 15 headers - Aplicações e bibliotecas
-- **`headers/include/`**: 1 header - APIs comuns (userland_api.h)
-
-**Total: 46 headers organizados por subsistema**
-
-## Pré-requisitos
-
-- `nasm`
-- Toolchain i386 ELF (recomendado):
-  - `i686-elf-gcc`
-  - `i686-elf-ld`
-  - `i686-elf-objcopy`
-- `qemu-system-i386`
-- `make`
-
-> No macOS, prefira usar a toolchain `i686-elf-*` do Homebrew.
-> O override `make CC=gcc LD=ld OBJCOPY=objcopy` só funciona quando o linker tem suporte a ELF i386 (GNU binutils/LLD compatível).
-
-## Execução no macOS (passo a passo)
-
-### 1. Instalar dependências base
-
-Instale as Command Line Tools da Apple:
-
-```bash
-xcode-select --install
-```
-
-### 2. Instalar Homebrew (se ainda não tiver)
-
-```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-```
-
-### 3. Instalar toolchain e emulador
-
-```bash
-brew update
-brew install nasm i686-elf-gcc qemu
-```
-
-### 4. Garantir Homebrew no PATH
-
-Apple Silicon (M1/M2/M3...):
-
-```bash
-echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile
-eval "$(/opt/homebrew/bin/brew shellenv)"
-```
-
-Mac Intel:
-
-```bash
-echo 'eval "$(/usr/local/bin/brew shellenv)"' >> ~/.zprofile
-eval "$(/usr/local/bin/brew shellenv)"
-```
-
-### 5. Verificar instalação
-
-```bash
-nasm -v
-i686-elf-gcc --version
-i686-elf-ld --version
-i686-elf-objcopy --version
-qemu-system-i386 --version
-```
-
-### 6. Build e execução
-
-No diretório do projeto:
-
-```bash
-make
-make run
-```
-
-Se faltar alguma dependência, o `make` falha com mensagem direta sugerindo o comando do Homebrew.
-
-## Execução no Linux (passo a passo)
-
-As instruções abaixo replicam o fluxo do macOS para distros Linux comuns.
-
-### 1. Debian/Ubuntu e derivados
-
-```bash
-sudo apt update
-sudo apt install -y build-essential make python3 nasm qemu-system-x86 binutils gcc-multilib
-```
-
-### 2. Fedora e derivados
-
-```bash
-sudo dnf install -y @development-tools make python3 nasm qemu-system-x86 binutils gcc glibc-devel.i686
-```
-
-### 3. Arch Linux e derivados
-
-```bash
-sudo pacman -S --needed base-devel make python nasm qemu-system-x86 binutils gcc lib32-glibc
-```
-
-### 4. Gentoo e derivados
-
-```bash
-sudo emerge --ask sys-devel/gcc sys-devel/binutils dev-lang/python dev-lang/nasm app-emulation/qemu
-```
-
-### 5. openSUSE (Leap/Tumbleweed)
-
-```bash
-sudo zypper refresh
-sudo zypper install -y -t pattern devel_basis
-sudo zypper install -y make python3 nasm qemu-x86 qemu-tools binutils gcc gcc-32bit
-```
-
-### 6. Build no Linux
-
-Opção A (toolchain `i686-elf-*` instalada no sistema):
-
-```bash
-make
-```
-
-Opção B (sem `i686-elf-*`, usando toolchain host GNU):
-
-```bash
-make CC=gcc LD=ld OBJCOPY=objcopy NM=nm AR=ar RANLIB=ranlib
-```
-
-### 7. Rodar no QEMU
-
-```bash
-make run
-```
-
-ou direto:
-
-```bash
-qemu-system-i386 -drive format=raw,file=build/boot.img -boot c
-```
-
-### 8. Checklist rápido para Ubuntu host
-
-```bash
-cat /etc/os-release
-command -v nasm
-command -v qemu-system-i386
-command -v gcc
-```
-
-Se `i686-elf-gcc` não existir, use o override com `CC=gcc LD=ld ...` mostrado acima.
 
 ## Build
 
+### Requisitos
+
+- `nasm`
+- `make`
+- `python3`
+- toolchain i386 ELF recomendada:
+  - `i686-elf-gcc`
+  - `i686-elf-ld`
+  - `i686-elf-objcopy`
+- `qemu-system-i386` ou `qemu-system-x86_64`
+- ferramentas FAT para montar/copiar arquivos na partição de boot:
+  - `mkfs.fat` ou equivalente
+  - `mcopy`
+  - `mmd`
+
+### Linux
+
+Exemplo mínimo em Debian/Ubuntu:
+
+```bash
+sudo apt update
+sudo apt install -y build-essential make python3 nasm qemu-system-x86 mtools dosfstools binutils gcc-multilib
+```
+
+### macOS
+
+Exemplo com Homebrew:
+
+```bash
+brew install nasm qemu mtools dosfstools i686-elf-gcc
+```
+
+### Comando principal
+
 ```bash
 make
 ```
 
-Isso gera:
+Alvos úteis:
 
-- `build/mbr.bin` (master boot record)
-- `build/boot.bin` (stage 1/VBR)
-- `build/userland.bin` (binário da userland)
-- `build/stage2.bin` (kernel + blob da userland embutido)
-- `build/boot.img` (imagem final bootável)
+- `make` ou `make all`: build completo da imagem
+- `make full`: limpa e recompila tudo
+- `make img`: gera a imagem bootável
+- `make imb`: gera a imagem final para gravação/uso externo
+- `make legacy-data-img`: gera só `build/data-partition.img`
+- `make clean`: limpa artefatos
 
-Os seguintes comandos `make` estão disponíveis:
-- `make` - Compila o sistema
-- `make full` - Recompila tudo e gera nova imagem
-- `make img` - Gera imagem de disco bootável
-- `make imb` - Gera imagem bootável para pendrive / hardware real
+## Execução no QEMU
 
-## Executar no QEMU
+Modo normal:
 
 ```bash
 make run
 ```
 
-Na versão atual o kernel inicializa o console de texto e imediatamente lança o shell.
-O fluxo típico é:
-
-1. Você será recebido por um prompt `user@vibeos:/some/path $`.
-2. Digite comandos suportados (use `help` para lista completa).
-3. `startx` alterna para o desktop gráfico que já existia antes — o comportamento é idêntico ao descrito abaixo, com barra de tarefas, menu `START`, aplicativo Terminal e Relógio.
-
-> Se o `make run` falhar por falta de `qemu` veja a seção de pré‑requisitos mais acima.
-
-## Como a userland funciona neste projeto
-
-O processo de build permanece basicamente igual, mas a userland agora é composta de múltiplos módulos compilados juntos:
-
-1. O `Makefile` coleta todos os `.c` sob `userland/` e seus subdiretórios; o linker produz `userland.bin` posicionado em `0x20000`.
-2. O kernel (`stage2`) embute o `userland.bin` dentro do seu próprio binário.
-3. Em runtime, o kernel copia o blob para `0x20000` e chama `userland_entry`, que por sua vez inicializa o sistema de arquivos simples e, em seguida, chama `console_init()` e `shell_main()`.
-4. A comunicação entre userland e kernel continua sendo feita via syscalls definidas em `include/userland_api.h`.
-
-## Interface Gráfica na userland
-
-- O `stage1` muda para VGA modo `13h` (320x200x256).
-- Desktop com barra de tarefas na parte inferior.
-- Menu de aplicativos acionado por `START`.
-- Apps `TERMINAL` e `RELOGIO`.
-- Botões de fechar (`X`) em cada janela.
-- Cursor de mouse desenhado na userland.
-- Multitarefa cooperativa no loop da userland (Terminal e Relógio simultâneos).
-
-## Syscalls disponíveis
-
-- `SYSCALL_GFX_CLEAR`: limpa framebuffer com cor.
-- `SYSCALL_GFX_RECT`: desenha retângulo preenchido.
-- `SYSCALL_GFX_TEXT`: desenha texto simples (fonte bitmap no kernel).
-- `SYSCALL_INPUT_MOUSE`: retorna estado do mouse (`x`, `y`, botões).
-- `SYSCALL_INPUT_KEY`: retorna próximo caractere do teclado (fila).
-- `SYSCALL_SLEEP`: pausa até próxima interrupção (`hlt`).
-- `SYSCALL_TIME_TICKS`: retorna ticks do timer do kernel (100 Hz).
-
-## Driver de Mouse no Kernel
-
-- Arquivos:
-  - `stage2/stage2.c` (PIT, init PS/2, PIC remap, IDT, handlers C e syscall dispatcher)
-  - `stage2/isr.asm` (stubs de IRQ0, IRQ1, IRQ12 e `int 0x80`)
-- Fluxo:
-  1. Kernel remapeia PIC para vetores `0x20-0x2F`.
-  2. Configura PIT em 100 Hz e incrementa ticks via IRQ0.
-  3. Registra IRQ1 (`0x21`) e IRQ12 (`0x2C`) na IDT.
-  4. Inicializa o mouse PS/2 (`0xF6`, `0xF4`).
-  5. A cada IRQ12, coleta pacote de 3 bytes e atualiza `x/y/buttons`.
-  6. Userland consulta via syscall `SYSCALL_INPUT_MOUSE`.
-
-## App Relógio (multitarefa)
-
-- O app Relógio lê tempo usando `SYSCALL_TIME_TICKS`.
-- Atualiza 1x por segundo (`ticks / 100`).
-- Continua atualizando enquanto você usa o Terminal.
-- Pode ser aberto/fechado no menu `START`.
-
-## App Terminal (shell via syscall)
-
-- O shell roda dentro da userland mas, diferentemente da versão antiga, ele opera no console de texto (não usa janelas).
-- Entrada de teclado é capturada através de `SYSCALL_INPUT_KEY`.
-- O parser de argumentos suporta strings entre aspas e histórico de linhas (com `up`/`down` se implementado).
-- Um componente busybox dispatcha os seguintes comandos internos:
-  - `help` — lista todos os comandos disponíveis
-  - `pwd`, `ls`, `cd`, `mkdir`, `touch`, `rm`, `cat`
-  - `echo`, `clear`, `uname`
-  - `exit` — encerra o shell
-  - `startx` — alterna para o modo gráfico chamando `desktop_main()`
-  - `history` — imprime o histórico de comandos registrados
-
-(O suporte a `write`/`append` foi removido para simplificação, já que o filesystem é in-memory.)
-
-## Sistema de Arquivos (VFS)
-
-- Estrutura orientada a diretórios e arquivos em árvore.
-- Operações de leitura/escrita suportadas no shell.
-- Suporte a caminhos relativos e absolutos (ex.: `/home/user`, `../docs`).
-- Diretório atual controlado por `CD` e exibido no prompt.
-- Estrutura inicial criada por `fs_init()`:
-  - `/` (raiz)
-  - `/bin` (onde o blob `busybox` reside)
-  - `/home` e `/home/user`
-  - `/tmp`
-  - `/dev` (caixa–preta, apenas para demonstração)
-- Implementação atual é **em memória** (não persistente após reboot).
-
-## Debug com GDB
+Modo headless com serial no terminal:
 
 ```bash
-make debug
+make run-headless-debug
 ```
 
-Esse alvo sobe o QEMU com `-s -S` (aguardando conexão do GDB em `localhost:1234`).
+Outros alvos de depuração úteis já definidos no `Makefile`:
 
-## Limitações deste exemplo
+- `make run-debug`
+- `make run-headless-core2duo-debug`
+- `make run-headless-pentium-debug`
+- `make run-headless-atom-debug`
+- `make run-headless-ahci-debug`
+- `make run-headless-usb-debug`
 
-- BIOS legado (não UEFI).
-- Leitura CHS do stage2 setor-a-setor (assume stage2 contíguo na imagem).
-- IDT/PIC com IRQ0/IRQ1/IRQ12 + syscall, sem gerenciamento completo de exceções.
-- Userland **sem isolamento de privilégio** (ainda não roda em ring3).
-- Driver de mouse PS/2 sem wheel/scroll (pacote padrão de 3 bytes).
-- Sem aceleração gráfica; renderização por software em VGA 13h.
-- VFS sem persistência em disco e com limites fixos de nós/tamanho por arquivo.
+## Artefatos gerados
 
-## Limpar artefatos
+Os mais importantes hoje são:
 
-```bash
-make clean
-```
+- `build/mbr.bin`
+- `build/boot.bin`
+- `build/stage2.bin`
+- `build/kernel.bin`
+- `build/data-partition.img`
+- `build/boot.img`
+- `build/generated/app_catalog.h`
+- `build/lang/userland.app`
 
-## Troubleshooting (macOS)
+Também são gerados manifests de layout/política para a partição FAT32 de boot.
 
-- Erro: `nasm: No such file or directory`
-  - Rode: `brew install nasm`
-- Erro: `i686-elf-gcc: command not found`
-  - Rode: `brew install i686-elf-gcc`
-- Erro: `qemu-system-i386: command not found`
-  - Rode: `brew install qemu`
-- Homebrew instalado, mas comando não encontrado
-  - Recarregue seu shell: `source ~/.zprofile` e tente de novo.
-- Erro: `stage2.bin (...) excede ... bytes`
-  - Reduza tamanho de kernel/userland ou aumente `STAGE2_SECTORS` no `Makefile`.
-- Entrada não responde no QEMU
-  - Clique dentro da janela do QEMU para capturar foco.
-  - Se o cursor estiver preso, use `Ctrl + Option + G` (macOS) para liberar/capturar novamente.
-- Mouse não se move na interface
-  - Confirme que a janela do QEMU está com foco/captura.
-  - Teste com: `make run` e clique uma vez na tela antes de mover o mouse.
+## Documentação
 
-## Linguagens Suportadas
+### Documentação técnica principal
 
-O sistema agora suporta:
+- [docs/overview.md](docs/overview.md): mapa geral
+- [docs/workflow.md](docs/workflow.md): fluxo completo do boot até apps
+- [docs/memory_map.md](docs/memory_map.md): layout de memória e disco
+- [docs/kernel_init.md](docs/kernel_init.md): sequência real de inicialização do kernel
+- [docs/drivers.md](docs/drivers.md): drivers atuais
+- [docs/runtime_and_services.md](docs/runtime_and_services.md): scheduler, serviços, init, syscalls e AppFS
+- [docs/apps_and_modules.md](docs/apps_and_modules.md): catálogo de apps, módulos e runtimes
 
-C
-- compilador C mínimo integrado
+### Guidelines e planos
 
-Lua
-- runtime Lua integrado
-- REPL via comando `lua`
-- execução de scripts via `lua arquivo.lua`
+Eles são úteis como contexto histórico e planejamento, mas não devem ser lidos como descrição definitiva do estado atual do código. Esses
+arquivos estão disponíveis em [docs/guidelines/](docs/guidelines/)
 
-Arquitetura futura de linguagens:
+## Status real do projeto
 
-/lang
-onde runtimes externos podem ser adicionados.
+O que já existe de forma material:
 
-## Compatibilidade UNIX / BSD
+- boot BIOS em múltiplos estágios
+- partição FAT32 de boot funcionando no pipeline
+- carga de `KERNEL.BIN` por stage2
+- `BOOTINFO` compartilhado entre loader e kernel
+- framebuffer VESA preservado quando válido
+- drivers básicos de vídeo, teclado, mouse, timer e storage
+- scheduler e processos/tarefas simples
+- camada de serviços estilo microkernel
+- syscalls suficientes para shell, runtime gráfico e AppFS
+- `init` interno + `userland.app` externo
+- desktop e conjunto razoável de apps gráficos
+- catálogo grande de apps externos, utilitários e ports
 
-Foi iniciado um sistema de compatibilidade em:
+O que continua limitado ou em transição:
 
-compat/
+- o VFS do kernel ainda é mínimo
+- o caminho principal de execução de apps ainda passa por AppFS, não por um loader ELF/VFS geral
+- isolamento de processos e modelo "ring3 completo" não devem ser assumidos
+- há várias partes de compatibilidade e ports ainda adaptadas de forma pragmática
+- o projeto ainda contém muito código e documentação histórica de transição
 
-Baseado no código-fonte do OpenBSD src.
+### Futuro do projeto
 
-Esse diretório contém:
+O projeto no momento está sendo desenvolvido por mim e pela querida [Mel Santos](https://github.com/melmonfre). A ideia é evoluir o máximo
+para termos uma versão completa de um pequeno sistema operacional modular. Além disso, como se trata do 
+Sr. Raposo responsável pelo projeto, está previsto a construção de um pequeno SLM (Small Lanugage Model) executando
+diretamente no kernel usando uma arquitetura simples de GPT (e o máximo de técnicas de incremento que conseguir). A ideia 
+é implementar dentro do shell tornando o inteligente.
 
-- código-fonte importado
-- inventário de componentes
-- base para port de utilitários reais
+## Versão em inglês
 
-Objetivo:
-permitir portar aplicações reais como:
-
-echo
-cat
-wc
-head
-tail
-grep
-sed
-less
-nano
-
-Esse sistema ainda está em desenvolvimento.
-
-## Layouts de Teclado
-
-Foi implementado suporte a troca de layout de teclado em runtime.
-
-Comando:
-
-loadkeys
-
-Exemplos:
-
-loadkeys -help
-loadkeys us
-loadkeys pt-br
-
-Layouts incluídos:
-
-- us
-- pt-br (ABNT2 com Ç)
-- us-intl
-- es
-- fr
-- de
-
-## Como compilar
-
-Explicar claramente:
-
-dependências
-toolchain usada (ex: i686-elf)
-
-exemplo:
-
-make full
-
-## Como rodar
-
-Explicar como rodar no QEMU.
-
-Exemplo esperado:
-
-qemu-system-i386 -drive format=raw,file=build/boot.img
-
-## Estrutura do Projeto
-
-Documentar diretórios importantes:
-
-boot/
-kernel/
-kernel_asm/
-userland/
-userland/modules/
-userland/applications/
-compat/
-lang/
-headers/
-build/
-
-Explicar rapidamente o papel de cada um.
-
-## ROADMAP
-
-Adicionar ou atualizar uma seção com objetivos futuros:
-
-- melhorar resolução gráfica
-- melhorar suporte a mouse
-- expandir compatibilidade POSIX
-- portar utilitários BSD/GNU
-- melhorar VFS
-- adicionar mais runtimes de linguagem
-- melhorar terminal
+- [README.en.md](README.en.md)
