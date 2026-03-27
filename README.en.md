@@ -273,4 +273,4 @@ What remains limited or transitional:
 
 ## Project future
 
-The project is currently being developed by me and dear @melmonfre. The goal is to push it as far as possible until we have a complete version of a small modular operating system. In addition, since Mr. Raposo is behind the project, there is a plan to build a small SLM (Small Language Model) running directly in the kernel using a simple GPT-like architecture, plus as many improvement techniques as we can reasonably implement. The idea is to expose that intelligence inside the shell.
+The project is currently being developed by me and dear [Mel Santos](https://github.com/melmonfre). The goal is to push it as far as possible until we have a complete version of a small modular operating system. In addition, since Mr. Raposo is behind the project, there is a plan to build a small SLM (Small Language Model) running directly in the kernel using a simple GPT-like architecture, plus as many improvement techniques as we can reasonably implement. The idea is to expose that intelligence inside the shell.
