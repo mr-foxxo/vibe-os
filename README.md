@@ -273,7 +273,7 @@ O que continua limitado ou em transição:
 
 ### Futuro do projeto
 
-O projeto no momento está sendo desenvolvido por mim e pela querida @melmonfre. A ideia é evoluir o máximo
+O projeto no momento está sendo desenvolvido por mim e pela querida [Mel Santos](https://github.com/melmonfre). A ideia é evoluir o máximo
 para termos uma versão completa de um pequeno sistema operacional modular. Além disso, como se trata do 
 Sr. Raposo responsável pelo projeto, está previsto a construção de um pequeno SLM (Small Lanugage Model) executando
 diretamente no kernel usando uma arquitetura simples de GPT (e o máximo de técnicas de incremento que conseguir). A ideia 
