@@ -2,6 +2,7 @@
 #include <userland/modules/include/syscalls.h>
 #include <userland/modules/include/ui.h>
 #include <userland/modules/include/fs.h>
+#include <stddef.h>
 #include <userland/modules/include/icon_theme.h>
 
 static const struct rect DEFAULT_FILEMGR_WINDOW = {20, 20, 400, 300};
