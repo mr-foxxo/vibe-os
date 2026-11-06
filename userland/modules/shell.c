@@ -179,6 +179,7 @@ static int read_line(char *buf, int maxlen, const char *prompt) {
     int history_view = -1;
     char draft[LINE_MAX];
     int draft_saved = 0;
+    uint32_t last_maint_tick = 0;
 
     if (str_len(prompt) < 79 && max_input > 79 - str_len(prompt)) {
         max_input = 79 - str_len(prompt);
@@ -190,11 +191,59 @@ static int read_line(char *buf, int maxlen, const char *prompt) {
     draft[0] = '\0';
 
     for (;;) {
-        fs_tick();
+        /*
+         * Throttled (bug #19, 01/11, gate 19_run11): while a writeback is
+         * active fs_tick() advances it by up to 4 blocking
+         * sys_storage_write_sectors IPCs to the storage host. Called on
+         * every iteration of this tight input loop it chained the shell
+         * behind storage round trips: measured p=11 READY wt=281 with
+         * input-host replies landing "unexpected" while waiting_src=1 and
+         * the typed line fragmenting into `ss` commands —
+         * validate-network-surface red. The main command loop and the
+         * desktop loop keep calling fs_tick at full per-tick rate, so
+         * writeback only slows to one step/second while characters are
+         * actively being typed (input latency is the contract here, not
+         * writeback throughput).
+         */
+        if ((uint32_t)(sys_ticks() - last_maint_tick) >= 100u) {
+            last_maint_tick = sys_ticks();
+            fs_tick();
+        }
         int c = sys_poll_key();
 
+        /*
+         * bug #19 sonda (01/11, run 19_run13): scheduler starvation is REFUTED
+         * (wake->dispatch max 1 tick, w6=1 w11=1, zero wake-stale) and the
+         * line still never submits: 13 banners, zero `shell: command` traces,
+         * zero ^C. The only remaining place the truth lives is the value this
+         * loop actually receives from sys_poll_key, per poll. Budgeted trace.
+         */
+        {
+            static int g_key_trace = 48;
+            if (g_key_trace != 0) {
+                char km[24];
+                km[0] = '\0';
+                str_append(km, "rk ", (int)sizeof(km));
+                shell_append_int(km, (int)sizeof(km), c);
+                str_append(km, "\n", (int)sizeof(km));
+                sys_write_debug(km);
+                g_key_trace -= 1;
+            }
+        }
+
         if (c <= 0) {
-            sys_yield();
+            /*
+             * No yield here (bug #19, 31/10 run 19_run8): sys_poll_key is a
+             * blocking IPC wait (service reply budget, 32 ticks) and is the
+             * loop's own pacing. Yielding after a no-key poll dropped the
+             * shell out of the SIGNALED wake cycle into the tier-6 aging
+             * pool: measured 770-1170 ticks of aging before the NEXT poll
+             * while the typed keys already sat in the driver queue (15-char
+             * command took >130s). With the yield gone, each no-key poll
+             * blocks the full budget, the reply re-wakes the shell (IPC
+             * wake boost) and the loop is self-paced at ~1 poll/budget
+             * without starving the input host or other woken tasks.
+             */
             continue;
         }
 

@@ -301,25 +301,59 @@ exige evidencia executada; o estado corrente da fila de trabalho vive em
   que mostre o request que NUNCA recebe reply sem timeout. 0.6 permanece ABERTO;
   nada aqui foi claimado como corrigido.
 
-- **[ABERTO, nomeado 30/10] #19 netmgrd `status` trava no meio do print — item 0.6 modo-iii / P3.**
-  Apos o fix do #18 a shell nasce, faz flush de type-ahead e RODA `netmgrd status`; o app
-  (pid=13, ring3) lancar correto (`lang: chunk0 verify match`, `app: runtime init ok`) e imprime
-  ate a linha 1238 de `netmgrd_command_status` (`socket rx capacity: 4096`) — e PARA. As linhas
-  1239+ (`event queue depth` ... `state file`) nunca saem e `shell: command exit netmgrd rc=0`
-  nunca chega; o shell (pid=11) fica em `scheduler: timeout pid=11 class=9 event=2` (o wait de
-  4 ticks do host) re-armando para sempre. Census: pid=13 `state=0 (READY)` em TODAS as amostras
-  de t=2000..13025, `lastcur` nunca e 13 — o filho esta pronto mas nunca mais despachado, e o
-  envelhecimento do #18 (que deveria resgatar um tier-6 faminto em ~512 ticks) NAO o resgata.
-  NAO e regressao do #18 (A/B: com o scheduler original a shell nem alcancava
-  `shell: command netmgrd`). Hipoteses vivas (medir antes de escolher, regra da rodada):
-  (a) o clamp do score (`base_score < 0 → 0`) limita o envelhecimento a um EMPATE em 0 com o
-  task tier-0 ocupado — mas o cursor da varredura (`g_cursor = next->next`, scheduler.c:2760)
-  gira apos cada escolha, entao um empate deveria rodar round-robin e o pid=13 receberia CPU; o
-  fato de nao receber em 11 s NAO bate com esse modelo; (b) o write path de stdout do runtime do
-  app (write→host→console) com retry que mantem a task READY sem progresso. PROXIMO PASSO:
-  medir — census com `sel13` + score e `last_start_tick` por task no momento do census (e nao
-  apos o unlock, regra 18g) para discriminar (a) de (b); so depois tocar o write relay.
-  `validate-network-surface` fica vermelho por esta causa ate la.
+- **[ABERTO — campanha MEDIDA, 7 mecanismos corrigidos] #19 `netmgrd status` nunca completa — item 0.6 modo-iii / P3.**
+  **Sintoma canonico (gate `make validate-network-surface`, vermelho):** o harness digita
+  `netmgrd status`, a linha nunca chega a `busybox_main` (nenhum `shell: command netmgrd` e
+  nenhum `shell: command exit netmgrd rc=0`), e o comando nunca roda. Em 19_run13 o serial
+  registra 13 banners `shell: ready` e ZERO `shell: command`/`^C`: todas as submissoes foram
+  vazias; `input-diag` fecha em `scancodes=36 produced=18 consumed=15 drops=0` (todas as 15
+  teclas fisicas — 14 chars + Enter — consumidas pelo servico de input, nenhum drop no driver).
+  **Refutacao por medicao (01/11, sonda nova `g_ipc_wake_tick`/`g_wake_max_d` no
+  scheduler.c):** wake→dispatch maximo de **1 tick** para o host de input (p=6) e para a shell
+  (p=11) — census `w6=1 w11=1`, zero linhas `wake-stale` (limiar 20 ticks, budget 12 nunca
+  gasto). A hipotese original "READY nunca despachado / inanicao do scheduler" esta
+  **REFUTADA** como causa do stall atual: boost -128 + aging entregam o despacho em ≤1 tick.
+  O fingerprint antigo `host-state=0 hostQ=1 hostW{pend=1 wake=0 waiters=0}` era o host
+  READY por ~1 tick entre a wake e o dispatch, nao inanicao sostenida.
+  **Mecanismos MEDIDOS e corrigidos nesta campanha (runs 19_run1..11, todos no tree):**
+  (A) boost de wake IPC perpétuo (wait_result/class/budget nunca limpos) → consumo one-shot no
+      dispatch; sem ele o score ficava -32/-24 para sempre e mascarava o aging;
+  (B) clamp `base_score < 0 → 0` colava todo waiter envelhecido no MESMO 0 de um tier-0 fresco
+      (empate resolvido por ordem de varredura) → clamp removido; tier-6 no teto = -31 estrito;
+  (C) lost wakeup na janela enqueue→block do `kernel_waitable_signal`: o pop do head ainda RUNNING
+      fazia `scheduler_complete_wait` recusar (-1) e a task bloqueava FORA da chain com o pending
+      ja contado → peek de `state==BLOCKED` antes do pop + auto-consumo pos-block no waiter;
+  (D) magnitude do boost de wake (-32/-24) nao vencia um incumbente tier-0 fresco dentro do budget
+      de reply (medido host tier-6 pontuando 64+ por ~384-512 ticks) → -128 (abaixo do cap de
+      inanicao 16*7+3-128=-13; efeito limitado pelo one-shot de A);
+  (E) yield apos poll sem tecla no `read_line` (shell e `vibe_app_read_line`) tirava a shell do
+      ciclo SIGNALED e a jogava no pool de aging tier-6 (770-1170 ticks ate o proximo poll) → yield
+      removido dos dois loops; o poll IPC bloqueante e o proprio pacing;
+  (F) budget de reply default 32 ticks < latencia real do handshake (3 pernas × preempcao de 4
+      ticks) → timeout -> retry re-enviava request EM VOO -> duplicatas -> `unexpected reply`
+      flood (cliQ 1→16, pend 1→31, deferred overflow) → budget 128 (precedente FILESYSTEM);
+  (G) `fs_tick()` por iteracao no loop de leitura disparava writeback de storage (ate 4
+      `sys_storage_write_sectors` bloqueantes por step) e encadeava a shell atras do storage
+      (`waiting_src=1`, linha fragmentada) → throttle 1x/100 ticks no read_line; o loop
+      principal de comando e o desktop seguem chamando fs_tick por tick.
+  **O que AINDA esta aberto (medido em 19_run12/13, sonda nomeada):**
+  1. `pending_signals` vaza +1 em cada wake por chain-pop: `kernel_waitable_signal` incrementa
+     `pending_signals += count` e NUNCA decrementa no caminho pop+complete_wait; o waiter consome
+     o sinal fantasma no topo do proximo wait (medido `cliW{pend=3 wake=0}` em run12; `pend=1` no
+     fingerprint do timeout). Cada reply real deixa 1 ciclo extra "phantom wake" — unico caminho
+     de sinal ainda desbalanceado, primeiro alvo da proxima rodada;
+  2. a linha ainda nao submete apesar de `consumed=15/produced=18`; instrumento JA NO TREE:
+     trace `rk <valor>` por poll no `read_line` da shell (budget 48), para revelar o que
+     `sys_poll_key` entrega de fato (0 phantom / -1 de erro / Enter mapeado errado / chars
+     duplicados pelo retry da F). O harness HMP `/tmp/vg/06_repro.py` foi PERDIDO quando o tmpfs
+     foi limpo externamente; o repro canonico passa a ser o proprio gate
+     `make validate-network-surface` (o report `build/network-surface-validation.md` embute o
+     serial), e o probe rk roda nele.
+  **Decisao [!] mantenedora:** as magnitudes de (D) `-128` e (F) `128 ticks` sao constantes
+  UNICAS de politica (mecanismo fixo, valor e decisao de arquitetura pela AGENTS.md); o default
+  atual esta documentado nos comentarios do tree — manter ou reajustar e da mantenedora.
+  `validate-network-surface` segue VERMELHO por este item; nao e regressao (A/B do #18 provou
+  que antes a shell nem rodava `netmgrd`).
 
 ## Status geral
 

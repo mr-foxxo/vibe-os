@@ -78,6 +78,31 @@ static volatile int g_sched_frame_last_cur_pid = -2;
  */
 static volatile uint32_t g_sched_sel_count[32];
 
+/* bug #19 ring3 resume-eip witness (see sched-rip in the dispatch path). */
+static volatile uint32_t g_sched_rip_budget = 40u;
+/* Per-pid last-emit tick: a hot 4-tick poller (shell host, bug #19 run2 spent
+ * the whole budget on p=11 before the app even launched) must not starve the
+ * sampling of the task under investigation. */
+static volatile uint32_t g_sched_rip_last[32];
+
+/*
+ * bug #19 (01/11, run 19_run12): wake-to-dispatch latency probe. run12
+ * fingerprint `host-state=0 hostQ=1 hostW{pend=1 wake=0 waiters=0}` = the
+ * input host was READY (popped+SIGNALED+budget-12 by the request's
+ * kernel_waitable_signal) with its request still queued, yet never ran for
+ * the full 128-tick reply budget. Whether that is "starved DESPITE the
+ * -128 wake boost" or "dispatched but the reply never left the host" can
+ * only be settled by measuring the gap, so: scheduler_complete_wait stamps
+ * the tick of every SIGNALED wake that carries an IPC boost, the dispatch
+ * path clears the stamp and records the max gap seen per pid; a gap over
+ * 20 ticks prints wake-stale (budgeted) naming the task's boost state at
+ * dispatch time. w6=/w11= in the census expose the running max for the two
+ * tasks the handshake depends on (input host, shell).
+ */
+static volatile uint32_t g_ipc_wake_tick[32];
+static volatile uint32_t g_wake_max_d[32];
+static volatile uint32_t g_wake_stale_budget = 12u;
+
 /*
  * Overdue-wake detector (COMPLETION_ACTION_PLAN P4 / KNOWN_BUGS "Sessao
  * interativa trava no meio", item 0.6 branch decision). Every bounded block
@@ -137,6 +162,9 @@ static int scheduler_walk_reaches(process_t *needle) {
 }
 
 static volatile uint32_t g_sched_census_budget = 40u;
+static volatile uint32_t g_sched_score_budget = 80u;
+
+static int scheduler_task_score(const process_t *task, uint32_t cpu_index);
 
 static void sched_cat(char *dst, int cap, int *pos, const char *s) {
     while (*s != '\0' && *pos < cap - 1) {
@@ -163,11 +191,87 @@ static void sched_cat_u32(char *dst, int cap, int *pos, unsigned int v) {
     dst[*pos] = '\0';
 }
 
+static void sched_cat_i32(char *dst, int cap, int *pos, int v) {
+    if (v < 0) {
+        sched_cat(dst, cap, pos, "-");
+        v = -v;
+    }
+    sched_cat_u32(dst, cap, pos, (unsigned int)v);
+}
+
+/*
+ * 0.6 mode-iii (30/10, bug #19): one short line per task of the RUNNABLE
+ * population at census time. The census row proves pid13 sits READY, but
+ * what find_next compares is the SCORE, so print the score directly plus
+ * the fields that decide which path produced it. Discriminates the two
+ * live hypotheses without touching the app write relay:
+ *   - sc clamped at 0 on the starved tier-6 app with wt=512 while the
+ *     current task scores 0..3 => the score clamp only TIES the starved
+ *     task with the busy tier-0 one (hypothesis a);
+ *   - sc in the -40..-12 band => a bootstrap/wake-boost early return is
+ *     active and the task MUST win the walk — if it still does not run,
+ *     the walk itself is the suspect;
+ *   - wt small although the task never ran => last_start_tick is being
+ *     re-stamped by something the census does not see (hypothesis b's
+ *     territory: the app write path re-entering dispatch).
+ * lss=last_start_tick, wt=waited capped like the scoring term (512),
+ * tr=priority_tier, sw=context_switches, wr=wait_result. Line kept <=80
+ * chars (serial overrun rule); all fields are read under
+ * g_scheduler_lock because the census runs inside the scan lock.
+ */
+static void sched_score_line(const process_t *task, uint32_t tick,
+                             uint32_t cpu_index, int current) {
+    char line[96];
+    int pos = 0;
+    int score;
+    uint32_t waited = 0u;
+
+    if (g_sched_score_budget == 0u || task == NULL) {
+        return;
+    }
+    g_sched_score_budget -= 1u;
+    score = scheduler_task_score(task, cpu_index);
+    if (task->last_start_tick != 0u) {
+        waited = tick - task->last_start_tick;
+        if (waited > 512u) {
+            waited = 512u;
+        }
+    }
+    sched_cat(line, (int)sizeof(line), &pos, "sched-score t=");
+    sched_cat_u32(line, (int)sizeof(line), &pos, tick);
+    sched_cat(line, (int)sizeof(line), &pos, " p=");
+    sched_cat_i32(line, (int)sizeof(line), &pos, task->pid);
+    if (current) {
+        sched_cat(line, (int)sizeof(line), &pos, " cur");
+    }
+    sched_cat(line, (int)sizeof(line), &pos, " sc=");
+    sched_cat_i32(line, (int)sizeof(line), &pos, score);
+    sched_cat(line, (int)sizeof(line), &pos, " lss=");
+    sched_cat_u32(line, (int)sizeof(line), &pos, task->last_start_tick);
+    sched_cat(line, (int)sizeof(line), &pos, " wt=");
+    sched_cat_u32(line, (int)sizeof(line), &pos, waited);
+    sched_cat(line, (int)sizeof(line), &pos, " tr=");
+    sched_cat_u32(line, (int)sizeof(line), &pos, (unsigned int)task->priority_tier);
+    sched_cat(line, (int)sizeof(line), &pos, " sw=");
+    sched_cat_u32(line, (int)sizeof(line), &pos, task->context_switches);
+    sched_cat(line, (int)sizeof(line), &pos, " wr=");
+    sched_cat_i32(line, (int)sizeof(line), &pos, (int)task->wait_result);
+    kernel_debug_printf("%s\n", line);
+}
+
 static void scheduler_census(uint32_t tick) {
     process_t *scan;
+    process_t *runnable[4];
     uint32_t steps = 0u;
+    uint32_t cpu;
+    uint32_t scored = 0u;
     char line[512];
     int pos;
+
+    cpu = kernel_cpu_index();
+    if (cpu >= 32u) {
+        cpu = 0u;
+    }
 
     if (g_sched_census_budget == 0u) {
         return;
@@ -197,6 +301,20 @@ static void scheduler_census(uint32_t tick) {
     sched_cat_u32(line, (int)sizeof(line), &pos, g_sched_sel_count[11u & 31u]);
     sched_cat(line, (int)sizeof(line), &pos, " sel12=");
     sched_cat_u32(line, (int)sizeof(line), &pos, g_sched_sel_count[12u & 31u]);
+    /* bug #19: the netmgrd app lands at pid 13 in the rescue-shell boot;
+     * the pre-fix rows stopped counting at sel12, right before the starved
+     * task of interest. */
+    sched_cat(line, (int)sizeof(line), &pos, " sel13=");
+    sched_cat_u32(line, (int)sizeof(line), &pos, g_sched_sel_count[13u & 31u]);
+    /* bug #19 wake-latency maxima for the handshake pair (input host,
+     * shell): w6/w11 > 128 = a woken IPC participant waited past the
+     * whole reply budget before its next dispatch (starved DESPITE the
+     * -128 boost); small w6 with request timeouts = the stall is after
+     * the host ran (reply path). */
+    sched_cat(line, (int)sizeof(line), &pos, " w6=");
+    sched_cat_u32(line, (int)sizeof(line), &pos, g_wake_max_d[6u & 31u]);
+    sched_cat(line, (int)sizeof(line), &pos, " w11=");
+    sched_cat_u32(line, (int)sizeof(line), &pos, g_wake_max_d[11u & 31u]);
     sched_cat(line, (int)sizeof(line), &pos, ":");
     for (scan = g_head; scan != NULL; scan = scan->next) {
         if (!scheduler_node_sane(scan)) {
@@ -219,11 +337,26 @@ static void scheduler_census(uint32_t tick) {
         sched_cat_u32(line, (int)sizeof(line), &pos, scan->wait_event_kind);
         sched_cat(line, (int)sizeof(line), &pos, ":");
         sched_cat_u32(line, (int)sizeof(line), &pos, scan->wait_owner_service);
+        /* bug #19: collect the runnable-but-unplaced tasks so their score
+         * lines print right after this row (still under the scan lock). */
+        if (scored < 4u && scan->state == PROCESS_READY && scan->current_cpu < 0) {
+            runnable[scored] = scan;
+            scored += 1u;
+        }
         if (++steps >= 40u) {
             break;
         }
     }
     kernel_debug_printf("%s\n", line);
+    {
+        uint32_t i;
+        process_t *cur = g_current[cpu];
+
+        for (i = 0u; i < scored; ++i) {
+            sched_score_line(runnable[i], tick, cpu, 0);
+        }
+        sched_score_line(cur, tick, cpu, 1);
+    }
 }
 
 static void scheduler_overdue_scan(uint32_t tick) {
@@ -1673,8 +1806,31 @@ static int scheduler_task_score(const process_t *task, uint32_t cpu_index) {
              * Synchronous service request/reply depends on both sides of the
              * mailbox running immediately once signaled, otherwise a top-tier
              * caller can block indefinitely behind unrelated ready work.
+             *
+             * Re-bounded 31/10 (bug #19, run 19_run7): -32/-24 could not
+             * deliver that promise for tier >= 2. A fresh tier-0 incumbent
+             * (the init host's timeout-0 supervision poll) scores 0..3 and
+             * re-wins every selection round; a just-woken tier-6 host
+             * scored 96+aff-32 = 64+ and lost to it for the whole
+             * aging ramp (~384-512 ticks), while the service layer's
+             * reply budget for control messages is 32 ticks. Measured:
+             * first KEY_READ of the boot timed out with the host READY,
+             * popped from the wait chain, request still queued —
+             * `host-state=0 hostQ=1 hostW{pend=1 wake=0 waiters=0}`
+             * (wake_count only increments after the waiter's own yield
+             * returns, so 0 = woken but never dispatched). Input was
+             * marked degraded, the retry/resend backlog produced
+             * `unexpected reply` floods and the typed shell line
+             * fragmented. The bound is now the starvation cap: 16*7+3-128
+             * = -13 < 0, so a woken IPC participant scores below any
+             * non-woken task (min 0) at every tier. Effect stays bounded
+             * by the one-shot consumption at dispatch (fix A, same
+             * commit-set): one priority dispatch per wake, then the task
+             * falls back to tier+aging. Mechanism/trigger unchanged; if
+             * the maintainer prefers a different magnitude it is this one
+             * constant (architecture decision per AGENTS.md).
              */
-            return task->kind == PROCESS_KIND_SERVICE ? -32 : -24;
+            return -128;
         }
         switch (task->wait_event_class) {
         case TASK_WAIT_CLASS_INPUT:
@@ -1734,9 +1890,25 @@ static int scheduler_task_score(const process_t *task, uint32_t cpu_index) {
         }
         base_score -= (int)(waited / 4u);
     }
-    if (base_score < 0) {
-        base_score = 0;
-    }
+    /*
+     * 0.6 modo-iii (31/10, bug #19): NO floor clamp. The old `if
+     * (base_score < 0) base_score = 0` capped every fully-aged waiter at
+     * exactly 0 — the same score a FRESH tier-0 task (init host) carries
+     * (0 + affinity 0..3 - aging 0..128). Measured run3 31/10: with p=5
+     * permanently re-dispatched by its timeout-0 supervision poll, the
+     * aged shell host sat clamped at sc=0 with lss frozen 19k ticks
+     * because ties at 0 were resolved by walk order/cursor, not strictly
+     * in the waiter's favour. The comment above this block already
+     * promised "cap 128 (> 112+3): a starved task can overtake" — the
+     * clamp broke that contract (127-128 = -1 can no longer exist with
+     * it). The early-return bootstrap/wake-boost bands (-40..-12) already
+     * emit negative scores legally and find_next was changed (26/10) to
+     * full-ring-min without a break-at-zero specifically so negative
+     * scores can win; clamping only the aged path was the one remaining
+     * place that pinned the floor above the intended meaning. Removing
+     * the clamp: a tier-6 task aged to the cap (96+1-128 = -31) now
+     * STRICTLY beats a fresh tier-0 winner, exactly as designed.
+     */
     return base_score;
 }
 
@@ -2813,6 +2985,62 @@ kernel_trap_frame_t *scheduler_schedule_frame(kernel_trap_frame_t *frame, int pr
             }
         }
         g_sched_sel_count[next->pid & 31] += 1u;
+        /* bug #19 wake-to-dispatch probe: stamp was set by
+         * scheduler_complete_wait at the SIGNALED+IPC-wake that made this
+         * task eligible for the -128 boost; the gap to THIS dispatch is the
+         * latency the service handshake actually paid. All under
+         * g_scheduler_lock (fields read, no re-deref after unlock). */
+        if (next->pid > 0 && next->pid < 32) {
+            uint32_t wake_tick = g_ipc_wake_tick[next->pid & 31u];
+            uint32_t gap;
+            if (wake_tick != 0u) {
+                g_ipc_wake_tick[next->pid & 31u] = 0u;
+                gap = now_ticks - wake_tick;
+                if (gap > g_wake_max_d[next->pid & 31u]) {
+                    g_wake_max_d[next->pid & 31u] = gap;
+                }
+                if (gap > 20u && g_wake_stale_budget != 0u) {
+                    g_wake_stale_budget -= 1u;
+                    kernel_debug_printf("wake-stale: pid=%d d=%u wr=%d cls=%d bud=%u t=%u\n",
+                                        next->pid, (unsigned int)gap,
+                                        (int)next->wait_result,
+                                        (int)next->wait_event_class,
+                                        (unsigned int)next->wake_boost_budget,
+                                        (unsigned int)now_ticks);
+                }
+            }
+        }
+        /*
+         * 0.6 mode-iii (30/10, bug #19): name WHERE a ring3 userland task is
+         * when the scheduler hands it the CPU. The score probe proved pid13
+         * is dispatched and never starvation-blocked, yet its app console
+         * output froze mid-status() with no `app: main returned`; this prints
+         * the saved resume eip so the spin loop is identified by address
+         * (stable eip across dispatches = loop body; symbolize with
+         * `nm build/lang/netmgrd.elf`). Only USER-CS frames are printed: a
+         * kernel-side saved eip means the task was switched out inside the
+         * yield/syscall path (the census already says that), and the bug is
+         * about WHERE in userland it burns slices. Per-pid 1000-tick throttle
+         * (a first attempt without it spent the whole budget on the shell
+         * host's 4-tick poll loop before the app even launched). Budgeted,
+         * snapshot under the scheduler lock, <=80 chars.
+         */
+        {
+            uint32_t pidx = (uint32_t)(next->pid & 31);
+
+            if (g_sched_rip_budget != 0u && next->context != NULL &&
+                next->kind == PROCESS_KIND_USER && next->runs_in_user_mode != 0u &&
+                (unsigned int)(now_ticks - g_sched_rip_last[pidx]) >= 1000u &&
+                next->context->cs != 8u && next->context->cs != (unsigned int)0x10u) {
+                g_sched_rip_budget -= 1u;
+                g_sched_rip_last[pidx] = now_ticks;
+                kernel_debug_printf("sched-rip p=%d t=%u eip=%x cs=%x esp=%x\n",
+                                    next->pid, (unsigned int)now_ticks,
+                                    (unsigned int)next->context->eip,
+                                    (unsigned int)next->context->cs,
+                                    (unsigned int)next->context->esp_dummy);
+            }
+        }
         next->state = PROCESS_RUNNING;
         next->current_cpu = (int)cpu_index;
         next->last_cpu = (int)cpu_index;
@@ -2820,6 +3048,34 @@ kernel_trap_frame_t *scheduler_schedule_frame(kernel_trap_frame_t *frame, int pr
         next->context_switches += 1u;
         g_timeslice_remaining[cpu_index] = SCHEDULER_TIMESLICE_TICKS;
         g_current[cpu_index] = next;
+        /*
+         * 0.6 modo-iii (31/10, bug #19, second stall mode): make the IPC
+         * wake-boost ONE-SHOT. The score early-return (-32 service / -24
+         * user, scheduler_task_score) bypasses base+aging entirely, so a
+         * task in a tight block/wake IPC poll loop (the busybox host-wait
+         * poller: 4-tick deadline re-wakes far faster than the 8/12-slice
+         * budget decays) re-earned the full budget on every wake and sat
+         * at -24 permanently. The aging floor is the clamp at 0, which a
+         * clamped waiter can never get below - the floors are inverted, so
+         * the perpetually-boosted poller outranked the maximally-aged
+         * shell host AND the tier-0 init host (measured run3 31/10: sel10
+         * and sel5 frozen from t~7025 while sel11 climbed 176k, and the
+         * typed command line never completed). Consuming the whole boost
+         * on the first dispatch after the wake implements the intent the
+         * switch-out comment already states: the wake buys ONE resumed
+         * slice. One boosted slice per wake is exactly what synchronous
+         * request/reply IPC needs (woken side runs, signals back, both
+         * get one boosted slice each) without starving the waiters.
+         */
+        if (next->wait_result == TASK_WAIT_RESULT_SIGNALED &&
+            next->wait_event_class == TASK_WAIT_CLASS_IPC &&
+            next->wake_boost_budget != 0u) {
+            next->wake_boost_budget = 0u;
+            next->wait_result = TASK_WAIT_RESULT_NONE;
+            next->wait_event_kind = TASK_WAIT_EVENT_NONE;
+            next->wait_event_class = TASK_WAIT_CLASS_NONE;
+            next->wait_owner_service = 0u;
+        }
         /*
          * Face-1 witness precision fix (P4): publish esp0 together with
          * g_current, under the same lock. Before this, the TSS esp0 was
@@ -2863,6 +3119,12 @@ kernel_trap_frame_t *scheduler_schedule_frame(kernel_trap_frame_t *frame, int pr
                                                resume_frame != NULL ? resume_frame : frame);
     } else {
         g_sched_sel_count[current->pid & 31] += 1u;
+        /* Reuse dispatch: the woken task is already current, its wake is
+         * consumed now — drop the stamp so a later stale print cannot
+         * misattribute the gap. */
+        if (current->pid > 0 && current->pid < 32) {
+            g_ipc_wake_tick[current->pid & 31u] = 0u;
+        }
         current->state = PROCESS_RUNNING;
         current->current_cpu = (int)cpu_index;
         current->last_cpu = (int)cpu_index;
@@ -3105,6 +3367,14 @@ int scheduler_complete_wait(process_t *task, uint32_t wait_result) {
              task->wait_event_class == TASK_WAIT_CLASS_IPC)
                 ? (task->kind == PROCESS_KIND_SERVICE ? 12u : 8u)
                 : 0u;
+        /* Inline wakes need no dispatch (the task keeps running), so they
+         * are not stamped: only a BLOCKED task that must WIN a walk to run
+         * is the subject of the latency probe. */
+        if (!inline_wake && wait_result == TASK_WAIT_RESULT_SIGNALED &&
+            task->wake_boost_budget != 0u &&
+            task->pid > 0 && task->pid < 32) {
+            g_ipc_wake_tick[task->pid & 31u] = kernel_timer_get_ticks();
+        }
         spinlock_unlock_irqrestore(&g_scheduler_lock, flags);
         scheduler_publish_task_event(MK_TASK_EVENT_WOKE, task);
         return 0;

@@ -1,8 +1,8 @@
-# Plano de Fechamento Definitivo — VibeOS (Revisão 3)
+# Plano de Fechamento Definitivo — VibeOS (Revisão 4)
 
-last: 2026-10-30 — 0.6 MODO-i FEITO (inanicao da shell: anti-inanicao era codigo morto — `account_runtime` zerava `last_start_tick` no switch-out — + teto 64 < span real 112+3 + `break` de `score==0`; fix nao-zerar/divisor-4/teto-128/sem-break, KNOWN_BUGS #18; shell volta a processar comandos: `js` → `command exit js rc=0`; phase6 6/6). A shell ganhou flush de type-ahead (KNOWN_BUGS #18 prova). 0.6 segue ABERTO no MODO-iii novo: `netmgrd status` trava no meio do print (KNOWN_BUGS #19)
-doing: backlog definitivo, organizado em ondas, com regra anti-stub e prova obrigatória (revisão v3 de 15/10)
-next: Onda 0 — 0.6 modo-iii (stall netmgrd stdout/escrita do app, bug #19) + 0.2/0.3
+last: 2026-11-01 — #19 (0.6 modo-iii) em CAMPANHA MEDIDA: 7 mecanismos corrigidos (A one-shot do boost de wake, B clamp do score removido, C lost-wakeup da janela enqueue→block, D magnitude do boost -128, E yield pos-poll removido, F budget de reply 128, G throttle de fs_tick no read_line); a sonda nova de latencia wake→dispatch (`w6=1 w11=1`, zero `wake-stale`) REFUTOU a hipotese de inanicao como causa do stall atual; gate `validate-network-surface` segue VERMELHO com sonda nomeada (leak de `pending_signals` no chain-pop + trace `rk` no read_line). Revisão 4 consolida TODOS os planos num unico backlog executavel "tudo de vez", sem stubs.
+doing: backlog definitivo consolidado (v4) — ondas 0-9, um estado terminal por item, prova obrigatoria por linha
+next: Onda 0 — fechar 0.6 modo-iii (#19: leak do pending + trace rk no gate) + 0.2/0.3, depois Onda 1
 state: active
 intent: execution-backlog
 
@@ -15,39 +15,38 @@ intent: execution-backlog
 > `guidelines/COMPAT_GAMES_MENU_PORT_PLAN.md`, `guidelines/java.md`,
 > `AUDIO_HARDWARE_VALIDATION_MATRIX.md` e as seções abertas de
 > `KNOWN_BUGS.md`/`hw_validation.md`/`guidelines/MICROKERNEL_MIGRATION.md`.
-> Esta revisão foi escrita contra o **código**, não contra o texto dos planos
-> anteriores; onde houver conflito, **esta vence**.
+> Esta revisão foi escrita contra o **código e contra as medições da campanha #19**,
+> não contra o texto dos planos anteriores; onde houver conflito, **esta vence**.
 > `COMPLETION_ACTION_PLAN.md` fica como **log de evidência por prioridade**.
 
-## Mudou desde a v1 (revisão 15/10)
-
-| Fonte | Fechou | Evidência |
-| --- | --- | --- |
-| 0.1 contagem do host USB | ✅ | `ddb1a26ef` — `kernel_usb_host_probe_cb` era código morto; `[14] usb: init complete (1 controllers, 0 devices)` |
-| 0.5 gate/selector dos harnesses interativos | ✅ (parte harness) | `13ae59214` — selector closed-loop + cold-restart; gate exige `shell: command exit X rc=0`; o validador passou a **alcançar** o shell |
-| 0.7 `BAD-FORENSICS` falso p/ frame ring3 | ✅ FEITO | `13ae59214` (face cs=0x1b) + fechamento do resíduo em **0.8** (face frame-kernel mid-syscall) — as duas faces do mesmo witness fechadas, KNOWN_BUGS #10/#16 |
-| P7 placeholders falsos de js/ruby/python | ✅ | `918376735` — eco-REPL e a mentira "maps to JS engine" removidos; diagnóstico `NOT IMPLEMENTED (ENOSYS)` |
-| P9 honestidade documental (README/KNOWN_BUGS/painel) | ✅ (parte) | `8560a0d97` — tabela Project Status, header do KNOWN_BUGS, claims de Wi-Fi/USB corrigidos |
-| 0.6 stall de sessão interativa | ❌ re-localizado | `7c5852dff`+`ecb589097`+`918376735` — ver 0.6 (não é app/console/storage) |
-
-**Escala real do backlog** (contagem de checkboxes abertos por plano de origem):
-COMPLETION_ACTION_PLAN 56 · ACTION_PLAN 49 (superseded) · posix-xlike 56 ·
-CRAFT 67 · ICON 39 · VIDEO 32 · NETWORK_AUDIO 47 · MICROKERNEL 3 · COMPAT 2 ·
-MODULAR 6 · GAMES 7 · java 2. A Onda 6 concentra a maior parte.
-
----
-
-## Mudou desde a v2 (revisão v3)
+## Mudou desde a v3 (revisão 15/10 → 01/11)
 
 | Fonte | Estado | Evidência |
 | --- | --- | --- |
-| 0.6 causa raiz (parcial) | MEDIDA | `sched-census` (novo, `kernel/process/scheduler.c`) mostrou a shell (pid=10) e o loader (pid=11) **READY, `current_cpu=-1`, por 16k ticks** enquanto pid=5 ficava RUNNING na cpu0 — **inanição**, não lista truncada nem deadline perdido (detector `sched-watch: overdue` silencioso) |
-| 0.6 fix (parcial) | APLICADO | `scheduler_task_score` não tinha **termo de envelhecimento** (base = tier*16 + afinidade). Aging por tempo desde o último run (cap 64 pts > span de 4 tiers). Efeito medido: pid=10 deixou de ser READY eterno e voltou a **BLOCKED** (a shell voltou a rodar) — porém **o stall ainda não fecha**; resta um segundo fator |
-| 0.6 próximo probe | DESENHADO | census estendido com `wait_deadline`/`wait_channel` do bloqueado + `g_scheduler_preemption_ready` e `g_timeslice_remaining[0]` (a 1ª tentativa não compilou: variáveis declaradas abaixo do census). Hipóteses vivas: wait **infinito** (deadline 0) no pós-comando, ou preempção desligada neste boot |
-| 0.6 **retração da atribuição causal (v3, parte 10)** | MEDIDA — a parte 9 **over-claimou**; registro corrigido | lendo o caminho de wake do host, a hipótese "a mailbox derrubou o `TERMINATED` → host não acorda" **NÃO se sustenta**: (a) o host assina **só TERMINATED** (`sys_task_event_subscribe_mask(MK_TASK_EVENT_MASK_TERMINATED,…)`), então não inunda; (b) a mailbox que deu `drop=181` é a **class-stream** (`g_task_class_streams`), **só-escrita (write-only)** — nenhum `try_receive`/`mailbox_wait` nela (`SYSCALL_TASK_EVENT_RECV`/89 lê a *subscription*, não a classe); nunca é drenada, `class_pending_depth` satura em 32 e `class_dropped_events` cresce sem limite → **código morto com telemetria enganosa**, não perda de entrega; (c) o fallback de liveness (`host_task_pid_alive`→`sys_task_snapshot`) cobre a perda: a snapshot faz `continue` em TERMINATED (scheduler.c:2047) → filho morto **some** da snapshot → `alive()` falso → host acorda mesmo com evento perdido. E (d) o boot das partes 8/9 **não era o stall**: o probe não alcançou o rescue (`rescue selected: False`); aqueles `host-wait: stalled pid=10/11 alive=1` eram supervisores do **desktop** esperando apps de longa duração (esperado). As refutações estruturais (inanicao/flood/lista) valem; observar o stall exige reproduzir **rescue + comando preso**. AÇÃO: classe-stream sem consumidor é decisão de arquitetura (fio vs remove) → `[!]` mantenedora, NÃO mudo sem ela. Busca real do 0.6 volta ao `waitable_wait_timeout` de 4 ticks da shell (parte 7) que nunca disparava |
-| 0.6 **mecanismo nomeado (v3, parte 9 — REFORUTADO pela parte 10)** | MEDIDA (nomeou o wait, mas atribuiu errado a causa) | estendido o census com `wait_event_kind` (0 NONE / 1 WAITABLE / 2 QUEUE / 3 SIGNAL / 4 COMPLETION) e `wait_owner_service` (`MK_SERVICE_*`): formato `pid:state:cpu:deadline:kind:owner`. Serviços 1..8 = fila ociosa saudável (`kind=2`, `deadline=0`, cada um no seu owner). **Pids 9/10 = `kind=2` QUEUE com `deadline` RE-ARMANDO para ~agora** (`owner=0`) = o loop de `host_wait_for_task_exit`/`sys_task_event_receive` (`HOST_TASK_EXIT_POLL_TICKS=4`). A leitura de que o `drop=181` da class-stream causou a perda do `TERMINATED` foi **RETRATADA na parte 10** (host só assina TERMINATED; class-stream é write-only sem consumidor; liveness fallback funciona). O que fica válido: o filho nunca transiciona a TERMINATED |
-| 0.6 **correção de direção (v3, parte 8)** | MEDIDA — hipótese de inanição **FALSIFICADA** | census agora em **duas fases** (0 e 1025, `2000%4==0` vs `1025%4==1`) com contadores de entrada: o alias era real — na fase 0 `ts0` lia sempre 4; na fase 1025 lê 2/3/4. **O timeslice decrementa e a preempção roda 1x/tick** (`pre==tick`). Contadores `g_sched_sel_count` por pid (livres de orçamento, cobrem os dois caminhos de dispatch) são **não-zero e crescentes**: em t=8000, `sel5≈6994 sel10≈1831 sel11≈6922 sel12≈6882` — a shell **é despachada**. Assinatura real no serial do MESMO boot: `host-wait: stalled pid=10/11 polls=4096 alive=1` com os pids 10/11 **BLOCKED e `wait_deadline` re-armando para ~agora** ⇒ o par **wait/exit-notify** (o filho bloqueia e não termina), **não** escalonamento. *(qualificado pela parte 10: a refutação da inanição permanece, mas aquele boot era desktop — os `host-wait: stalled ... alive=1` eram supervisores de apps de longa duração, não o stall de 0.6)* |
-| Instrumentos que ficam | ✅ | `sched-census` + `sched-watch: overdue` (orçados) além de `input-diag`, `host-wait` e host-state peek |
+| 0.8 `BAD-FORENSICS` resíduo ring3 | ✅ FEITO | `ee09e8b4a` — frame kernel mid-`int 0x80` com ebp/esp do USER; branch kernel aceita janela do user só com `runs_in_user_mode=1`; boot pré-fix 6 linhas / pós-fix **0** com pid=12 vivo; KNOWN_BUGS #16 |
+| 0.6 modo-i (sessão interativa nasce) | ✅ FEITO | `7eb20cc29` — anti-inanição era código MORTO (`account_runtime` zerava `last_start_tick`; teto 64 < span 112+3; `break` de score==0); fix não-zerar/divisor-4/teto-128/sem-break; `js` → `command exit js rc=0`, census `sel10` 4→116028; phase6 6/6 |
+| 0.6 modo-ii | ✅ RE-LOCALIZADO (não era kernel) | artefato de RAM do harness: arena do app em 0x10000000 fora da RAM de 256MB; QEMU descarta writes em GPA não alocado silenciosamente; `chunk0 verify match` em 3072MB; witness permanente no `lang_loader` |
+| 0.6 modo-iii = #19 | ❌ ABERTO — campanha medida | 7 mecanismos medidos/corrigidos (A–G, ver seção "Estado medido do #19"); inanição REFUTADA por sonda de latência wake→dispatch; gate `validate-network-surface` vermelho com sonda nomeada (leak `pending_signals` + trace `rk`) |
+| 1.9 e1000 + rtl8139 ligados | ✅ FEITO | drivers `init` a partir do entry, DMA VA==PA, gates `make validate-network-datapath NIC=e1000` / `NIC=rtl8139` PASS; KNOWN_BUGS #12/#13 |
+| 2.2 `smp_scheduler_enable()` chamado | ✅ FEITO | caller em `kernel/entry.c:899`; APs preemptam (validate-smp) |
+| 2.3 IPI de reschedule | ✅ FEITO | vetor 0x82 (wake) + 0x83 (timer per-CPU); IPI 0x82 preempta CPU ocupado (switches=3 medidos; tabela dispatch morta esvaziada; UP imune por A/B) |
+| 2.4 IOAPIC afinidade | ✅ FEITO (IRQs interativos) | `adb11cb11` — IRQ1/12 no primeiro AP online; PS/2 ganhou lock GLOBAL (`g_ps2_port_lock`); "online" = `kernel_cpu_state.started` (nunca o array stage); demais IRQs seguem no BSP por design |
+| 2.5 smp4 | ✅ FEITO | 4/4 CPUs + enabled medidos; linha 191 STALE-FECHADA por reprodução |
+| 8.2 USB mass-storage runtime | ✅ QEMU-FEITO | BOT no UHCI (`b78dc41b7`) + EHCI high-speed (`3590c4113`); stick emulado carrega fs/AppFS, smoke write+restore; xHCI/stick físico seguem BLOQUEADO-HW |
+| P4 convenção `mk_service_launch_task` | ✅ FEITO | KNOWN_BUGS #14 |
+| P4 execve-UAF latente | ✅ FEITO | KNOWN_BUGS #15 (`pending_stack_free` no terminate path) |
+| P4 classe #5 face-2 | ✅ FEITO | clamp de capacidade `kernel_video_target_capacity` + W^X do .text com CR0.WP |
+| P4 classe #5 face-1 | ❌ ABERTA (campanha) | camada de witnesses permanente no tree; escritor anônimo transiente só fecha com hw-watchpoint no T61 (Onda 8) |
+| class-stream write-only sem consumidor | `[!]` mantenedora | telemetria satura `class_dropped_events` sem limite; nenhum consumidor; decisão fio-vs-remove na fila [!] |
+| D/G constantes de política do #19 | `[!]` mantenedora | boost `-128` e budget `128` são os valores atuais documentados; mecanismo fixo, magnitude é decisão de arquitetura |
+
+**Escala real do backlog** (checkboxes abertos por plano de origem, contagem de origem):
+COMPLETION_ACTION_PLAN 56 · ACTION_PLAN 49 (superseded) · posix-xlike 56 ·
+CRAFT 67 · ICON 39 · VIDEO 32 · NETWORK_AUDIO 47 · MICROKERNEL 3 · COMPAT 2 ·
+MODULAR 6 · GAMES 7 · java 2. Esta revisão **não herda a contagem**: herda os
+itens, cada um com DoD e prova. A Onda 6 concentra a maior parte.
+
+---
 
 ## 0. Contrato deste plano
 
@@ -59,15 +58,20 @@ Nenhum item fecha com placeholder. Cada item termina em **exatamente um** estado
 | --- | --- | --- |
 | **FEITO** | comportamento real, observável, com prova executada | link do report/log em `build/` + comando na mensagem de commit |
 | **NÃO-OBJETIVO** | decidido fora de escopo, com justificativa escrita | entrada em "Não-objetivos declarados" + doc de referência corrigido |
-| **BLOQUEADO-HW** | implementado, porém só se *prova* em máquina física | código no repo + linha da matriz marcada "implementado, aguardando silício" |
-| **DECISÃO [!]** | exige decisão da mantenedora antes de codar | item parado, com as opções escritas |
+| **BLOQUEADO-HW** | implementado, porém só se *prova* em máquina física | código no repo + linha da matriz marcada "implementado, aguardando silício" + log serial quando a máquina existir |
+| **DECISÃO [!]** | exige decisão da mantenedora antes de codar | item parado, com as opções escritas na fila [!] (0.4) |
 
 Proibido: `return 0` de fachada, TODO que finge implementação, log que afirma
 mais do que o código faz, teste que passa sem exercitar o caminho, "unsupported"
 silencioso. Falta de suporte = diagnóstico explícito (`ENOTTY`/`ENOSYS`/log
-honesto) — nunca estado falso. **Precedente aplicado nesta revisão:** os
-runtimes `js`/`ruby`/`python` passaram de stub mentiroso para `ENOSYS` honesto
-(`918376735`) — este é o padrão para todo item P7.
+honesto) — nunca estado falso. **Precedente:** runtimes `js`/`ruby`/`python`
+passaram de stub mentiroso para `ENOSYS` honesto (`918376735`) — este é o padrão
+para todo item P7.
+
+**Regra de medição (campanha #19, 01/11):** nenhuma hipótese vira "correção"
+sem a linha-witness medida; e um instrumento só vale como evidência depois de
+provada a sua alcançabilidade (0 hits de uma sonda não comprovadamente viva não
+é evidência negativa).
 
 ### 0.2 Provas aceitas
 
@@ -75,9 +79,10 @@ runtimes `js`/`ruby`/`python` passaram de stub mentiroso para `ENOSYS` honesto
 - `make validate-*` aplicável com report em `build/`;
 - boot real no QEMU no perfil da área (`make run`, `run-headless-*`);
 - para itens de hardware: log serial da máquina física anexado no report;
-- para itens de sessão interativa (ver 0.6): probe fora do harness
-  (`/tmp` scripts HMP+sendkey) **ou** leitura do VGA buffer via HMP `xp 0xb8000`
-  (o serial **não** captura a saída de console dos apps — medido em 918376735).
+- para itens de sessão interativa: o gate canônico `make validate-network-surface`
+  (o report `build/network-surface-validation.md` embute o serial) ou probe HMP
+  persistente no repo (item 0.9); o serial **não** captura a saída de console
+  dos apps — leitura do VGA buffer via HMP `xp 0xb8000` quando necessário.
 
 ### 0.3 Invariantes que nenhum item pode violar
 
@@ -87,23 +92,65 @@ runtimes `js`/`ruby`/`python` passaram de stub mentiroso para `ENOSYS` honesto
 - uma unidade de trabalho coesa por commit; implementação + prova + doc no mesmo commit;
 - `main` é a única branch de longa duração; merge/promoção é da mantenedora;
 - **a shell rescue não pode morrer por comando com erro** (hoje ela sai em rc≠0,
-  `userland/modules/shell.c` — item de correção na Onda 6).
+  `userland/modules/shell.c:402` — item 6.1).
 
-### 0.4 O que "tudo de vez" significa aqui
+### 0.4 Fila de decisão [!] da mantenedora (única lista)
 
-Execução em **ondas**, cada uma fechando com gate verde antes da próxima. Duas
-áreas são *subsistemas novos*, não "itens" — Wi-Fi 802.11 real e um motor de
-browser — e aparecem como `DECISÃO [!]` com custo honesto; as demais fecham por
-implementação.
+Tudo que exige decisão de arquitetura/escopo. Enquanto não decidido, o item fica
+parado e o plano executa o próximo desbloqueado (regra da rodada).
+
+| # | Decisão | Opções | Default atual no código |
+| --- | --- | --- | --- |
+| !1 | NIC abstraction (1.8) | (a) criar camada `send_frame/attach_mac/link_status` registrada; (b) manter init direto por driver (e1000/rtl8139/virtio já ligados) | init direto por driver funciona; abstração não existe |
+| !2 | class-stream sem consumidor | (a) fio (consumir/drenar); (b) remove a stream + telemetria morta | write-only, `class_dropped_events` cresce sem limite |
+| !3 | Default SMP / SRO | (a) default 2 CPUs; (b) manter 1 (SMP só com toggle experimental) | `QEMU_RUN_SMP ?= 1` |
+| !4 | Default i915 | (a) manter `INTEL_I915_EXPERIMENTAL_COMMIT=1`; (b) voltar a 0 seguro | 1 no Makefile |
+| !5 | Wi-Fi 802.11 real (1.11) | (a) subsistema novo (driver+supplicant+CCMP) — custo alto; (b) declarar NÃO-OBJETIVO e manter diagnóstico honesto | fachada atual vira diagnóstico honesto (1.10) |
+| !6 | Browser (6.6) | (a) engine mínimo; (b) links2 como navegador do sistema; (c) NÃO-OBJETIVO declarado | Otter Qt5 vendorado, fora do build |
+| !7 | Java (5.6) | (a) JVM real (custo alto); (b) experimental honesto declarado | `java`/`javac` caseiros |
+| !8 | Magnitudes do #19 | (a) manter `-128`/`128`; (b) reajustar (constante única em scheduler.c/service.c) | `-128`, `128` |
 
 ### 0.5 Instrumentos de diagnóstico que FICAM no repo (não são stubs)
 
 Ferramentas reais, orçadas, aditivas — mantidas e documentadas:
-`input-diag` (contadores em `kernel/drivers/input/{input,keyboard}.c`),
-host-state peek no trace de `service: request timeout`
-(`kernel/microkernel/service.c`), `sched-dispatch: BAD-FORENSICS`,
-guardas de heap/scheduler/waitable. Manutenção delas é trabalho contínuo
-(item 0.8), não lixo a remover.
+`input-diag` (`kernel/drivers/input/{input,keyboard}.c`), host-state peek no
+trace de `service: request timeout` (`kernel/microkernel/service.c`),
+`sched-dispatch: BAD-FORENSICS`, `sched-census`/`sched-score`/`sched-rip`
+(`kernel/process/scheduler.c`), sonda de latência wake→dispatch
+(`g_ipc_wake_tick`/`g_wake_max_d`/`wake-stale`), trace `rk` do `read_line`
+(`userland/modules/shell.c`), `tools/diagnose_smp_freeze.py`, guardas de
+heap/scheduler/waitable. Manutenção delas é trabalho contínuo (item 0.8),
+não lixo a remover.
+
+### 0.6 O que "tudo de vez" significa aqui
+
+Execução em **ondas**, cada uma fechando com gate verde antes da próxima. Duas
+áreas são *subsistemas novos*, não "itens" — Wi-Fi 802.11 real e um motor de
+browser — e estão na fila [!] com custo honesto; as demais fecham por
+implementação. **Fora da fila [!], nenhum item pode terminar em "parcial".**
+
+### 0.7 Estado medido do #19 (0.6 modo-iii) — campanha 01/11
+
+Sintoma: o gate digita `netmgrd status`, a linha nunca chega a `busybox_main`
+(zero `shell: command`), o comando nunca roda. Medições (runs 19_run1..13):
+
+| Mecanismo | Como foi medido | Correção (no tree) |
+| --- | --- | --- |
+| A. boost de wake perpétuo | score -32/-24 ficava colado no dispatch e mascarava o aging | consumo one-shot no dispatch |
+| B. clamp `score<0→0` | waiter envelhecido empatava em 0 com tier-0 fresco; empate decidido por ordem de varredura | clamp removido (teto -31 estrito) |
+| C. lost wakeup enqueue→block | `cliQ=1 cliW{pend=1 wake=0}` com head ainda RUNNING no pop | peek `state==BLOCKED` + auto-consumo pós-block |
+| D. boost -32/-24 insuficiente | host tier-6 pontuando 64+ por ~384-512 ticks | `-128` (cap de inanição -13) |
+| E. yield pós-poll sem tecla | shell no pool de aging tier-6 770-1170 ticks até o próximo poll | yield removido (shell + `vibe_app_read_line`) |
+| F. budget de reply 32 ticks | retry re-enviava request em voo → flood `unexpected reply`, cliQ→16, pend→31 | budget 128 (precedente FILESYSTEM) |
+| G. `fs_tick()` por iteração | shell encadeada atrás de storage (`waiting_src=1`) | throttle 1x/100 ticks no read_line |
+| — inanição do scheduler | sonda wake→dispatch: `w6=1 w11=1`, zero `wake-stale` | **REFUTADA** (não é a causa) |
+| — linha não submete | 13 banners `shell: ready`, 0 `shell: command`, `consumed=15 produced=18` | **ABERTO** — sondas nomeadas abaixo |
+
+Sondas nomeadas da próxima rodada (já no tree): (1) leak de `pending_signals`
+no caminho pop+complete_wait do `kernel_waitable_signal` (cada reply deixa 1
+sinal fantasma; medido `cliW{pend=3 wake=0}`); (2) trace `rk <valor>` por poll
+no `read_line` (budget 48) rodando no gate `make validate-network-surface`.
+Gate só fica verde com `shell: command exit netmgrd rc=0` no report.
 
 ---
 
@@ -111,8 +158,8 @@ guardas de heap/scheduler/waitable. Manutenção delas é trabalho contínuo
 
 | Onda | Tema | Fecha quando |
 | --- | --- | --- |
-| **0** | Fundação: bugs de boot, gates, instrumentos, consolidação | build/parse limpos + gate base verde |
-| **1** | Rede definitiva (IPv4 client, ferramentas, NIC, honestidade Wi-Fi) | `validate-network-datapath` + `validate-network-surface`(hardened) verdes |
+| **0** | Fundação: bugs de boot, gates, instrumentos, consolidação | build/parse limpos + gate base verde (network-surface + phase6) |
+| **1** | Rede definitiva (IPv4 client, ferramentas, NIC, honestidade Wi-Fi) | `validate-network-datapath` + `validate-network-surface` verdes |
 | **2** | SMP definitivo (2+ CPUs distribuídas, sem corrida) | `validate-smp` verde em smp2/smp4 e `make run` SMP=2 responsivo |
 | **3** | Áudio definitivo (playback+captura, azalia fechado, uaudio) | `validate-audio-*` verdes; matriz HW marcada "aguardando silício" |
 | **4** | Vídeo definitivo (DRM, modos, protocolo de estresse) | `validate-video`/`validate-startx-*` + protocolo rodado |
@@ -130,16 +177,19 @@ correr em paralelo depois de 2; **8** só depois de 0–7.
 
 ## Onda 0 — Fundação
 
-| # | Item | Estado verificado (15/10) | DoD | Prova | Bloqueio |
+| # | Item | Estado verificado (01/11) | DoD | Prova | Bloqueio |
 | --- | --- | --- | --- | --- | --- |
 | 0.1 | `kernel_usb_host_controller_count()` = 0 após UHCI | ✅ FEITO (`ddb1a26ef`) | contagem real | `usb: init complete (1 controllers, 0 devices)` | — |
-| 0.2 | Sweep dos ~229 TODO/stub/n.i.; `make` sem warns | dedup `libksh.a` já feito; sweep pendente | cada TODO → feito / bug em KNOWN_BUGS / item aqui | `make` rc=0 sem warning | — |
+| 0.2 | Sweep dos TODO/stub/n.i.; `make` sem warns | kernel top-level `*.c`: 0 TODO/FIXME; sweep de `userland/`+`lang/` pendente | cada TODO → feito / bug em KNOWN_BUGS / item aqui | `make` rc=0 sem warning + grep vazio | — |
 | 0.3 | Telemetria de boot (`g_timer_trace_budget` fixo em 8) | dificulta diagnóstico | knob quiet/verbose | doc + default | — |
-| 0.4 | Consolidação de planos (pointers) | ✅ feito na v1; reverificar a cada revisão | cada plano antigo aponta para cá | grep | — |
-| 0.5 | Gate dos harnesses interativos | ✅ harness (selector + gate + timeout); `network-surface` alcança o shell | gates verdes **repetidos** | depende de 0.6 | 0.6 |
-| 0.6 | **Sessão interativa trava no meio** | ❌ ABERTO (modo-iii) — **FEITO 30/10 (modo-i), KNOWN_BUGS #18**: a causa raiz do modo-i foi medida e é distinta de todas as hipóteses anteriores da tabela — o **anti-inanição era código MORTO**: `scheduler_account_runtime` zerava `last_start_tick` a cada switch-out (o campo que o termo de envelhecimento lê), o teto (64) era menor que o span real de tiers (112+3), e o `break` de `score==0` da varredura era inválido. Fix: não zerar / divisor 4 / teto 128 / sem break. Prova: mesmo harness — `shell: command exit js rc=0` (06_run7), census `sel10` 4→116028 e `sel5` 147457→3485, `phase6` 6/6 + `phase6-boot-smoke` 6/6. **MODO-ii RE-LOCALIZADO 30/10**: o "header invalid after read" era **artefato de RAM do harness** — a arena do app (0x10000000) fica fora da RAM de 256MB do meu repro; QEMU descarta writes em GPA não alocado silenciosamente (witness: `xfer d4=56415050` vs `storage: rt d4=00000000` em 256MB; `chunk0 verify match` em 3072MB) — o caminho de storage do kernel está correto; witness permanente `chunk0 verify` no `lang_loader`. Shell ganhou **flush de type-ahead** (scancodes residuais do menu do stage2 prefixavam o 1º comando — o gate via `ssetmgrd`). **MODO-iii = KNOWN_BUGS #19** (novo, não é regressão — A/B provado): `netmgrd status` para após a linha 1238; pid=13 READY nunca despachado; sonda discriminativa nomeada em #19 (medir score/`last_start_tick` por task antes de tocar o write relay). **HISTÓRICO (pré-30/10):** — **ramo decidido por medição**: a shell (pid=10) NÃO está no loop de polling (trace novo `host-wait: stalled` ausente em ~10s, quando 256 polls o imprimiriam) nem retorna do wait — presa num único `kernel_waitable_wait_timeout` com deadline de 4 ticks que NUNCA dispara (antes do launch os mesmos waits venciam: deadlines 8522→8562 avançando). Caveat medido: budget do trace `scheduler: block` (24) esgotou antes do launch, então silêncio de block-trace não prova nada sozinho. Dois modos seguem: (i) rescue sem `shell: ready`; (ii) comando nunca completa. Eliminados: input saudável, IPC-timeout ausente, console host inocentado. **Parte 8 (medido):** a inanição foi **falsificada** — census em duas fases prova `ts0` decrementando (2/3/4) e preempção 1x/tick; `g_sched_sel_count` mostra a shell despachada ~1831x. O stall é o par **wait/exit-notify** (`host-wait: stalled pid=10/11 polls=4096 alive=1` + pids BLOCKED com deadline re-armando); o filho bloqueia e não termina. Próximo instrumento: lado do FILHO / storage service pid=1. |
-| 0.7 | `BAD-FORENSICS` falso p/ frame ring3 | ✅ FEITO (`13ae59214` face `cs=0x1b` + 0.8 face mid-syscall) | — | `validate-network-datapath` PASS + `phase6` 6/6 | — |
-| 0.8 | **`BAD-FORENSICS` resíduo em app ring3 saudável** | ✅ FEITO (30/10, KNOWN_BUGS #16) — a hipótese do `ctx=0x13fff…` estava ERRADA: a linha real trazia `in_win=1` (ctx na stack do KERNEL da task) e o que falhava era `ebp=0x37ffdf24`. Causa: uma task ring3 pré-emptada **no meio de um `int $0x80`** guarda um frame KERNEL (`cs=0x8`, `eip=0x59bc3`=`syscall_stub`) cujo `ebp` é o do app (stack de usuário) — `pusha` preserva os registradores do chamador e o `iretd` restaura o modo usuário adiante. Fix: o branch kernel do witness aceita `ebp`/`esp` na janela de usuário quando `runs_in_user_mode=1`; **task de kernel permanece estrita** (classe #3 inalterada). | check de frame ciente do contexto da TASK (não só do `cs`) | boot pré-fix 6 linhas / pós-fix **0** com o mesmo pid=12 vivo; `phase6` 6/6 | — |
+| 0.4 | Consolidação de planos (pointers) | ✅ feito; esta v4 reverifica | cada plano antigo aponta para cá | grep | — |
+| 0.5 | Gate dos harnesses interativos | ✅ harness (selector + gate + timeout) — `network-surface` alcança o shell | gates verdes **repetidos** | `make validate-network-surface` verde 3× | 0.6 |
+| 0.6 | **Sessão interativa trava no meio** | ❌ ABERTO (modo-iii = #19, campanha medida — ver 0.7). Modo-i ✅ (`7eb20cc29`, KNOWN_BUGS #18); modo-ii ✅ artefato de RAM do harness | `netmgrd status` completa pelo gate | `shell: command exit netmgrd rc=0` no report | sonda 0.7 |
+| 0.7 | `BAD-FORENSICS` / witness-layer | ✅ FEITO (`13ae59214` + `ee09e8b4a`, KNOWN_BUGS #16; camada steady-state completa, sem verde-falso) | — | boot 0 linhas falsas + phase6 6/6 | — |
+| 0.8 | Manutenção da camada de witnesses (budgets documentados) | instrumentos no tree, budget-free onde importa | cada witness tem doc de budget no código | grep + doc | — |
+| 0.9 | Repro interativo persistente no repo | harness HMP existia só em `/tmp/vg` e foi perdido na limpeza do tmpfs | script no repo (HMP+sendkey, marcadores, serial) usado pelos gates | `tools/` + uso no gate | — |
+| 0.10 | #19: leak de `pending_signals` no chain-pop | medido (`cliW{pend=3 wake=0}`) | decrementar o contador no caminho pop+complete_wait | census `pend` volta a 0 após reply | — |
+| 0.11 | #19: linha não submete (trace `rk`) | instrumento no tree, budget 48 | rodar no gate e fechar a causa | `rk` no report + linha submete | 0.6/0.9 |
 
 > 0.5/0.6 são o destravador silencioso de várias ondas: **três validadores**
 > (`network-surface`, `abi-compat-surface`, `audio-stack`) não valem como gate
@@ -163,10 +213,10 @@ Já fechado (14–15/10, não reabrir): TX self-wipe, ARP/ICMP responders, loopb
 | 1.5 | `ifconfig`/`route`/`netstat` com tabela real | imprimem snapshots | leem estado real do serviço | saída × estado | — |
 | 1.6 | `curl`/`wget` com HTTP pela própria stack | curl só `file://`, wget inexistente | HTTP GET real | GET contra host do user-net | dep 1.2 |
 | 1.7 | Gate HTTP via links2 | aberto | links2 busca página real | report | dep 1.2/1.6 |
-| 1.8 | NIC abstraction `[!]` | esboçada em e1000.c:573–610 | `send_frame/attach_mac/link_status`; network.c fala com drivers registrados | virtio pelo caminho novo | **[!]** |
-| 1.9 | e1000 + rtl8139 ligados de verdade | **dead code** (zero callers) | init a partir de entry.c, VA==PA de DMA, IRQ de RX | `validate-network-datapath` com `-device e1000` | dep 1.8 |
+| 1.8 | NIC abstraction `[!]` | esboçada em e1000.c:573–610 | `send_frame/attach_mac/link_status`; network.c fala com drivers registrados | virtio pelo caminho novo | **[!1]** |
+| 1.9 | e1000 + rtl8139 ligados de verdade | ✅ FEITO | init a partir do entry, VA==PA de DMA, IRQ de RX | `validate-network-datapath NIC=e1000` / `NIC=rtl8139` PASS (KNOWN_BUGS #12/#13) | — |
 | 1.10 | Wi-Fi: fim da fachada | `wifi_read_pci_bar0` BDF fixo 0:0:0, scan hardcoded, connect inventa IP | painel reporta "não disponível" e o data-plane não inicializa em produção | código + doc | — |
-| 1.11 | Wi-Fi 802.11 real (driver+supplicant+CCMP) | `wifi_wpa2.c` tem cripto real órfã | associação real com AP | hwsim/HW | **[!]** escopo |
+| 1.11 | Wi-Fi 802.11 real (driver+supplicant+CCMP) | `wifi_wpa2.c` tem cripto real órfã | associação real com AP | hwsim/HW | **[!5]** |
 | 1.12 | Panel/UI de rede | scans hardcoded | reporta estado real | UI × estado | dep 1.10 |
 
 ---
@@ -177,13 +227,13 @@ Fonte: `COMPLETION_ACTION_PLAN.md` P4 + `KNOWN_BUGS.md` (classe #5) + `guideline
 
 | # | Item | Estado | DoD | Prova | Bloqueio |
 | --- | --- | --- | --- | --- | --- |
-| 2.1 | Classe #5 (corrupção real-time smp2, flag ON) | aberta; guards silentes; gdb suprime; campos de `process_t` recebem ponteiros de heap | causa raiz corrigida ou classe eliminada por design | `validate-smp` smp2 real-time verde em N corridas | — |
-| 2.2 | `smp_scheduler_enable()` chamado após bring-up | `smp.c:464` zero callers; APs em `sti;hlt` | APs preempcam de verdade | `validate-smp` | dep 2.1 |
-| 2.3 | Handler de IPI de reschedule | `smp.c:484` só EOI | reschedule imediato entre CPUs | teste de latência/wakeup | dep 2.2 |
-| 2.4 | IOAPIC: afinidade de IRQ | tudo no BSP | IRQ roteado por afinidade | `validate-smp` + IRQ stats | — |
-| 2.5 | smp4: bring-up dos 3 APs | `cpus=4/4` ausente | 4 CPUs online | `validate-smp` smp4 | — |
-| 2.6 | `QEMU_RUN_SMP` default 2 | default 1 | `make run` responsivo em 2 CPUs | `make run` + taskmgr 2 cores | dep 2.1–2.5 |
-| 2.7 | `validate-smp` como gate confiável | smp2/smp4 falham | verde repetível | 3 corridas limpas | dep 2.1 |
+| 2.1 | Classe #5 face-1 (corrupção real-time smp2, flag ON) | aberta; camada de witnesses completa; escritor anônimo transiente | causa raiz corrigida ou classe eliminada por design | hw-watchpoint no T61 (Onda 8) + `validate-smp` smp2 verde | **HW** |
+| 2.2 | `smp_scheduler_enable()` chamado após bring-up | ✅ FEITO (`entry.c:899`) | APs preempcam | `validate-smp` | — |
+| 2.3 | Handler de IPI de reschedule | ✅ FEITO (0x82 wake + 0x83 timer) | reschedule imediato entre CPUs | IPI 0x82 preempta CPU ocupado (switches=3) | — |
+| 2.4 | IOAPIC: afinidade de IRQ | ✅ FEITO p/ IRQ1/12 (`adb11cb11`); demais no BSP por design | IRQ roteado por afinidade | `validate-smp` + IRQ stats; keys drops=0 | — |
+| 2.5 | smp4: bring-up dos 3 APs | ✅ FEITO | 4 CPUs online | `validate-smp` smp4 (4/4+enabled) | — |
+| 2.6 | `QEMU_RUN_SMP` default 2 | default 1 | `make run` responsivo em 2 CPUs | `make run` + taskmgr 2 cores | **[!3]** |
+| 2.7 | `validate-smp` como gate confiável | smp2 confinado ao shell-stall #5; UP 6/6 | verde repetível | 3 corridas limpas | dep 2.1 |
 
 ---
 
@@ -209,7 +259,7 @@ Fonte: `VIDEO_BACKEND_REWRITE_PLAN.md` (32 abertos), P6.
 
 | # | Item | Estado | DoD | Prova | Bloqueio |
 | --- | --- | --- | --- | --- | --- |
-| 4.1 | Default do i915 (`INTEL_I915_EXPERIMENTAL_COMMIT=1` hoje) | plano prega "0 seguro" | default definido e coerente | Makefile + doc | **[!]** |
+| 4.1 | Default do i915 (`INTEL_I915_EXPERIMENTAL_COMMIT=1` hoje) | default atual documentado | default definido e coerente | Makefile + doc | **[!4]** |
 | 4.2 | MTRR como fallback opcional de WC | aberto | suporte ou NÃO-OBJETIVO escrito | doc | — |
 | 4.3 | Atualizar `hw_validation.md`/`VIDEO_BACKEND_REWRITE_PLAN.md` vs código | drift | docs batem com o código | grep | — |
 | 4.4 | Modos widescreen (1366x768/1360x768/1920x1080) | caem para 640x480/1024x768 | modos aplicados | `validate-video` | **HW**/firmware |
@@ -226,12 +276,12 @@ Fonte: P7 do `COMPLETION_ACTION_PLAN.md`, `guidelines/java.md`.
 
 | # | Item | Estado | DoD | Prova | Bloqueio |
 | --- | --- | --- | --- | --- | --- |
-| 5.1 | **Placeholders falsos de js/ruby/python** | ✅ FEITO (`918376735`) — diagnóstico `ENOSYS` honesto no lugar do eco-REPL e da mentira "maps to JS" | — | boot rescue: `js: NOT IMPLEMENTED (ENOSYS)` + `app: main returned` | — |
-| 5.2 | quickjs real | `quickjs.c` (60k linhas) vendorado + `js_main_real.c` pronto, mas **não linkado**: exige porto **libc freestanding** (malloc/stdio/math/time) — não é "descomentar o bloco" | REPL + script real | `validate-modular-apps` cenário js | — |
+| 5.1 | **Placeholders falsos de js/ruby/python** | ✅ FEITO (`918376735`) — diagnóstico `ENOSYS` honesto | — | boot rescue: `js: NOT IMPLEMENTED (ENOSYS)` + `app: main returned` | — |
+| 5.2 | quickjs real | `quickjs.c` vendorado + `js_main_real.c` pronto, **não linkado** (`QUICKJS_SRCS` comentado no Makefile): exige porto libc freestanding | REPL + script real | `validate-modular-apps` cenário js | — |
 | 5.3 | mruby (idem: precisa artefatos pré-build) | stub honesto | REPL + script | validador | — |
 | 5.4 | micropython (idem) | stub honesto | REPL + script | validador | — |
 | 5.5 | lua + sectorc | existem; validar não-trivial | programa real | validador | — |
-| 5.6 | Java (`java`/`javac` caseiros) | aberto | declarado experimental honesto OU JVM real | doc + smoke | **[!]** escopo |
+| 5.6 | Java (`java`/`javac` caseiros) | aberto | declarado experimental honesto OU JVM real | doc + smoke | **[!7]** |
 | 5.7 | Heap/stack por classe de runtime (respeitar `MEMORY_ADAPTIVE_RAM_POLICY`) | aberto | medido por runtime | report de memória | — |
 
 **DoD da onda:** `make validate-modular-apps` com **hello + programa não-trivial**
@@ -247,12 +297,12 @@ Fontes: P8, `CRAFT_OPTIMIZATION_PLAN.md` (67 abertos),
 
 | # | Item | Estado | DoD | Prova | Bloqueio |
 | --- | --- | --- | --- | --- | --- |
-| 6.1 | **Shell rescue morre em rc≠0** (achado desta sessão) | `userland/modules/shell.c` sai do loop em qualquer comando com erro — um typo mata a sessão; hoje isso também obrigou `js`/`ruby`/`python` a manter exit 0 | a shell sobrevive a erro de comando (mostra rc, continua) | sessão interativa: comando com erro + próxima linha roda | — |
+| 6.1 | **Shell rescue morre em rc≠0** | `shell.c:402` sai do loop em qualquer rc≠0; um typo mata a sessão | a shell sobrevive a erro de comando (mostra rc, continua) | sessão interativa: comando com erro + próxima linha roda | — |
 | 6.2 | Craft = clone funcional (mundo, chunks async, SMP workers, renderer voxel, gameplay, perf) | `upstream/src/world.c` com 77 linhas; sem mundo visível | checklist 7.1–7.6 do CRAFT | sessão real: mundo, andar/destruir/colocar, sem corrupção | dep 2 |
 | 6.3 | MicroUI: consumir ou remover | `desktop_new.c` fora do build | decidido e aplicado | build | — |
 | 6.4 | Ramo órfão `shell_bsd.c` + `applications/ported/ksh` | fora de todo source list | removido ou ligado | build limpo | — |
 | 6.5 | links2 no catálogo/imagem | fora | entra no `config/app_catalog.tsv` + imagem | boot + execução | dep 1 |
-| 6.6 | vibe-browser | Otter Qt5 vendored | status explícito OU engine mínimo | doc | **[!]** escopo |
+| 6.6 | vibe-browser | Otter Qt5 vendored | status explícito OU engine mínimo | doc | **[!6]** |
 | 6.7 | Icon theme: fechar (parser, cache, validação) | 39 abertos | gaps do plano fechados ou NÃO-OBJETIVO | boot + relatório de cobertura | — |
 | 6.8 | Fontes: escalável ou multi-tamanho bitmap | 1 bitmap 6x8 | decisão + implementação | UI em várias resoluções | — |
 | 6.9 | Jogos `compat/games` no menu: smoke por jogo | sem smoke | cada jogo abre por menu e shell | report por jogo | — |
@@ -267,7 +317,7 @@ Fontes: `ACTION_PLAN.md` P6/P9, `posix-graphics-xlike-plan.md` (56 abertos),
 
 | # | Item | Estado | DoD | Prova | Bloqueio |
 | --- | --- | --- | --- | --- | --- |
-| 7.1 | `execve` real na camada compat | aberto | exec real de binário | teste | — |
+| 7.1 | `execve` real na camada compat | `sys_execve` existe no kernel (`syscall.c:2517`); prova end-to-end na camada compat pendente | exec real de binário | teste | — |
 | 7.2 | `waitpid` com estados BSD-shaped | aberto | estados corretos | teste | — |
 | 7.3 | Sinais completos (sigaction/sigprocmask/sigwait) | parcial | semântica completa | suíte | — |
 | 7.4 | `poll`/`select` ligados a backends de espera do microkernel | aberto | espera real, sem busy-loop | teste + latência | — |
@@ -285,12 +335,13 @@ Fonte: `hw_validation.md`, `AUDIO_HARDWARE_VALIDATION_MATRIX.md`, P0, `usb_boot.
 | # | Item | DoD | Prova | Bloqueio |
 | --- | --- | --- | --- | --- |
 | 8.1 | Boot BIOS real com log serial | boot + desktop na máquina | log serial anexado | **HW** |
-| 8.2 | USB mass-storage runtime nativo (EHCI/xHCI + BOT) | storage USB monta e lê; UHCI+**EHCI provados em QEMU** (ADENDO 48/49, linha 103 do plano; EHCI q35+ich9-usb-ehci1, read+write+restore) | log | **HW** (xHCI/stick físico) + Onda 0 |
+| 8.2 | USB mass-storage runtime nativo (EHCI/xHCI + BOT) | storage USB monta e lê; UHCI+**EHCI provados em QEMU** (ADENDO 48/49; EHCI q35+ich9-usb-ehci1, read+write+restore) | log | **HW** (xHCI/stick físico) |
 | 8.3 | Áudio HDA/AC97 real | playback audível + captura | matriz HW preenchida | **HW** |
 | 8.4 | Vídeo i915/radeon real | modeset nativo | log + snapshot | **HW** |
 | 8.5 | Rede NIC real (T61/T400) | link + DHCP + ping | log | **HW** + Onda 1 |
 | 8.6 | POSIX/timing em PIT/HPET reais | superfície syscall estável | suíte | **HW** |
 | 8.7 | SMP real em 1 notebook | 2 CPUs distribuídos | taskmgr + log | **HW** + Onda 2 |
+| 8.8 | Classe #5 face-1: hw-watchpoint no T61 | escritor anônimo transiente nomeado | watchpoint + log | **HW** + 2.1 |
 
 > Nada em 8.x é "implementação": é **prova de silício**. Toda linha entra como
 > BLOQUEADO-HW até existir a máquina; o código correspondente está nas ondas 0–7.
@@ -310,7 +361,24 @@ Fonte: P9 (parcialmente fechado em `8560a0d97`), "Definição Prática de Acabou
 
 ---
 
-## 2. Não-objetivos declarados (para não virarem stub disfarçado)
+## 2. Matriz de prova (comando por onda)
+
+| Onda | Comando de gate | Report |
+| --- | --- | --- |
+| 0 | `make` + `make validate-phase6` + `make validate-network-surface` | `build/phase6-validation.md`, `build/network-surface-validation.md` |
+| 1 | `make validate-network-datapath [NIC=e1000|rtl8139]` + `validate-network-surface` + novo `validate-network-tcp` | `build/network-datapath-validation*.md` |
+| 2 | `make validate-smp` (smp2 + smp4) | `build/smp-validation.md` |
+| 3 | `make validate-audio-stack`, `validate-audio-hda-*`, `validate-audio-matrix` | `build/audio-*.md` |
+| 4 | `make validate-video`, `validate-startx-*`, `validate-gpu-backends` | `build/video-*.md` |
+| 5 | `make validate-modular-apps` (+ cenário por runtime) | `build/modular-apps-validation.md` |
+| 6 | `make validate-modular-apps`, `validate-craft-*`, `validate-doom-*` | `build/*.md` |
+| 7 | suíte compat (a definir no item 7.2/7.4) | `build/compat-*.md` |
+| 8 | logs seriais das máquinas físicas | `build/hw-*.md` |
+| 9 | varredura + matriz completa | todos acima |
+
+---
+
+## 3. Não-objetivos declarados (para não virarem stub disfarçado)
 
 - **UEFI** — boot legacy 32 bits apenas;
 - **IPv6** — sem parsing/config; `supported_families` = UNIX|INET (já honesto);
@@ -324,11 +392,11 @@ Fonte: P9 (parcialmente fechado em `8560a0d97`), "Definição Prática de Acabou
 
 ---
 
-## 3. Matriz de rastreabilidade (nada foi perdido)
+## 4. Matriz de rastreabilidade (nada foi perdido)
 
 | Plano de origem | Absorvido em |
 | --- | --- |
-| `COMPLETION_ACTION_PLAN.md` (P3–P9) | Ondas 0,1,2,3,4,5,6,9 |
+| `COMPLETION_ACTION_PLAN.md` (P3–P9) | Ondas 0,1,2,3,4,5,6,9 + log de evidência |
 | `FINALIZATION_EXECUTION_PLAN.md` | Ondas 1,3,8 + DoD global |
 | `ACTION_PLAN.md` (P6–P9) | Ondas 6,7 |
 | `VIDEO_BACKEND_REWRITE_PLAN.md` | Onda 4 |
@@ -344,12 +412,13 @@ Fonte: P9 (parcialmente fechado em `8560a0d97`), "Definição Prática de Acabou
 | `guidelines/java.md` | Onda 5.6 |
 | `guidelines/MICROKERNEL_MIGRATION.md` (abertos) | Ondas 2,8 |
 | `AUDIO_HARDWARE_VALIDATION_MATRIX.md` | Ondas 3.6, 8.3 |
-| `KNOWN_BUGS.md` (Abertos) | Ondas 0.6, 0.8, 2.1 |
+| `KNOWN_BUGS.md` (Abertos: #19, SMP-stage-latent) | Ondas 0.6/0.10/0.11, 2.1 |
 | `hw_validation.md` (unverified) | Ondas 4.3, 8 |
+| fila `[!]` (0.4) | decisões da mantenedora, não implementação |
 
 ---
 
-## 4. Definição de Acabou (global, vale para toda onda)
+## 5. Definição de Acabou (global, vale para toda onda)
 
 - [ ] `make` limpo, rc=0, **sem warnings**
 - [ ] perfil de boot aplicável chega em desktop/shell sem `hlt`-loop
@@ -361,13 +430,18 @@ Fonte: P9 (parcialmente fechado em `8560a0d97`), "Definição Prática de Acabou
 
 ---
 
-## 5. Estado inicial (ponto de partida verificado — HEAD `918376735`)
+## 6. Estado inicial (ponto de partida verificado — `7eb20cc29` + campanha #19 de 01/11)
 
 Já FECHADO e fora do backlog (não reabrir): boot chain real-BIOS (auditoria),
 classes de corrupção SMP #1/#2, deadlock de serial, A20, CR0.CD/NW, trampoline
 do AP, 58 guards de ponteiro de usuário, classe #3 refutada, guard de privilégio
 classe #4, P2 persistência cross-boot, P3 datapath IPv4 (TX/ARP/ICMP/loopback/
-roundtrip/cache/TX-ring), `kernel_debug_printf` width, 0.1 (USB count), P7
-placeholders falsos, passagem P9 de honestidade documental.
+roundtrip/cache/TX-ring), e1000/rtl8139 (KNOWN_BUGS #12/#13), `kernel_debug_printf`
+width, 0.1 (USB count), P7 placeholders falsos, passagem P9 de honestidade
+documental, 0.7/0.8 (`ee09e8b4a`), 0.6 modo-i (`7eb20cc29`), USB mass-storage
+BOT+EHCI em QEMU (`b78dc41b7`/`3590c4113`), IOAPIC IRQ1/12 (`adb11cb11`),
+P4 #14/#15 e classe #5 face-2.
 
-Aberto hoje, por ordem de entrada nas ondas: **0.2, 0.3, 0.6**, depois 1.x, 2.x, ... (0.8 FEITO em 30/10, ver linha própria na Onda 0 e KNOWN_BUGS #16)
+Aberto hoje, por ordem de entrada nas ondas: **0.2, 0.3, 0.6 (modo-iii/#19),
+0.9–0.11**, depois 1.x, 2.x, ... (0.8 FEITO em 30/10; 2.2–2.5 e 1.9 FEITOS em
+outubro, ver "Mudou desde a v3").

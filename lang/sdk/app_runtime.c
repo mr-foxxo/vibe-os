@@ -441,7 +441,14 @@ int vibe_app_read_line(char *buf, int max_len, const char *prompt) {
         int c = vibe_app_poll_key();
 
         if (c == 0) {
-            vibe_app_yield();
+            /*
+             * No yield here (bug #19, 31/10, same fix as the built-in
+             * shell's read_line): vibe_app_poll_key is a blocking IPC wait
+             * (service reply budget) and paces the loop by itself. The
+             * yield dropped the caller out of the SIGNALED wake cycle into
+             * the tier-6 aging pool — the next poll only ran after the
+             * starvation ramp while keys already sat in the driver queue.
+             */
             continue;
         }
 

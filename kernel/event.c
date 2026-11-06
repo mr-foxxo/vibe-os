@@ -261,6 +261,33 @@ int kernel_waitable_wait_timeout(kernel_waitable_t *waitable, uint32_t timeout_t
             return TASK_WAIT_RESULT_CANCELED;
         }
 
+        /*
+         * Bug #19 (31/10): a signal that landed in the enqueue->block window
+         * is now left pending by kernel_waitable_signal() instead of
+         * detaching this not-yet-BLOCKED head (measured: `cliQ=1
+         * cliW{pend=1 wake=0}` — reply queued, wake never happened, client
+         * slept to the 8192-tick deadline; run 19_run6). Now that the block
+         * succeeded, consume such a stranded signal before yielding: the
+         * message is already in the channel.
+         */
+        flags = spinlock_lock_irqsave(&waitable->lock);
+        if (waitable->pending_signals != 0u &&
+            waitable->wait_head == current) {
+            waitable->pending_signals -= 1u;
+            waitable->signal_count += 1u;
+            waitable->wait_head = current->wait_next;
+            spinlock_unlock_irqrestore(&waitable->lock, flags);
+            waitable->wake_count += 1u;
+            if (scheduler_complete_wait(current,
+                                        TASK_WAIT_RESULT_SIGNALED) == 0) {
+                return TASK_WAIT_RESULT_SIGNALED;
+            }
+            /* State flipped under us; the loop-top pending check
+             * re-consumes on the next pass. */
+            continue;
+        }
+        spinlock_unlock_irqrestore(&waitable->lock, flags);
+
         yield();
 
         if (current->wait_result == TASK_WAIT_RESULT_SIGNALED) {
@@ -298,6 +325,23 @@ void kernel_waitable_signal(kernel_waitable_t *waitable, uint32_t count) {
         process_t *task;
 
         flags = spinlock_lock_irqsave(&waitable->lock);
+        task = waitable->wait_head;
+        if (task != 0 && task->state != PROCESS_BLOCKED) {
+            /*
+             * Bug #19 (19_run6 fingerprint: `cliQ=1 cliW{pend=1 wake=0}` on
+             * a blocked IPC client with the reply already queued): the chain
+             * head is inside the enqueue->block window —
+             * kernel_waitable_wait_timeout() linked it but
+             * scheduler_block_current_ex() has not run yet, so
+             * scheduler_complete_wait() would refuse it (-1) and the pop
+             * would strand the pending signal: the task blocks OUTSIDE the
+             * chain with its channel cleared and sleeps to the deadline.
+             * Leave the chain and the pending count alone: the head's
+             * post-block re-check consumes the signal itself.
+             */
+            spinlock_unlock_irqrestore(&waitable->lock, flags);
+            break;
+        }
         task = kernel_waitable_dequeue(waitable);
         if (task != 0) {
             task->wait_channel = 0;
@@ -330,6 +374,13 @@ void kernel_waitable_cancel(kernel_waitable_t *waitable, uint32_t count) {
         process_t *task;
 
         flags = spinlock_lock_irqsave(&waitable->lock);
+        task = waitable->wait_head;
+        if (task != 0 && task->state != PROCESS_BLOCKED) {
+            /* Same enqueue->block window as kernel_waitable_signal():
+             * never pop a head that cannot consume the cancel yet. */
+            spinlock_unlock_irqrestore(&waitable->lock, flags);
+            break;
+        }
         task = kernel_waitable_dequeue(waitable);
         if (task != 0) {
             task->wait_channel = 0;

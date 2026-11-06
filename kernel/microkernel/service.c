@@ -35,7 +35,25 @@ static spinlock_t g_service_event_lock;
 static kernel_waitable_t g_service_retry_waitable;
 static process_t *g_service_retry_worker = 0;
 
-#define MK_SERVICE_REQUEST_REPLY_TIMEOUT_TICKS 32u
+/*
+ * Re-bound 31/10 (bug #19, run 19_run10): 32 ticks is smaller than the
+ * measured worst-case handshake of a synchronous request — client dispatch
+ * (send) + host dispatch (process) + client dispatch (read reply), each leg
+ * paying the up-to-timeslice preemption latency of the incumbent task even
+ * after the IPC wake boost. A budget below that latency does not fail
+ * gracefully: every overshoot schedules a retry (MK_SERVICE_BACKGROUND_
+ * RETRY_BASE_TICKS=25) that RE-SENDS the in-flight request, the host drains
+ * duplicates into replies the client no longer waits for, and the reply
+ * path floods the client queue (measured: cliQ 1->16, cliW pend 1->31,
+ * tmo 13 with wake=1 while the shell polled at 32-tick cadence) until the
+ * deferred-reply cap (8) overflows and fails unrelated requests. 128 ticks
+ * = the value MK_SERVICE_FILESYSTEM_TIMEOUT_TICKS already uses for the same
+ * round-trip shape; it lets each poll block until the host actually answers,
+ * so the loop self-paces at the host's rate without duplications. This is a
+ * kernel-internal budget, not ABI; if the maintainer prefers another
+ * magnitude it is this one constant.
+ */
+#define MK_SERVICE_REQUEST_REPLY_TIMEOUT_TICKS 128u
 #define MK_SERVICE_VIDEO_CONTROL_TIMEOUT_TICKS 192u
 #define MK_SERVICE_STORAGE_TIMEOUT_TICKS 8192u
 #define MK_SERVICE_FILESYSTEM_TIMEOUT_TICKS 128u
