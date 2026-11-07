@@ -325,19 +325,27 @@ spinlock_t g_ps2_port_lock;
 
 void kernel_keyboard_irq_handler(void) {
     uint32_t lflags = spinlock_lock_irqsave(&g_ps2_port_lock);
-    const uint8_t status = inb(PS2_STATUS_PORT);
-    uint8_t scancode;
 
-    if ((status & PS2_STATUS_OUTPUT_FULL) == 0u ||
-        (status & PS2_STATUS_AUX_OUTPUT_FULL) != 0u) {
-        kernel_irq_complete(1);
-        spinlock_unlock_irqrestore(&g_ps2_port_lock, lflags);
-        return;
+    /*
+     * Drain ALL pending bytes, not just one (bug #19 item 0.12, 01/11).
+     * The 8042 output buffer is one byte deep and QEMU holds the rest of
+     * a burst in its own queue; a byte that lands while IRQs are masked
+     * (e.g. during the serial dump of one census line) latches a single
+     * edge, and a one-byte ISR leaves the backlog waiting for an IRQ
+     * that may never re-fire — measured with the interactive mailbox
+     * wait active: `netmgrd status` lost its `status` suffix between the
+     * space and Enter (gate run 19_ns10 `key-cons`/`rk` traces). Same
+     * lock and same drain shape as kernel_keyboard_poll(), so the two
+     * paths cannot interleave.
+     */
+    while ((inb(PS2_STATUS_PORT) & (PS2_STATUS_OUTPUT_FULL | PS2_STATUS_AUX_OUTPUT_FULL)) ==
+           PS2_STATUS_OUTPUT_FULL) {
+        uint8_t scancode = inb(PS2_DATA_PORT);
+
+        g_input_scancodes_read++;
+        kernel_keyboard_process_scancode(scancode);
     }
 
-    scancode = inb(PS2_DATA_PORT);
-    g_input_scancodes_read++;
-    kernel_keyboard_process_scancode(scancode);
     kernel_irq_complete(1);
     spinlock_unlock_irqrestore(&g_ps2_port_lock, lflags);
 }

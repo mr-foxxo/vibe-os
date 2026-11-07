@@ -83,7 +83,16 @@ enum mk_message_type {
     MK_MSG_AUDIO_MIXER_WRITE = 105,
     MK_MSG_AUDIO_CONTROL_INFO = 106,
     MK_MSG_AUDIO_WRITE_ASYNC = 107,
-    MK_MSG_AUDIO_PLAY_ASSET = 108
+    MK_MSG_AUDIO_PLAY_ASSET = 108,
+    /* Bug #19 item 0.12 (01/11): blocking key read served BY THE INPUT
+     * HOST (payload uint32 timeout ticks; 0 = indefinite). The host is
+     * the ONLY consumer of the driver key mailbox, so a key can never be
+     * dequeued into a reply that a timed-out client abandons — the mixed
+     * direct-mailbox / poll consumer model lost the `status` suffix of
+     * `netmgrd status` exactly that way (key-cons trace, gate 19_ns9:
+     * shell received `netmgrd ` + Enter, argc=1). Additive message type;
+     * KEY_READ (69) is unchanged for every existing caller. */
+    MK_MSG_INPUT_KEY_READ_WAIT = 109
 };
 
 struct mk_message {

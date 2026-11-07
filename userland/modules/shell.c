@@ -179,7 +179,6 @@ static int read_line(char *buf, int maxlen, const char *prompt) {
     int history_view = -1;
     char draft[LINE_MAX];
     int draft_saved = 0;
-    uint32_t last_maint_tick = 0;
 
     if (str_len(prompt) < 79 && max_input > 79 - str_len(prompt)) {
         max_input = 79 - str_len(prompt);
@@ -192,58 +191,45 @@ static int read_line(char *buf, int maxlen, const char *prompt) {
 
     for (;;) {
         /*
-         * Throttled (bug #19, 01/11, gate 19_run11): while a writeback is
-         * active fs_tick() advances it by up to 4 blocking
-         * sys_storage_write_sectors IPCs to the storage host. Called on
-         * every iteration of this tight input loop it chained the shell
-         * behind storage round trips: measured p=11 READY wt=281 with
-         * input-host replies landing "unexpected" while waiting_src=1 and
-         * the typed line fragmenting into `ss` commands —
-         * validate-network-surface red. The main command loop and the
-         * desktop loop keep calling fs_tick at full per-tick rate, so
-         * writeback only slows to one step/second while characters are
-         * actively being typed (input latency is the contract here, not
-         * writeback throughput).
+         * No maintenance work on the interactive read path (bug #19,
+         * 01/11, gate run 19_ns13): even THROTTLED, fs_tick() here can
+         * enter a STORAGE writeback wait (up to 4 blocking
+         * sys_storage_write_sectors IPCs per step, budget 8192 ticks).
+         * While the shell sits in that wait, every INPUT reply that
+         * arrives is matched against waiting_src=1, deferred (max 8) and
+         * requeued — measured `unexpected reply src=6 dst=11
+         * waiting_src=1` flooding exactly while `netmgrd status` was
+         * being typed, stalling the line at `netmgrd stat`. Input
+         * latency is the contract of this loop. Writeback keeps running
+         * from the command loop (fs_tick per iteration) and the desktop
+         * loop; a rescue shell parked between keystrokes simply does not
+         * dirty-sync, which is fine — sync is not on the typing
+         * critical-path and fs_flush still runs at session exit.
+         *
+         * The 30-tick wait window stays well under the 128-tick service
+         * reply budget on purpose (gate run 19_ns12): at 100 ticks the
+         * host parked in its own mailbox wait while the client re-sent a
+         * duplicate request, and the late reply hit an abandoned client
+         * (`request timeout svc=5 type=109 ... cliQ=1` + `input
+         * degraded`). 30 leaves a 98-tick margin for host wake-up +
+         * reply latency under TCG.
          */
-        if ((uint32_t)(sys_ticks() - last_maint_tick) >= 100u) {
-            last_maint_tick = sys_ticks();
-            fs_tick();
-        }
-        int c = sys_poll_key();
-
-        /*
-         * bug #19 sonda (01/11, run 19_run13): scheduler starvation is REFUTED
-         * (wake->dispatch max 1 tick, w6=1 w11=1, zero wake-stale) and the
-         * line still never submits: 13 banners, zero `shell: command` traces,
-         * zero ^C. The only remaining place the truth lives is the value this
-         * loop actually receives from sys_poll_key, per poll. Budgeted trace.
-         */
+        int c = sys_poll_key_wait(30u);
         {
-            static int g_key_trace = 48;
-            if (g_key_trace != 0) {
+            static int g_key_trace = 40;
+            if (g_key_trace != 0 && c > 0) {
                 char km[24];
                 km[0] = '\0';
                 str_append(km, "rk ", (int)sizeof(km));
                 shell_append_int(km, (int)sizeof(km), c);
+                str_append(km, " ", (int)sizeof(km));
+                shell_append_int(km, (int)sizeof(km), len);
                 str_append(km, "\n", (int)sizeof(km));
                 sys_write_debug(km);
                 g_key_trace -= 1;
             }
         }
-
         if (c <= 0) {
-            /*
-             * No yield here (bug #19, 31/10 run 19_run8): sys_poll_key is a
-             * blocking IPC wait (service reply budget, 32 ticks) and is the
-             * loop's own pacing. Yielding after a no-key poll dropped the
-             * shell out of the SIGNALED wake cycle into the tier-6 aging
-             * pool: measured 770-1170 ticks of aging before the NEXT poll
-             * while the typed keys already sat in the driver queue (15-char
-             * command took >130s). With the yield gone, each no-key poll
-             * blocks the full budget, the reply re-wakes the shell (IPC
-             * wake boost) and the loop is self-paced at ~1 poll/budget
-             * without starving the input host or other woken tasks.
-             */
             continue;
         }
 
@@ -364,17 +350,21 @@ static void shell_flush_typeahead(void) {
     uint32_t last_key_tick = start;
     int saw_key = 0;
 
-    /* Drain until 30 ticks (~300 ms) pass with no key arriving; bounded to
-     * 500 ticks (~5 s) so a stuck key can never wedge the shell. A key
+    /* Drain until 100 ticks (~1 s) pass with no key arriving; bounded to
+     * 800 ticks (~8 s) so a stuck key can never wedge the shell. A key
      * resets the quiet window, so a slow in-flight menu byte is still
-     * caught. */
-    while (sys_ticks() - start < 500u) {
+     * caught. (01/11, gate run 19_ns2: the old 30-tick window closed while
+     * the selector's s,s,<ret> bursts were still landing ~40-70 ticks
+     * apart under TCG pacing — the leaked bytes executed `ss` four times
+     * and ate the first-command window. The flush exists exactly to eat
+     * those; make its quiet window longer than the burst spacing.) */
+    while (sys_ticks() - start < 800u) {
         if (sys_poll_key() > 0) {
             last_key_tick = sys_ticks();
             saw_key = 1;
             continue;
         }
-        if (sys_ticks() - last_key_tick >= 30u) {
+        if (sys_ticks() - last_key_tick >= 100u) {
             break;
         }
         sys_sleep();

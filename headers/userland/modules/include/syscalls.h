@@ -21,6 +21,7 @@ typedef struct mixer_ctrl mixer_ctrl_t;
 
 int sys_poll_mouse(struct mouse_state *state);
 int sys_poll_key(void);
+int sys_poll_key_wait(unsigned int timeout_ticks);
 int sys_next_input_event(struct input_event *event);
 void sys_clear(uint8_t color);
 void sys_rect(int x, int y, int w, int h, uint8_t color);

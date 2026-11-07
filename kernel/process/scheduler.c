@@ -3066,15 +3066,25 @@ kernel_trap_frame_t *scheduler_schedule_frame(kernel_trap_frame_t *frame, int pr
          * slice. One boosted slice per wake is exactly what synchronous
          * request/reply IPC needs (woken side runs, signals back, both
          * get one boosted slice each) without starving the waiters.
+         *
+         * ROOT-CAUSE CORRECTION (bug #19 A/B, 01/11): consumption must
+         * touch ONLY `wake_boost_budget`. Clearing `wait_result`/class/
+         * owner HERE — on the dispatch the woken task uses to resume —
+         * steals the completion from the reader after `yield()` in
+         * kernel_waitable_wait_timeout(): the task saw NONE, re-entered
+         * the for-loop, re-enqueued and re-blocked WITHOUT running
+         * `ipc_receive`, so the message rotted in the queue (witnesses:
+         * `ipc-pos head=0` after each pop-wake, depth growing 1→16,
+         * `waiters=1 wake=0` forever, zero `ipc-got`/`ipc-ret` prints).
+         * On HEAD the leaked `pending_signals` masked this: the loop-top
+         * consume rescued every stolen wake. One-shot semantics stay:
+         * the -128 early return requires `wake_boost_budget != 0`, and
+         * this zeroing makes the NEXT walk score tier+aging.
          */
         if (next->wait_result == TASK_WAIT_RESULT_SIGNALED &&
             next->wait_event_class == TASK_WAIT_CLASS_IPC &&
             next->wake_boost_budget != 0u) {
             next->wake_boost_budget = 0u;
-            next->wait_result = TASK_WAIT_RESULT_NONE;
-            next->wait_event_kind = TASK_WAIT_EVENT_NONE;
-            next->wait_event_class = TASK_WAIT_CLASS_NONE;
-            next->wait_owner_service = 0u;
         }
         /*
          * Face-1 witness precision fix (P4): publish esp0 together with

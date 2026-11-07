@@ -219,9 +219,30 @@ int kernel_waitable_wait_timeout(kernel_waitable_t *waitable, uint32_t timeout_t
             return TASK_WAIT_RESULT_SIGNALED;
         }
 
-        if (current->wait_channel != waitable) {
+        /*
+         * Bug #19 (01/11, root cause of the storage-host jam): the
+         * enqueue guard must ask REAL chain membership (wait_next), not
+         * the `wait_channel` hint. The inline-wake path in
+         * scheduler_complete_wait() leaves `wait_channel` pointing at this
+         * waitable while the signal() pop ALREADY removed the task from
+         * the chain; on the next wait the old guard believed the task was
+         * still linked, skipped enqueue(), and the loop-top check tests
+         * only `pending_signals` — never queue depth. A message posted
+         * after the signal consumed the credit therefore left the task
+         * asleep OUTSIDE the chain with depth>0: no future push can ever
+         * wake it (head=0), no timeout sweep can reach it (not linked),
+         * census shows waiters=1 only when a LATER push re-links via the
+         * peek-break path. Measured: `ipc-pos head=0` right after a
+         * successful pop-wake, then queue depth grows 1→16 with
+         * `waiters=1 wake=0` and 8192-tick reply timeouts on EVERY
+         * request. wait_channel is still maintained as the hint the
+         * cancel/detach/timeout paths use.
+         */
+        if (current->wait_next == 0) {
             current->wait_channel = waitable;
             kernel_waitable_enqueue(waitable, current);
+        } else if (current->wait_channel != waitable) {
+            current->wait_channel = waitable;
         }
         spinlock_unlock_irqrestore(&waitable->lock, flags);
 
@@ -345,6 +366,24 @@ void kernel_waitable_signal(kernel_waitable_t *waitable, uint32_t count) {
         task = kernel_waitable_dequeue(waitable);
         if (task != 0) {
             task->wait_channel = 0;
+            /*
+             * Bug #19 item 0.10 (01/11): a wake delivered through the chain
+             * is CONSUMED by that wake — the woken task returns SIGNALED
+             * from wait_result (post-block check or after yield), never
+             * through the loop-top pending check — so the pop decrements
+             * the count added above (guarded against the multi-waiter
+             * put-back/refusal path that can already have returned this
+             * signal's unit to the semaphore). Without this, every
+             * delivered signal leaked +1 pending forever (measured
+             * `cliW{pend=3 wake=0}` on the shell's reply queue, 19_run12):
+             * each leaked unit makes the NEXT wait return one phantom
+             * SIGNALED with nothing behind it, and the counters that
+             * localize real lost-wakes were permanently dishonest. If the
+             * wake is then refused, the unit is put back below.
+             */
+            if (waitable->pending_signals != 0u) {
+                waitable->pending_signals -= 1u;
+            }
         }
         spinlock_unlock_irqrestore(&waitable->lock, flags);
 
@@ -354,6 +393,14 @@ void kernel_waitable_signal(kernel_waitable_t *waitable, uint32_t count) {
         if (scheduler_complete_wait(task, TASK_WAIT_RESULT_SIGNALED) == 0) {
             count -= 1u;
             woke += 1u;
+        } else {
+            /* The task could not accept the wake (its state flipped under
+             * us, e.g. the timeout sweep published TIMED_OUT first): return
+             * the consumed unit so a future wait still sees the queued
+             * message through the loop-top consume. */
+            flags = spinlock_lock_irqsave(&waitable->lock);
+            waitable->pending_signals += 1u;
+            spinlock_unlock_irqrestore(&waitable->lock, flags);
         }
     }
 

@@ -190,6 +190,49 @@ int kernel_input_key_event_wait(int *key) {
     }
 }
 
+/*
+ * Bounded event-driven key wait (bug #19 item 0.12, 01/11). The
+ * interactive readers (rescue shell read_line, app read_line) polled
+ * KEY_READ over IPC; the handler is non-blocking (dequeue-or-reply-1),
+ * so a no-key answer comes back immediately and the loop degenerates
+ * into a busy poll — measured at `polls 105->579` inside one ~620-tick
+ * window with `produced` frozen at 16 and `drops=0` (gate run 19_ns3):
+ * ~1 IPC request every 1.07 guest ticks hammering the service path,
+ * which is also how the typed line's remaining keys got lost in
+ * retry/racing cycles. This variant waits on the mailbox's own
+ * waitable, so an IRQ-produced key wakes the reader directly and an
+ * idle terminal costs zero IPC. timeout_ticks==0 waits indefinitely.
+ * Returns 1 with *key set, 0 on timeout/abort.
+ */
+int kernel_input_key_event_wait_timeout(int *key, uint32_t timeout_ticks) {
+    uint32_t start;
+    uint32_t now;
+    uint32_t elapsed;
+
+    if (key == 0) {
+        return 0;
+    }
+    if (timeout_ticks == 0u) {
+        return kernel_input_key_event_wait(key);
+    }
+
+    start = kernel_timer_get_ticks();
+    for (;;) {
+        if (kernel_input_key_event_dequeue(key) != 0) {
+            return 1;
+        }
+        now = kernel_timer_get_ticks();
+        elapsed = (uint32_t)(now - start);
+        if (elapsed >= timeout_ticks) {
+            return 0;
+        }
+        if (kernel_mailbox_wait(&g_input_key_mailbox, timeout_ticks - elapsed) !=
+            TASK_WAIT_RESULT_SIGNALED) {
+            return 0;
+        }
+    }
+}
+
 void kernel_input_key_event_enqueue(int key) {
     kernel_input_event_enqueue_key(key);
 }

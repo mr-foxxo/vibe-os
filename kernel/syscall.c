@@ -943,6 +943,19 @@ static uint32_t sys_input_key(uint32_t a, uint32_t b, uint32_t c,
     return (uint32_t)mk_input_service_read_key();
 }
 
+/*
+ * SYSCALL_INPUT_KEY_WAIT (231, additive — bug #19 item 0.12, 01/11):
+ * a = timeout ticks (0 = indefinite). One non-blocking KEY_READ through
+ * the input service host, then a blocking wait on the driver mailbox —
+ * no busy-poll while idle. Returns the key (>0) or -1. Existing
+ * SYSCALL_INPUT_KEY is unchanged for every current caller.
+ */
+static uint32_t sys_input_key_wait(uint32_t a, uint32_t b, uint32_t c,
+                                   uint32_t d, uint32_t e) {
+    (void)b; (void)c; (void)d; (void)e;
+    return (uint32_t)mk_input_service_read_key_wait(a);
+}
+
 static uint32_t sys_text_clear(uint32_t a, uint32_t b, uint32_t c,
                                uint32_t d, uint32_t e) {
     (void)a; (void)b; (void)c; (void)d; (void)e;
@@ -4608,6 +4621,7 @@ void syscall_init(void) {
     syscall_table[SYSCALL_NANOSLEEP] = sys_nanosleep;
     syscall_table[SYSCALL_TIMER_CREATE] = sys_timer_create;
     syscall_table[SYSCALL_TIMER_SETTIME] = sys_timer_settime;
+    syscall_table[SYSCALL_INPUT_KEY_WAIT] = sys_input_key_wait;
 }
 
 /* dispatch routine called by ISR */

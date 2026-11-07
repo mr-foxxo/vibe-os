@@ -1,8 +1,8 @@
 # Plano de Fechamento Definitivo — VibeOS (Revisão 4)
 
-last: 2026-11-01 — #19 (0.6 modo-iii) em CAMPANHA MEDIDA: 7 mecanismos corrigidos (A one-shot do boost de wake, B clamp do score removido, C lost-wakeup da janela enqueue→block, D magnitude do boost -128, E yield pos-poll removido, F budget de reply 128, G throttle de fs_tick no read_line); a sonda nova de latencia wake→dispatch (`w6=1 w11=1`, zero `wake-stale`) REFUTOU a hipotese de inanicao como causa do stall atual; gate `validate-network-surface` segue VERMELHO com sonda nomeada (leak de `pending_signals` no chain-pop + trace `rk` no read_line). Revisão 4 consolida TODOS os planos num unico backlog executavel "tudo de vez", sem stubs.
+last: 2026-11-02 — frente INPUT do #19 (0.6 modo-iii) FECHADA por medicao (run 19_ns22): mecanismos H (dispatch steal do boost de wake — o fix A roubava o wait_result no exato dispatch que o waiter ia ler; storage jam do desktop boot 16→1 timeouts), I (ISR de 1-byte + dois consumidores da mailbox de teclas → drenado no ISR e `MK_MSG_INPUT_KEY_READ_WAIT`/`SYSCALL_INPUT_KEY_WAIT` aditivos, host = consumidor unico) e J (fs_tick fora do caminho de leitura interativo) corrigidos. A linha `netmgrd status` agora e digitada completa, submete, roda e imprime `backend:`/`transport:`/`ownership:`/`datapath executor:`/`socket rx capacity:` — o stall da linha 1238 original ACABOU. Gate ainda VERMELHO na cauda: frente NETWORK do status (type=89 src=13→p=8, `network degraded`) + retry-timeout do wait de task-exit da shell. Revisão 4 consolida TODOS os planos num unico backlog executavel "tudo de vez", sem stubs.
 doing: backlog definitivo consolidado (v4) — ondas 0-9, um estado terminal por item, prova obrigatoria por linha
-next: Onda 0 — fechar 0.6 modo-iii (#19: leak do pending + trace rk no gate) + 0.2/0.3, depois Onda 1
+next: Onda 0 — fechar 0.6 modo-iii (#19 frente NETWORK: replica no host p=8 o par wake-latencia/dreno medido no de input; meta `shell: command exit netmgrd rc=0` 3x no gate) + 0.2/0.3, depois Onda 1
 state: active
 intent: execution-backlog
 
@@ -184,12 +184,13 @@ correr em paralelo depois de 2; **8** só depois de 0–7.
 | 0.3 | Telemetria de boot (`g_timer_trace_budget` fixo em 8) | dificulta diagnóstico | knob quiet/verbose | doc + default | — |
 | 0.4 | Consolidação de planos (pointers) | ✅ feito; esta v4 reverifica | cada plano antigo aponta para cá | grep | — |
 | 0.5 | Gate dos harnesses interativos | ✅ harness (selector + gate + timeout) — `network-surface` alcança o shell | gates verdes **repetidos** | `make validate-network-surface` verde 3× | 0.6 |
-| 0.6 | **Sessão interativa trava no meio** | ❌ ABERTO (modo-iii = #19, campanha medida — ver 0.7). Modo-i ✅ (`7eb20cc29`, KNOWN_BUGS #18); modo-ii ✅ artefato de RAM do harness | `netmgrd status` completa pelo gate | `shell: command exit netmgrd rc=0` no report | sonda 0.7 |
+| 0.6 | **Sessão interativa trava no meio** | ❌ ABERTO (modo-iii = #19: frente INPUT ✅ 02/11, restou a frente NETWORK 0.12 — ver 0.7/0.12). Modo-i ✅ (`7eb20cc29`, KNOWN_BUGS #18); modo-ii ✅ artefato de RAM do harness | `netmgrd status` completa pelo gate | `shell: command exit netmgrd rc=0` no report | sonda 0.7 |
 | 0.7 | `BAD-FORENSICS` / witness-layer | ✅ FEITO (`13ae59214` + `ee09e8b4a`, KNOWN_BUGS #16; camada steady-state completa, sem verde-falso) | — | boot 0 linhas falsas + phase6 6/6 | — |
 | 0.8 | Manutenção da camada de witnesses (budgets documentados) | instrumentos no tree, budget-free onde importa | cada witness tem doc de budget no código | grep + doc | — |
 | 0.9 | Repro interativo persistente no repo | harness HMP existia só em `/tmp/vg` e foi perdido na limpeza do tmpfs | script no repo (HMP+sendkey, marcadores, serial) usado pelos gates | `tools/` + uso no gate | — |
-| 0.10 | #19: leak de `pending_signals` no chain-pop | medido (`cliW{pend=3 wake=0}`) | decrementar o contador no caminho pop+complete_wait | census `pend` volta a 0 após reply | — |
-| 0.11 | #19: linha não submete (trace `rk`) | instrumento no tree, budget 48 | rodar no gate e fechar a causa | `rk` no report + linha submete | 0.6/0.9 |
+| 0.10 | #19: leak de `pending_signals` no chain-pop | ✅ FEITO 01/11 — decremento no pop com put-back na recusa do wake; os contadores voltaram a ser honestos | `cliW{pend}` nao cresce mais por reply | witness 19_ns10+: pend estavel 0 nos pops | — |
+| 0.11 | #19: linha não submete (trace `rk`) | ✅ FEITO 02/11 — causas medidas e corrigidas: dispatch steal do boost (H), ISR de 1 byte + duplo consumidor da mailbox de teclas (I: `MK_MSG_INPUT_KEY_READ_WAIT` 109 / `SYSCALL_INPUT_KEY_WAIT` 231, aditivos, host = consumidor unico), fs_tick removido do caminho de leitura (J) | linha digitada completa submete e roda | gate 19_ns22: `shell: command netmgrd` + status imprimindo ate `socket rx capacity:` | — |
+| 0.12 | #19: frente NETWORK da cauda do status | ABERTO 02/11 — `type=89 src=13→p=8` reply fora do budget com app emitindo (`network degraded tick=39493`) + `scheduler: timeout pid=11 class=9` (retry do wait de task-exit); replica no host de network o par wake-latencia/dreno medido no de input | `shell: command exit netmgrd rc=0` 3x no gate | report do gate | 0.6 |
 
 > 0.5/0.6 são o destravador silencioso de várias ondas: **três validadores**
 > (`network-surface`, `abi-compat-surface`, `audio-stack`) não valem como gate

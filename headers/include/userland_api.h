@@ -221,7 +221,11 @@ enum syscall_id {
     SYSCALL_NANOSLEEP = 227,
     SYSCALL_TIMER_CREATE = 228,
     SYSCALL_TIMER_SETTIME = 229,
-    SYSCALL_SERVICE_HEALTH = 230
+    SYSCALL_SERVICE_HEALTH = 230,
+    /* Additive ABI (bug #19 item 0.12, 01/11): blocking key read.
+     * a = timeout ticks (0 = indefinite); returns key (>0) or -1.
+     * SYSCALL_INPUT_KEY (5) is unchanged for every existing caller. */
+    SYSCALL_INPUT_KEY_WAIT = 231
 };
 
 enum userland_builtin_target {

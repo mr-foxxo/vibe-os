@@ -233,6 +233,13 @@ int sys_poll_key(void) {
     return syscall5(SYSCALL_INPUT_KEY, 0, 0, 0, 0, 0);
 }
 
+/* Bug #19 item 0.12 (01/11): blocking key read (additive syscall 231).
+ * timeout_ticks=0 waits indefinitely; returns key (>0) or -1. Interactive
+ * loops use this instead of busy-polling SYSCALL_INPUT_KEY. */
+int sys_poll_key_wait(unsigned int timeout_ticks) {
+    return syscall5(SYSCALL_INPUT_KEY_WAIT, (int)timeout_ticks, 0, 0, 0, 0);
+}
+
 int sys_next_input_event(struct input_event *event) {
     return syscall5(SYSCALL_INPUT_EVENT, (int)(uintptr_t)event, 0, 0, 0, 0);
 }

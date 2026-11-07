@@ -959,6 +959,20 @@ static int input_service_handle_request(const struct mk_message *request,
             return -1;
         }
         return input_service_reply_result(reply, request, source_pid, sys_poll_key());
+    case MK_MSG_INPUT_KEY_READ_WAIT: {
+        /* Bug #19 item 0.12 (01/11): blocking key read. This runs in the
+         * INPUT host, so the syscall's service-worker branch waits on the
+         * driver mailbox here and the host stays the only consumer of key
+         * events. sys_poll_key_wait(timeout) returns the key or -1. */
+        uint32_t timeout_ticks;
+
+        if (request->payload_size != sizeof(timeout_ticks)) {
+            return -1;
+        }
+        memcpy(&timeout_ticks, request->payload, sizeof(timeout_ticks));
+        return input_service_reply_result(reply, request, source_pid,
+                                          sys_poll_key_wait(timeout_ticks));
+    }
     case MK_MSG_INPUT_SET_LAYOUT: {
         struct mk_input_layout_set_request payload;
         char name[INPUT_SERVICE_LAYOUT_NAME_MAX];

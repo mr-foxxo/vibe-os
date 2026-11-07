@@ -336,7 +336,43 @@ exige evidencia executada; o estado corrente da fila de trabalho vive em
       `sys_storage_write_sectors` bloqueantes por step) e encadeava a shell atras do storage
       (`waiting_src=1`, linha fragmentada) → throttle 1x/100 ticks no read_line; o loop
       principal de comando e o desktop seguem chamando fs_tick por tick.
-  **O que AINDA esta aberto (medido em 19_run12/13, sonda nomeada):**
+  **RODADA 02/11 — a causa-raiz do input path foi fechada por medicao (runs 19_ns10..22):**
+  (H) *dispatch steal do boost de wake*: o fix A consumia o boost limparndo
+  `wait_result/class/owner` NO dispatch, mas e nesse exato momento que o waiter recem
+  acorda le `wait_result` apos o yield — o wake era roubado; o task re-bloqueava sem
+  rodar o `ipc_receive`, fila inchando sem dreno (medido: `ipc-pos head=0` apos cada
+  pop-wake, `hostQ` 1->16, `waiters=1 wake=0`; e 16 `request timeout` no boot desktop
+  contra 0 no HEAD-A/B). Fix: consuncao one-shot toca APENAS `wake_boost_budget` (o
+  ramo -128 ja o exige !=0), o resto e do waiter. Prova do efeito em cadeia: o JAM do
+  storage host sumiu (smoke desktop: 16->1 timeouts, `storage smoke ok`) e a linha
+  digitada passou a SUBMETER (`shell: command netmgrd` pela 1a vez).
+  (I) *perda de teclas no caminho PS/2->read_line* — duas causas medidas: (i) o ISR
+  lia 1 byte por IRQ (backlog atras de janela IRQ-off nao tinha nova borda) -> passou a
+  drenar em loop, mesma forma de `kernel_keyboard_poll` (gate 19_ns11: `rk 115 8` em
+  diante o `status` comecou a chegar); (ii) o modelo de consumo tinha DOIS consumidores
+  da mailbox de teclas (host via KEY_READ + shell lendo mailbox direto) e a espera curta
+  do shell deixava reply orfao (`unexpected reply` flood). Fix: `MK_MSG_INPUT_KEY_READ_WAIT`
+  (109, aditivo) servido pelo HOST (consumidor unico, bloqueado na mailbox com o timeout
+  do payload), `SYSCALL_INPUT_KEY_WAIT` (231, aditivo) + `sys_poll_key_wait`; janela do
+  shell 30 ticks << budget de reply 128 (a 100 ticks o reply chegava a cliente ja
+  retirado: `request timeout svc=5 type=109 cliQ=1`, 19_ns12).
+  (J) `fs_tick` NAO tem lugar no caminho de leitura interativo: mesmo throttled a cada
+  100 ticks, um passo de writeback encadeava a shell em espera STORAGE (budget 8192) e
+  todo reply INPUT nesse janela virava deferred/`unexpected reply` (`waiting_src=1`
+  medido no 19_ns13 exatamente entre chars digitados). Removido do read_line; o loop de
+  comando e o desktop seguem mantendo o writeback.
+  **Estado do gate apos I/J/H (19_ns22, timeout de comando 900s):** o comando e digitado
+  COMPLETO, roda, e o status imprime `backend:`/`transport:`/`ownership:`/`datapath
+  executor:`/`socket rx capacity:` — o stall original na linha 1238 do #19 ACABOU. O que
+  falta agora e a cauda do status: o proximo passo e no caminho NETWORK do app
+  (`type=89 src=13 -> host p=8` BLOCKED `waiters=1 wake=6 tmo=0`, `network degraded
+  tick=39493`) + os `scheduler: timeout pid=11 class=9` da shell (retry do wait de
+  task-exit a 4 ticks que o app demora >budget para responder). Sonda nomeada da proxima
+  rodada: replicar no host de network o mesmo par wake-latencia/dreno medido no de input
+  (p=8 esta saudavel em wake w6-like, mas o reply type=89 nao sai em <=128 ticks com o
+  app ainda emitindo). Marca-se aqui o fim da frente INPUT do #19; a caixa 0.6 continua
+  ABERTO na frente NETWORK ate `shell: command exit netmgrd rc=0` aparecer 3x no gate.
+
   1. `pending_signals` vaza +1 em cada wake por chain-pop: `kernel_waitable_signal` incrementa
      `pending_signals += count` e NUNCA decrementa no caminho pop+complete_wait; o waiter consome
      o sinal fantasma no topo do proximo wait (medido `cliW{pend=3 wake=0}` em run12; `pend=1` no

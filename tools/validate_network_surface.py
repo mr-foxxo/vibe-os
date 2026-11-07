@@ -159,6 +159,18 @@ class QemuSession:
             self.hmp(f"sendkey {key}")
             time.sleep(pause)
 
+    def type_text_slow(self, text: str) -> None:
+        """Bug #19 item 0.12 harness pacing (01/11). Gate run 19_ns10
+        proved the kernel path lossless — every key QEMU delivered reached
+        read_line 1:1, zero drops/timeouts/unexpected replies — but QEMU's
+        PS/2 queue silently discarded 6 of the 15 characters typed at
+        60 ms while the 2-core TCG host was still saturated from boot:
+        `netmgrd status` arrived as `netmgrd `+Enter (argc=1). Type at a
+        pace the guest can drain and let each monitor round-trip settle.
+        `type_text` keeps its fast default for the boot-menu pulses."""
+        self.type_text(text, pause=0.25)
+        time.sleep(0.3)
+
     def send_key(self, key: str, pause: float = 0.1) -> None:
         self.hmp(f"sendkey {key}")
         time.sleep(pause)
@@ -212,6 +224,13 @@ def scenario_boot_rescue_shell(session: QemuSession, attempts: int = 4, window_s
         log = session.read_log()
         if "boot mode: rescue shell" in log:
             session.wait_for_all(["shell: ready"], timeout=240.0)
+            # Bug #19 gate hardening (01/11): settle before typing. The
+            # selector's own s,s,<ret> bursts are still draining through
+            # the PS/2 queue when `shell: ready` appears (TCG pacing);
+            # the shell's type-ahead flush eats them, but giving it a
+            # quiet 3s wall window means the first typed command starts
+            # on a clean queue instead of racing in-flight menu bytes.
+            time.sleep(3.0)
             return
         session.restart()
     raise RuntimeError(
@@ -219,7 +238,7 @@ def scenario_boot_rescue_shell(session: QemuSession, attempts: int = 4, window_s
         f"appeared after {attempts} menu attempts (with cold restarts)")
 
 
-def run_command_expect(session: QemuSession, command: str, markers: List[str], timeout: float = 60.0) -> None:
+def run_command_expect(session: QemuSession, command: str, markers: List[str], timeout: float = 900.0) -> None:
     """Typed command + COMPLETION gate.
 
     Two bugs fixed here. (1) The old gate waited for `shell: ready`, which
@@ -229,13 +248,19 @@ def run_command_expect(session: QemuSession, command: str, markers: List[str], t
     (userland/modules/shell.c), so a failing command silently ends all later
     markers. The gate now requires the shell's own exit marker
     (`shell: command exit <cmd> rc=0`), which proves the command actually
-    ran to completion with success, and only then the prompt return. And
-    60s is honest patience: launching the app host behind netmgrd/netctl
-    (task create + AppFS load + service round-trips) is slow under TCG.
+    ran to completion with success, and only then the prompt return.
+    900s (01/11, gate runs 19_ns20/21): the kernel key path is now provably
+    lossless — `key-cons`/`rk` traces showed every delivered character
+    reaching read_line within ≤1 tick, in order, and `s,t,a,t` of `status`
+    arriving for the first time — but on this 2-core TCG host the QEMU
+    monitor round-trip of each sendkey can take 10-30 s wall while the
+    guest is busy (init supervision poll + TCG), so typing 15 chars
+    legitimately needs minutes. Bigger patience, same hard assertion:
+    the completion marker `shell: command exit <cmd> rc=0` is unchanged.
     """
     start = len(session.read_log())
     command_marker = command.split(" ", 1)[0]
-    session.type_text(command)
+    session.type_text_slow(command)
     session.send_key("ret", pause=0.15)
     wait_for_all_since(session,
                        [f"shell: command {command_marker}",
@@ -289,8 +314,30 @@ def validate_network_surface(qemu_binary: str, image_path: Path, memory_mb: int,
             lines.append("")
             lines.append(f"FAIL: {exc}")
             lines.append("")
+            full = session.read_log()
+            # Bug #19 (01/11): the last-12k tail alone lost the early
+            # witnesses. The `rk` poll trace (what read_line actually
+            # receives per poll) prints during the first seconds of typing,
+            # and census/diag spam evicts it from the tail before the
+            # timeout fires. Extract the campaign's trace lines explicitly
+            # so every FAIL report is a complete measurement, then keep the
+            # tail for raw context.
+            trace_markers = (
+                "rk ", "key-cons", "wake-stale", "request timeout",
+                "unexpected reply", "input-diag", "service: request svc=",
+                "shell: flushed", "shell: ready", "shell: command",
+                "sched-watch",
+            )
+            trace_lines = [ln for ln in full.splitlines()
+                           if any(m in ln for m in trace_markers)]
+            lines.append("## trace lines (poll values, IPC anomalies, shell state)")
+            lines.append("")
             lines.append("```")
-            lines.append(session.read_log()[-12000:])
+            lines.extend(trace_lines[-180:])
+            lines.append("```")
+            lines.append("")
+            lines.append("```")
+            lines.append(full[-12000:])
             lines.append("```")
             report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
             return False
