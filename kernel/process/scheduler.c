@@ -79,7 +79,7 @@ static volatile int g_sched_frame_last_cur_pid = -2;
 static volatile uint32_t g_sched_sel_count[32];
 
 /* bug #19 ring3 resume-eip witness (see sched-rip in the dispatch path). */
-static volatile uint32_t g_sched_rip_budget = 40u;
+static volatile uint32_t g_sched_rip_budget = 10u;
 /* Per-pid last-emit tick: a hot 4-tick poller (shell host, bug #19 run2 spent
  * the whole budget on p=11 before the app even launched) must not starve the
  * sampling of the task under investigation. */
@@ -161,8 +161,16 @@ static int scheduler_walk_reaches(process_t *needle) {
     return 0;
 }
 
-static volatile uint32_t g_sched_census_budget = 40u;
-static volatile uint32_t g_sched_score_budget = 80u;
+/*
+ * item 0.12 (02/11): budgets cut from 40/80 to 12/24. Each census row is
+ * ~600 chars and each score row ~60, emitted every 1000 ticks; on this
+ * 2-core TCG host the serial write itself costs wall-clock and the guest
+ * only reached t=40000 in 900 s of gate time (19_ns25), so the tail of a
+ * long command never got to run inside the window. Less noise per second
+ * buys the guest ticks, and 12 rows is still plenty to see a phase.
+ */
+static volatile uint32_t g_sched_census_budget = 12u;
+static volatile uint32_t g_sched_score_budget = 24u;
 
 static int scheduler_task_score(const process_t *task, uint32_t cpu_index);
 
@@ -315,6 +323,14 @@ static void scheduler_census(uint32_t tick) {
     sched_cat_u32(line, (int)sizeof(line), &pos, g_wake_max_d[6u & 31u]);
     sched_cat(line, (int)sizeof(line), &pos, " w11=");
     sched_cat_u32(line, (int)sizeof(line), &pos, g_wake_max_d[11u & 31u]);
+    /* item 0.12 (02/11): same probe for the NETWORK host (p=8) and the app
+     * that drives it (p=13). w8 > 128 with a queued request = the network
+     * host is starved past the reply budget; small w8 with timeouts = the
+     * stall is inside the host's own handler. */
+    sched_cat(line, (int)sizeof(line), &pos, " w8=");
+    sched_cat_u32(line, (int)sizeof(line), &pos, g_wake_max_d[8u & 31u]);
+    sched_cat(line, (int)sizeof(line), &pos, " w13=");
+    sched_cat_u32(line, (int)sizeof(line), &pos, g_wake_max_d[13u & 31u]);
     sched_cat(line, (int)sizeof(line), &pos, ":");
     for (scan = g_head; scan != NULL; scan = scan->next) {
         if (!scheduler_node_sane(scan)) {

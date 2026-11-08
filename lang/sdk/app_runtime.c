@@ -1539,9 +1539,27 @@ static int vibe_vsnprintf_internal(char *str, size_t size, const char *fmt, va_l
                     }
                     ++written;
                 }
+                /*
+                 * Bug #19 ROOT CAUSE (02/11, gate run 19_ns24): the
+                 * decrement used to live inside `if (str)`, so the
+                 * MEASURE pass (str == NULL, size == (size_t)-1, from
+                 * vibe_vfprintf_helper) never advanced `pos` and spun
+                 * forever on the first numeric conversion. Measured:
+                 * `sched-rip p=13 eip=100003d6` repeating with the same
+                 * eip, disassembly showing `test %esi,%esi; je` skipping
+                 * `dec %ecx` — the app froze inside
+                 * vibe_vsnprintf_internal right after printing
+                 * `socket rx capacity: 4096` (%s) and reaching
+                 * `event queue depth: %u`, the first %u of the status
+                 * block. That is the original #19 stall, exactly at the
+                 * line the bug report named. Advance the index
+                 * unconditionally; only the STORE is conditional.
+                 */
                 while (pos > 0 && written + 1u < size) {
+                    char digit_char = tmp[--pos];
+
                     if (str) {
-                        str[written] = tmp[--pos];
+                        str[written] = digit_char;
                     }
                     ++written;
                 }

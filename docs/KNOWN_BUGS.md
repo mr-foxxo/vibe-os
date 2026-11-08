@@ -361,6 +361,32 @@ exige evidencia executada; o estado corrente da fila de trabalho vive em
   todo reply INPUT nesse janela virava deferred/`unexpected reply` (`waiting_src=1`
   medido no 19_ns13 exatamente entre chars digitados). Removido do read_line; o loop de
   comando e o desktop seguem mantendo o writeback.
+  **RODADA 02/11 (parte 2) — CAUSA RAIZ DO #19 ENCONTRADA E CORRIGIDA (run 19_ns25):**
+  o stall nao era scheduler, IPC nem input: era **loop infinito no `vsnprintf` do
+  runtime de app** (`lang/sdk/app_runtime.c`, `vibe_vsnprintf_internal`). No loop de
+  emissao de digitos, o decremento do indice vivia DENTRO do `if (str)`:
+  `while (pos > 0 && written + 1u < size) { if (str) { str[written] = tmp[--pos]; } ++written; }`.
+  O `vibe_vfprintf_helper` faz DUAS passadas — a primeira com `str == NULL` e
+  `size == (size_t)-1` para medir o tamanho — e nessa passada `--pos` nunca executava,
+  logo `pos` nunca caia e o laco girava para sempre. Medido: `sched-rip p=13
+  eip=100003d6` repetindo com o MESMO eip, e o disassembly mostrando
+  `test %esi,%esi; je` pulando `dec %ecx` (esi = str). O app congelava exatamente
+  depois de imprimir `socket rx capacity: 4096` (um `%s`) e alcancar
+  `event queue depth: %u` — o PRIMEIRO `%u` do bloco de status, que e a linha 1238
+  nomeada no relato original do bug. Fix: o indice avanca incondicionalmente, so o
+  STORE e condicional. Prova (19_ns25): o status imprime ate o fim —
+  `event queue depth: 16`, `listen backlog max: 1`, `state file:
+  /runtime/netmgrd-status.txt` — e o app retorna limpo (`app: main returned`,
+  `app: atexit done`, `init: task-event terminated pid=13`). O stall original do #19
+  ACABOU.
+  **O que resta (bug DIFERENTE, nomeado):** a shell (pid=11) nao acorda do
+  `host_wait_for_task_exit` depois que o app termina — o evento TERMINATED e publicado
+  (`task-event terminated pid=13 ... seq=448`) mas nenhum `host-wait: stalled` sai e
+  nenhum `shell: command exit netmgrd rc=0` chega; o serial simplesmente para. Sonda
+  nomeada: instrumentar `scheduler_task_event_receive` (scheduler.c:3433) com o estado
+  da subscription/mailbox no momento do wait, e o `host_wait_for_task_exit` com o
+  retorno de cada `sys_task_event_receive`. NAO e o #19: e o item 6.1/0.6 residual
+  (supervisao de task-exit), e o gate so fica verde quando ele fechar.
   **Estado do gate apos I/J/H (19_ns22, timeout de comando 900s):** o comando e digitado
   COMPLETO, roda, e o status imprime `backend:`/`transport:`/`ownership:`/`datapath
   executor:`/`socket rx capacity:` — o stall original na linha 1238 do #19 ACABOU. O que
