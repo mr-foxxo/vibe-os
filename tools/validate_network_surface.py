@@ -238,7 +238,7 @@ def scenario_boot_rescue_shell(session: QemuSession, attempts: int = 4, window_s
         f"appeared after {attempts} menu attempts (with cold restarts)")
 
 
-def run_command_expect(session: QemuSession, command: str, markers: List[str], timeout: float = 1800.0) -> None:
+def run_command_expect(session: QemuSession, command: str, markers: List[str], timeout: float = 2700.0) -> None:
     """Typed command + COMPLETION gate.
 
     Two bugs fixed here. (1) The old gate waited for `shell: ready`, which
@@ -257,6 +257,10 @@ def run_command_expect(session: QemuSession, command: str, markers: List[str], t
     guest is busy (init supervision poll + TCG), so typing 15 chars
     legitimately needs minutes. Bigger patience, same hard assertion:
     the completion marker `shell: command exit <cmd> rc=0` is unchanged.
+    1800s (19_ns37): command 1 PASSED end-to-end (`PASS netmgrd status`) —
+    the window was eaten by the remaining commands' typing wall, not by a
+    kernel stall. 2700s (0.15, 03/11): one honest window per command for
+    the full 22-command session; the assertion itself is untouched.
     """
     start = len(session.read_log())
     command_marker = command.split(" ", 1)[0]
