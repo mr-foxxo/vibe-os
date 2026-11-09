@@ -30,6 +30,7 @@ class QemuSession:
         self.memory_mb = memory_mb
         self.proc = None
         self._mon = None
+        self.key_latencies = []
         self._spawn()
         self._wait_for_monitor()
 
@@ -144,6 +145,7 @@ class QemuSession:
 
         def type_one(key: str) -> None:
             before = self.serial_log.stat().st_size if self.serial_log.exists() else 0
+            t_send = time.time()
             s.sendall(f"sendkey {key}\n".encode("utf-8"))
             deadline = time.time() + 10.0
             quiet = 0
@@ -153,6 +155,12 @@ class QemuSession:
                 except OSError:
                     after = 0
                 if after > before:
+                    # item 0.16 probe: monotonic gap from sendkey to the
+                    # first new serial byte this key produced. This is the
+                    # END-TO-END monitor->device-model->guest-echo latency
+                    # (main-loop starvation dominates it on a busy host),
+                    # measured WITHOUT touching the kernel.
+                    self.key_latencies.append(round(time.time() - t_send, 2))
                     return
                 time.sleep(0.1)
                 quiet += 1
@@ -160,6 +168,9 @@ class QemuSession:
                     raise RuntimeError(
                         f"serial frozen sending {key!r}: no guest output "
                         "for 5 s (freeze, not slowness)")
+            # timed out without growth: record the cap so the report shows
+            # the gap instead of losing the datapoint.
+            self.key_latencies.append(">=10")
 
         for ch in text:
             if ch == " ":
@@ -266,7 +277,8 @@ class QemuSession:
         time.sleep(pause)
 
 
-def wait_for_all_since(session: QemuSession, markers: List[str], timeout: float, start_offset: int) -> None:
+def wait_for_all_since(session: QemuSession, markers: List[str], timeout: float,
+                       start_offset: int, latency_note: List[str]) -> None:
     deadline = time.time() + timeout
     pending = list(markers)
     while time.time() < deadline:
@@ -277,6 +289,14 @@ def wait_for_all_since(session: QemuSession, markers: List[str], timeout: float,
         if session.proc.poll() is not None:
             break
         time.sleep(0.05)
+    # Item 0.16: on timeout, append the per-key latency line to the report.
+    # sendkey->serial-byte is end-to-end monitor+device-model+guest latency;
+    # the kernel's own wake->dispatch probes proved <=6 ticks, so any large
+    # number here is environment (main-loop starvation), not kernel.
+    summary = ", ".join(str(v) for v in session.key_latencies[-24:]) if session.key_latencies else "no-keys"
+    latency_note.append(
+        "key-latency (s, last24) when window expired: " + summary +
+        f" | markers still pending: {', '.join(pending)}")
     raise RuntimeError("Timed out waiting for markers: " + ", ".join(pending))
 
 
@@ -365,7 +385,8 @@ def run_command_expect(session: QemuSession, command: str, markers: List[str], t
                         "shell: ready",
                         *markers],
                        timeout=timeout,
-                       start_offset=start)
+                       start_offset=start,
+                       latency_note=getattr(session, "latency_note", []))
 
 
 def validate_network_surface(qemu_binary: str, image_path: Path, memory_mb: int, report_path: Path) -> bool:
@@ -394,12 +415,14 @@ def validate_network_surface(qemu_binary: str, image_path: Path, memory_mb: int,
         ("netctl socket-smoke", ["socket smoke", "ping"]),
     ]
     lines: List[str] = ["# Network Surface Validation", ""]
+    latency_note: List[str] = []
 
     with tempfile.TemporaryDirectory(prefix="vibe-network-surface-") as temp_dir:
         workspace = Path(temp_dir)
         scenario_image = workspace / "boot.img"
         shutil.copyfile(image_path, scenario_image)
         session = QemuSession(qemu_binary, scenario_image, memory_mb, workspace)
+        session.latency_note = latency_note
         try:
             scenario_boot_rescue_shell(session)
             for command, markers in commands:
@@ -409,6 +432,11 @@ def validate_network_surface(qemu_binary: str, image_path: Path, memory_mb: int,
             return True
         except Exception as exc:
             lines.append("")
+            if latency_note:
+                lines.append("## item 0.16 key latency at window-expiry")
+                lines.append("")
+                lines.extend(f"- {ln}" for ln in latency_note)
+                lines.append("")
             lines.append(f"FAIL: {exc}")
             lines.append("")
             full = session.read_log()
