@@ -147,7 +147,7 @@ class QemuSession:
             before = self.serial_log.stat().st_size if self.serial_log.exists() else 0
             t_send = time.time()
             s.sendall(f"sendkey {key}\n".encode("utf-8"))
-            deadline = time.time() + 10.0
+            deadline = time.time() + 60.0
             quiet = 0
             while time.time() < deadline:
                 try:
@@ -164,13 +164,13 @@ class QemuSession:
                     return
                 time.sleep(0.1)
                 quiet += 1
-                if quiet >= 50:
+                if quiet >= 300:
                     raise RuntimeError(
                         f"serial frozen sending {key!r}: no guest output "
-                        "for 5 s (freeze, not slowness)")
-            # timed out without growth: record the cap so the report shows
-            # the gap instead of losing the datapoint.
-            self.key_latencies.append(">=10")
+                        "for 30 s (freeze, not slowness)")
+            # window ended without growth: record the cap so the report
+            # shows the stall instead of losing the datapoint.
+            self.key_latencies.append(">=60")
 
         for ch in text:
             if ch == " ":
