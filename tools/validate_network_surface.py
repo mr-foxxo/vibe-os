@@ -29,6 +29,7 @@ class QemuSession:
         self.image_path = image_path
         self.memory_mb = memory_mb
         self.proc = None
+        self._mon = None
         self._spawn()
         self._wait_for_monitor()
 
@@ -88,6 +89,95 @@ class QemuSession:
             except subprocess.TimeoutExpired:
                 self.proc.kill()
                 self.proc.wait(timeout=5.0)
+        self._close_mon()
+
+    def _close_mon(self) -> None:
+        if self._mon is not None:
+            try:
+                self._mon.close()
+            except OSError:
+                pass
+            self._mon = None
+
+    def _mon_sock(self) -> socket.socket:
+        if self._mon is None:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.settimeout(2.0)
+            s.connect(str(self.monitor_socket))
+            self._mon = s
+            self._drain_mon(0.5)
+        return self._mon
+
+    def _drain_mon(self, timeout: float) -> None:
+        if self._mon is None:
+            return
+        s = self._mon
+        s.settimeout(timeout)
+        try:
+            while True:
+                b = s.recv(4096)
+                if not b:
+                    break
+                if b"(qemu)" in b:
+                    break
+        except socket.timeout:
+            pass
+        finally:
+            s.settimeout(2.0)
+
+    def type_batch(self, text: str, ret: bool = True) -> None:
+        """Items 0.15/0.16 pacing (03/11). 19_ns38: with a fresh connection
+        + a `(qemu)`-prompt wait per character, each key cost seconds of
+        wall (main loop starved by the two TCG vCPU threads on a 2-core
+        host) — command 2 was still typing ~35 min into its window although
+        command 1 PASSED end-to-end. The first fix here — one persistent
+        connection, pipelined at 50 ms/keystroke — turned out UNSAFE:
+        19_ns39 froze the entire run at guest tick ~48000 (timer ticks stop,
+        serial silent, monitor unresponsive for 25 min) when the typing
+        outran the guest's drain. So typing is now event-paced: send one
+        key, wait for the serial to GROW (the shell echoes every keystroke),
+        cap 10 s; no growth for 5 s raises with the key named — a freeze
+        must be reported as a freeze, not as a blind window timeout. The
+        completion assertion is unchanged: `shell: command exit <cmd> rc=0`
+        in the serial."""
+        s = self._mon_sock()
+
+        def type_one(key: str) -> None:
+            before = self.serial_log.stat().st_size if self.serial_log.exists() else 0
+            s.sendall(f"sendkey {key}\n".encode("utf-8"))
+            deadline = time.time() + 10.0
+            quiet = 0
+            while time.time() < deadline:
+                try:
+                    after = self.serial_log.stat().st_size
+                except OSError:
+                    after = 0
+                if after > before:
+                    return
+                time.sleep(0.1)
+                quiet += 1
+                if quiet >= 50:
+                    raise RuntimeError(
+                        f"serial frozen sending {key!r}: no guest output "
+                        "for 5 s (freeze, not slowness)")
+
+        for ch in text:
+            if ch == " ":
+                key = "spc"
+            elif ch == "/":
+                key = "slash"
+            elif ch == "-":
+                key = "minus"
+            elif ch == ".":
+                key = "dot"
+            elif ch == ":":
+                key = "shift-semicolon"
+            else:
+                key = ch
+            type_one(key)
+        if ret:
+            type_one("ret")
+        self._drain_mon(0.5)
 
     def hmp(self, command: str, timeout: float = 1.0) -> str:
         chunks: List[bytes] = []
@@ -264,8 +354,11 @@ def run_command_expect(session: QemuSession, command: str, markers: List[str], t
     """
     start = len(session.read_log())
     command_marker = command.split(" ", 1)[0]
-    session.type_text_slow(command)
-    session.send_key("ret", pause=0.15)
+    # 0.15 (03/11): pipelined batch typing on one persistent monitor
+    # connection (19_ns38: per-char connect+prompt-wait cost seconds of
+    # wall per keystroke — command 2 was still typing ~35 min into its
+    # window; command 1 itself PASSED end-to-end).
+    session.type_batch(command)
     wait_for_all_since(session,
                        [f"shell: command {command_marker}",
                         f"shell: command exit {command_marker} rc=0",
