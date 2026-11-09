@@ -607,6 +607,23 @@ uint32_t kernel_mailbox_dropped(kernel_mailbox_t *mailbox) {
     return dropped;
 }
 
+uint32_t kernel_mailbox_pending(kernel_mailbox_t *mailbox) {
+    uint32_t pending;
+    uint32_t flags;
+
+    if (mailbox == 0) {
+        return 0u;
+    }
+
+    /* item 0.13 probe (02/11): the waitable semaphore count visible without
+     * a wait — distinguishes "signal landed before the waiter enqueued"
+     * (pending>0) from "delivery never happened" (pending==0 cnt==0). */
+    flags = spinlock_lock_irqsave(&mailbox->waitable.lock);
+    pending = mailbox->waitable.pending_signals;
+    spinlock_unlock_irqrestore(&mailbox->waitable.lock, flags);
+    return pending;
+}
+
 void kernel_mailbox_clear_dropped(kernel_mailbox_t *mailbox) {
     uint32_t flags;
 

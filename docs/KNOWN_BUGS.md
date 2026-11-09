@@ -379,14 +379,24 @@ exige evidencia executada; o estado corrente da fila de trabalho vive em
   /runtime/netmgrd-status.txt` — e o app retorna limpo (`app: main returned`,
   `app: atexit done`, `init: task-event terminated pid=13`). O stall original do #19
   ACABOU.
-  **O que resta (bug DIFERENTE, nomeado):** a shell (pid=11) nao acorda do
-  `host_wait_for_task_exit` depois que o app termina — o evento TERMINATED e publicado
-  (`task-event terminated pid=13 ... seq=448`) mas nenhum `host-wait: stalled` sai e
-  nenhum `shell: command exit netmgrd rc=0` chega; o serial simplesmente para. Sonda
-  nomeada: instrumentar `scheduler_task_event_receive` (scheduler.c:3433) com o estado
-  da subscription/mailbox no momento do wait, e o `host_wait_for_task_exit` com o
-  retorno de cada `sys_task_event_receive`. NAO e o #19: e o item 6.1/0.6 residual
-  (supervisao de task-exit), e o gate so fica verde quando ele fechar.
+  **RODADA 02/11 (parte 3) — starvation de WAKE POR TIMEOUT (itens 0.13/0.14):** a "shell
+  que nao acorda" do host_wait_for_task_exit era escalonamento do wake de TIMEOUT, medido
+  em cadeia com a sonda nova (`g_tmo_wake_tick`/`tmo-stale`/`wT1x`): (ns28) `pid=11
+  d=304 cls=2` — poll IPC de 30 ticks da shell esperando 304+ ticks por re-despacho;
+  (ns30) `pid=11 d=380 cls=9` — o poll de 4 ticks do host_wait; (ns31) `pid=6 d=63
+  cls=3` — o proprio host de input sob o retry rate agora boosted. Wake por TIMED_OUT nao
+  recebia boost e a classe IPC ainda pagava +12. Fix: wake por timeout de espera COM
+  budget (IPC/SUPERVISION/INPUT) recebe o MESMO one-shot slice do wake SIGNALED (sweep
+  arma wake_boost_budget; score -128 com budget !=0; consumo no dispatch; depois IPC
+  volta ao +12 retry-penalty — nunca supera o host que deve responde-lo; esperas
+  infinite deadline=0 nunca saem varridas, nunca caem aqui). Prova ns32: ZERO tmo-stale
+  no run, `rk` seguindo cada char digitado ate `netmgrd ` completo. Testemunhas
+  evt-pub/evt-rec permanecem orcadas: `evt-pub: pid=13 match=2 cnt0=1` prova que o
+  TERMINATED chegou a subscriptions casadas. O marcador final de exit ainda nao virou
+  em-gate por WALL-CLOCK do TCG 2-core (sendkey round-trip ~30s; janela do harness
+  subida a 1800s — run ns33 em curso). NAO e o #19 original (esse fechou na parte 2);
+  barra real continua sendo silicio (0.14 + P0). e o gate so fica verde quando o
+  marcador chegar.
   **Estado do gate apos I/J/H (19_ns22, timeout de comando 900s):** o comando e digitado
   COMPLETO, roda, e o status imprime `backend:`/`transport:`/`ownership:`/`datapath
   executor:`/`socket rx capacity:` — o stall original na linha 1238 do #19 ACABOU. O que

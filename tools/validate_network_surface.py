@@ -238,7 +238,7 @@ def scenario_boot_rescue_shell(session: QemuSession, attempts: int = 4, window_s
         f"appeared after {attempts} menu attempts (with cold restarts)")
 
 
-def run_command_expect(session: QemuSession, command: str, markers: List[str], timeout: float = 900.0) -> None:
+def run_command_expect(session: QemuSession, command: str, markers: List[str], timeout: float = 1800.0) -> None:
     """Typed command + COMPLETION gate.
 
     Two bugs fixed here. (1) The old gate waited for `shell: ready`, which
@@ -323,7 +323,7 @@ def validate_network_surface(qemu_binary: str, image_path: Path, memory_mb: int,
             # so every FAIL report is a complete measurement, then keep the
             # tail for raw context.
             trace_markers = (
-                "rk ", "key-cons", "wake-stale", "request timeout",
+                "rk ", "key-cons", "wake-stale", "tmo-stale", "evt-pub", "evt-rec", "request timeout",
                 "unexpected reply", "input-diag", "service: request svc=",
                 "shell: flushed", "shell: ready", "shell: command",
                 "sched-watch",

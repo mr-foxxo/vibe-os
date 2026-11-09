@@ -66,6 +66,7 @@ int kernel_mailbox_receive_timeout(kernel_mailbox_t *mailbox,
                                    uint32_t timeout_ticks);
 uint32_t kernel_mailbox_count(kernel_mailbox_t *mailbox);
 uint32_t kernel_mailbox_dropped(kernel_mailbox_t *mailbox);
+uint32_t kernel_mailbox_pending(kernel_mailbox_t *mailbox);
 void kernel_mailbox_clear_dropped(kernel_mailbox_t *mailbox);
 
 typedef struct kernel_signal {

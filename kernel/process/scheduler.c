@@ -104,6 +104,22 @@ static volatile uint32_t g_wake_max_d[32];
 static volatile uint32_t g_wake_stale_budget = 12u;
 
 /*
+ * item 0.13 (02/11): the probe above only stamps SIGNALED+IPC wakes, so
+ * the OTHER class of wake — the timeout sweep publishing TIMED_OUT — was
+ * invisible while it starved. Census evidence: p=10 (host supervising the
+ * app) and p=11 (shell polling) sit READY with sel11 climbing ~1 per 367
+ * ticks: a 4-tick supervision poll needs a wake whose dispatch gap is
+ * small, but a TIMED_OUT wake carries no boost, no bonus, and for IPC
+ * client waits even a +12 penalty, so the gap is decided by the aging
+ * ramp (~396 ticks to beat the fresh tier-0 poller) instead of the 4-tick
+ * budget. Same stamp/clear/max machinery, second array, for timed-out
+ * wakes; wT10/wT11 in the census.
+ */
+static volatile uint32_t g_tmo_wake_tick[32];
+static volatile uint32_t g_tmo_wake_max_d[32];
+static volatile uint32_t g_tmo_stale_budget = 16u;
+
+/*
  * Overdue-wake detector (COMPLETION_ACTION_PLAN P4 / KNOWN_BUGS "Sessao
  * interativa trava no meio", item 0.6 branch decision). Every bounded block
  * records (task,deadline) in this small ring; each ~25 ticks the timeout hook
@@ -331,6 +347,13 @@ static void scheduler_census(uint32_t tick) {
     sched_cat_u32(line, (int)sizeof(line), &pos, g_wake_max_d[8u & 31u]);
     sched_cat(line, (int)sizeof(line), &pos, " w13=");
     sched_cat_u32(line, (int)sizeof(line), &pos, g_wake_max_d[13u & 31u]);
+    /* item 0.13: timeout-wake gap for the supervision pair (task-exit host
+     * p=10, shell p=11). wT >> HOST_TASK_EXIT_POLL_TICKS(4) = the poll loop
+     * starves on the wake->run gap, not on the wait itself. */
+    sched_cat(line, (int)sizeof(line), &pos, " wT10=");
+    sched_cat_u32(line, (int)sizeof(line), &pos, g_tmo_wake_max_d[10u & 31u]);
+    sched_cat(line, (int)sizeof(line), &pos, " wT11=");
+    sched_cat_u32(line, (int)sizeof(line), &pos, g_tmo_wake_max_d[11u & 31u]);
     sched_cat(line, (int)sizeof(line), &pos, ":");
     for (scan = g_head; scan != NULL; scan = scan->next) {
         if (!scheduler_node_sane(scan)) {
@@ -385,8 +408,13 @@ static void scheduler_overdue_scan(uint32_t tick) {
          * (2000 % 4 == 0), so it always reads ts0 right after a fresh dispatch;
          * phase 1025 (1025 % 4 == 1) reads a different point of the cycle and
          * exposes whether ts0 actually decrements between dispatches.
+         * item 0.13 (02/11): cadence 2000 -> 8000 (budget 12 -> window t<=48k).
+         * The interesting events (app termination, supervision wake) happen
+         * after the shell is already running — at 1000-tick spacing the 12
+         * rows were spent by t=12000 and the timeout-wake probe never saw
+         * them; each row costs ~600 chars of serial wall.
          */
-        uint32_t census_phase = tick % 2000u;
+        uint32_t census_phase = tick % 8000u;
 
         if (census_phase == 0u || census_phase == 1025u) {
             scheduler_census(tick);
@@ -1870,12 +1898,48 @@ static int scheduler_task_score(const process_t *task, uint32_t cpu_index) {
             break;
         }
     } else if (task->wait_result == TASK_WAIT_RESULT_TIMED_OUT &&
-               task->wait_event_class == TASK_WAIT_CLASS_IPC) {
+               (task->wait_event_class == TASK_WAIT_CLASS_IPC ||
+                task->wait_event_class == TASK_WAIT_CLASS_SUPERVISION ||
+                task->wait_event_class == TASK_WAIT_CLASS_INPUT)) {
         /*
-         * A caller that is only timing out on a synchronous service retry
-         * should not outrank the service task that must run to satisfy it.
+         * item 0.13 (02/11): a TIMED_OUT wake of a bounded IPC wait is the
+         * OTHER half of the request/reply handshake — the client whose
+         * poll window just expired must re-check the queue and usually
+         * re-send. It used to take only the +12 retry penalty, so the
+         * wake waited for the aging ramp against the fresh tier-0 poller
+         * before running: measured `tmo-stale: pid=11 d=304 cls=2` (gate
+         * run 19_ns28) — a 30-tick poll cycle costing 304+ ticks, the
+         * whole interactive session crawling and never finishing inside
+         * the gate window even after the #19 printf fix. Same one-shot
+         * semantics as the SIGNALED boost above: budget set by the
+         * timeout sweep, consumed at dispatch; once spent the task falls
+         * back to the retry penalty, so a stuck client can never outrank
+         * the service host that must answer it.
+         *
+         * The SUPERVISION class is added for the same measured reason
+         * (19_ns29: all `tmo-stale: pid=11 d=380 cls=9`): the session
+         * host's `host_wait_for_task_exit` polls the task-event mailbox on
+         * a 4-tick budget and the wake waits ~380 ticks for its slice, so
+         * the shell never prints `shell: command exit ...` within the
+         * gate window. A bounded supervision poll that just timed out is
+         * by definition waiting for exactly one small step — hand it the
+         * one-shot slice. The timeout-0 (wait-forever) supervision waits
+         * never reach this branch: they have no deadline, so the sweep
+         * never stamps them.
+         *
+         * INPUT added from 19_ns31: `tmo-stale: pid=6 d=63 cls=3` — the
+         * input host's own 30-tick mailbox poll starved 63+ ticks per
+         * timeout once the boosted client retries made request rate rise;
+         * every stale request then cost the client a 128-tick timeout and
+         * a re-send (`hostQ` 1->3, `hostW{pend=126}`, input degraded
+         * 128026/158968/175939). Same one-shot rule, same reasoning.
          */
-        wait_penalty = 12;
+        if (task->wake_boost_budget != 0u) {
+            return -128;
+        }
+        if (task->wait_event_class == TASK_WAIT_CLASS_IPC) {
+            wait_penalty = 12;
+        }
     }
 
     base_score = (int)(task->priority_tier * 16u) + affinity_score + wait_penalty - wait_bonus;
@@ -2197,6 +2261,21 @@ static void scheduler_publish_task_event(uint32_t event_type, const process_t *t
     }
     for (index = 0u; index < target_mailbox_count; ++index) {
         (void)kernel_mailbox_try_send(target_mailboxes[index], &event_buf);
+    }
+    /* item 0.13 probe (02/11, campaign): the TERMINATED of the netmgrd run
+     * is published (serial shows `task-event terminated pid=13`) and the
+     * session host keeps polling for thousands of ticks without it. Name
+     * the delivery: how many subscriptions matched, and their queue state. */
+    if (event_type == MK_TASK_EVENT_TERMINATED) {
+        static int g_evt_pub_trace = 10;
+        if (g_evt_pub_trace != 0) {
+            g_evt_pub_trace--;
+            kernel_debug_printf("evt-pub: pid=%d match=%u cnt0=%u\n",
+                                event_buf.pid,
+                                (unsigned int)target_mailbox_count,
+                                target_mailbox_count != 0u ?
+                                    kernel_mailbox_count(target_mailboxes[0]) : 0u);
+        }
     }
 }
 
@@ -3025,6 +3104,25 @@ kernel_trap_frame_t *scheduler_schedule_frame(kernel_trap_frame_t *frame, int pr
                                         (unsigned int)now_ticks);
                 }
             }
+            /* item 0.13: same measurement for timeout wakes (stamp set by
+             * the deadline sweep). Print when the supervision/poll loop is
+             * starved: gap > 50 ticks = 12x the 4-tick poll budget, which
+             * is the failure signature 0.13 needs to confirm or kill. */
+            wake_tick = g_tmo_wake_tick[next->pid & 31u];
+            if (wake_tick != 0u) {
+                g_tmo_wake_tick[next->pid & 31u] = 0u;
+                gap = now_ticks - wake_tick;
+                if (gap > g_tmo_wake_max_d[next->pid & 31u]) {
+                    g_tmo_wake_max_d[next->pid & 31u] = gap;
+                }
+                if (gap > 50u && g_tmo_stale_budget != 0u) {
+                    g_tmo_stale_budget -= 1u;
+                    kernel_debug_printf("tmo-stale: pid=%d d=%u cls=%d t=%u\n",
+                                        next->pid, (unsigned int)gap,
+                                        (int)next->wait_event_class,
+                                        (unsigned int)now_ticks);
+                }
+            }
         }
         /*
          * 0.6 mode-iii (30/10, bug #19): name WHERE a ring3 userland task is
@@ -3097,8 +3195,11 @@ kernel_trap_frame_t *scheduler_schedule_frame(kernel_trap_frame_t *frame, int pr
          * the -128 early return requires `wake_boost_budget != 0`, and
          * this zeroing makes the NEXT walk score tier+aging.
          */
-        if (next->wait_result == TASK_WAIT_RESULT_SIGNALED &&
-            next->wait_event_class == TASK_WAIT_CLASS_IPC &&
+        if ((next->wait_result == TASK_WAIT_RESULT_SIGNALED ||
+             next->wait_result == TASK_WAIT_RESULT_TIMED_OUT) &&
+            (next->wait_event_class == TASK_WAIT_CLASS_IPC ||
+             next->wait_event_class == TASK_WAIT_CLASS_SUPERVISION ||
+             next->wait_event_class == TASK_WAIT_CLASS_INPUT) &&
             next->wake_boost_budget != 0u) {
             next->wake_boost_budget = 0u;
         }
@@ -3145,11 +3246,28 @@ kernel_trap_frame_t *scheduler_schedule_frame(kernel_trap_frame_t *frame, int pr
                                                resume_frame != NULL ? resume_frame : frame);
     } else {
         g_sched_sel_count[current->pid & 31] += 1u;
-        /* Reuse dispatch: the woken task is already current, its wake is
-         * consumed now — drop the stamp so a later stale print cannot
-         * misattribute the gap. */
+        /* Reuse dispatch: the woken task is already current and runs NOW —
+         * measure the wake->run gap the same way the switch-in path does,
+         * then drop the stamps. */
         if (current->pid > 0 && current->pid < 32) {
-            g_ipc_wake_tick[current->pid & 31u] = 0u;
+            uint32_t t;
+            uint32_t gap;
+            t = g_ipc_wake_tick[current->pid & 31u];
+            if (t != 0u) {
+                g_ipc_wake_tick[current->pid & 31u] = 0u;
+                gap = now_ticks - t;
+                if (gap > g_wake_max_d[current->pid & 31u]) {
+                    g_wake_max_d[current->pid & 31u] = gap;
+                }
+            }
+            t = g_tmo_wake_tick[current->pid & 31u];
+            if (t != 0u) {
+                g_tmo_wake_tick[current->pid & 31u] = 0u;
+                gap = now_ticks - t;
+                if (gap > g_tmo_wake_max_d[current->pid & 31u]) {
+                    g_tmo_wake_max_d[current->pid & 31u] = gap;
+                }
+            }
         }
         current->state = PROCESS_RUNNING;
         current->current_cpu = (int)cpu_index;
@@ -3447,6 +3565,11 @@ int scheduler_task_event_receive(process_t *subscriber,
         subscription = scheduler_find_task_event_subscription_locked(subscriber);
         if (subscription == NULL) {
             spinlock_unlock_irqrestore(&g_task_event_lock, flags);
+            static int g_evt_nosub_trace = 6;
+            if (g_evt_nosub_trace != 0) {
+                g_evt_nosub_trace--;
+                kernel_debug_printf("evt-rec: nosub pid=%d\n", subscriber->pid);
+            }
             return -1;
         }
         if (kernel_mailbox_try_receive(&subscription->mailbox, event) == 0) {
@@ -3454,6 +3577,20 @@ int scheduler_task_event_receive(process_t *subscriber,
             return 0;
         }
         spinlock_unlock_irqrestore(&g_task_event_lock, flags);
+        /* item 0.13 probe (02/11, campaign): name the mailbox state at the
+         * moment the session host blocks. cnt>0 with rc=-1 would name a
+         * receive bug; cnt=0 + high dropped names a publisher-side loss. */
+        if (subscriber->pid == 11 || subscriber->pid == 12) {
+            static int g_evt_rec_trace = 8;
+            if (g_evt_rec_trace != 0) {
+                g_evt_rec_trace--;
+                kernel_debug_printf("evt-rec: pid=%d cnt=%u drop=%u pend=%u\n",
+                                    subscriber->pid,
+                                    kernel_mailbox_count(&subscription->mailbox),
+                                    kernel_mailbox_dropped(&subscription->mailbox),
+                                    kernel_mailbox_pending(&subscription->mailbox));
+            }
+        }
         if (timeout_ticks == 0u) {
             return -1;
         }
@@ -3997,6 +4134,20 @@ static void scheduler_timeout_tick_hook(uint32_t tick) {
         }
         scheduler_clear_wait_channel(task);
         task->wait_result = TASK_WAIT_RESULT_TIMED_OUT;
+        if (!inline_wake && task->pid > 0 && task->pid < 32) {
+            g_tmo_wake_tick[task->pid & 31u] = tick;
+            /* item 0.13: a timed-out bounded IPC wait is the client half of
+             * a synchronous handshake, and a timed-out bounded SUPERVISION
+             * wait is the session host's task-exit poll — both must get the
+             * same one-shot wake slice scheduler_complete_wait gives a
+             * SIGNALED IPC wake (measured d=304/380 ticks without it). */
+            if (task->wait_event_class == TASK_WAIT_CLASS_IPC ||
+                task->wait_event_class == TASK_WAIT_CLASS_SUPERVISION ||
+                task->wait_event_class == TASK_WAIT_CLASS_INPUT) {
+                task->wake_boost_budget =
+                    (task->kind == PROCESS_KIND_SERVICE ? 12u : 8u);
+            }
+        }
         if (woke_count < (sizeof(woke_tasks) / sizeof(woke_tasks[0]))) {
             woke_tasks[woke_count++] = task;
             woke_inline[woke_count - 1u] = (uint8_t)inline_wake;
