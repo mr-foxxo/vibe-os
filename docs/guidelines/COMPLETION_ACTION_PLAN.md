@@ -214,7 +214,7 @@ Watchpoint de HW em `g_head` (0x1f84a0, .bss) e no par de words `0x391d5CE0` —
 ## Prioridade 8: userland e apps acabativa
 
 - [ ] MicroUI: ou desktop passa a consumir (`desktop_new.c` nao esta no build) ou a lib sai do runtime — hoje compila e nao serve a ninguem
-- [ ] Ramo orphan remover/ligar: `shell_bsd.c` + `applications/ported/ksh` fora de todo source list
+- [x] Ramo orphan remover/ligar: `shell_bsd.c` + `applications/ported/ksh` fora de todo source list — REMOVIDOS (inventario provou que o pdksh REAL ja esta ligado ao terminal via `libksh.a` no link de `build/lang/terminal.elf` — `nm terminal.elf` mostra `ksh_main`; UHCI BSD ja no kernel via `bsd_usb_init` em `usb_host.c`). Os dois arquivos eram embrulhos mortos que duplicavam o entry real. Prova: `make` completo verde + `make validate-phase6-boot-smoke` 6/6; `validate-abi-compat-surface` rodou vermelho no boot-marker de 60s sob TCG — mesma familia de flake ja catalogada (linha acima e plano v4: gate interativo so vale apos Onda 0), a mudanca e inerte ao boot (arquivos fora de todo source list)
 - [ ] craft: restaurar `upstream/src/world.c` real (77 linhas hoje contra upstream completo) e streaming de chunks; curl http via stack propria apos P3; documentar que texturas hoje vem de assets empacotados
 - [ ] links2: entrar no catalogo/`config/app_catalog.tsv` e imagem, ou mover para fora da area de runtime do OS
 - [ ] vibe-browser: hoje e Otter Qt5 pristine sem integracao nem regra de build — status explicito "referencia vendored" ou engine proprio minimo (Qt nao e viavel aqui)
