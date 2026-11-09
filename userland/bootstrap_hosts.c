@@ -156,6 +156,23 @@ static void host_append_u32(char *buffer, int size, unsigned int value) {
     }
 }
 
+static void host_debug_exit_return(uint32_t pid, int via) {
+    static int budget = 10;
+    char msg[48];
+
+    if (budget == 0) {
+        return;
+    }
+    budget--;
+    msg[0] = '\0';
+    str_append(msg, "host-exit: pid=", (int)sizeof(msg));
+    host_append_u32(msg, (int)sizeof(msg), pid);
+    str_append(msg, " via=", (int)sizeof(msg));
+    host_append_u32(msg, (int)sizeof(msg), (unsigned int)via);
+    str_append(msg, "\n", (int)sizeof(msg));
+    sys_write_debug(msg);
+}
+
 static int host_wait_for_task_exit(uint32_t pid) {
     struct mk_task_event event;
     /*
@@ -192,6 +209,7 @@ static int host_wait_for_task_exit(uint32_t pid) {
                 sys_write_debug("\n");
             }
             if (!host_task_pid_alive(pid)) {
+                host_debug_exit_return(pid, 2);
                 return 0;
             }
             continue;
@@ -204,6 +222,7 @@ static int host_wait_for_task_exit(uint32_t pid) {
             continue;
         }
         if (event.event_type == MK_TASK_EVENT_TERMINATED) {
+            host_debug_exit_return(pid, 1);
             return 0;
         }
     }

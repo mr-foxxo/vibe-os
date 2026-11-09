@@ -2185,6 +2185,13 @@ scheduler_alloc_task_event_subscription_locked(process_t *subscriber) {
     return empty;
 }
 
+/* item 0.6 campaign witnesses (02/11): g_evt_term_published arms the
+ * receive-side probe only after the FIRST TERMINATED was published (an
+ * earlier budget spent pre-termination proved nothing); g_target_sub_pids
+ * records which subscription each delivered mailbox belongs to. */
+static volatile uint32_t g_evt_term_published;
+static uint32_t g_target_sub_pids[SCHEDULER_TASK_EVENT_SUBSCRIBERS];
+
 static void scheduler_publish_task_event(uint32_t event_type, const process_t *task) {
     uint32_t index;
     uint32_t flags;
@@ -2249,7 +2256,9 @@ static void scheduler_publish_task_event(uint32_t event_type, const process_t *t
             continue;
         }
         if (target_mailbox_count < SCHEDULER_TASK_EVENT_SUBSCRIBERS) {
-            target_mailboxes[target_mailbox_count++] = &subscription->mailbox;
+            target_mailboxes[target_mailbox_count] = &subscription->mailbox;
+            g_target_sub_pids[target_mailbox_count] = subscription->pid;
+            target_mailbox_count++;
         }
     }
     spinlock_unlock_irqrestore(&g_task_event_lock, flags);
@@ -2262,19 +2271,35 @@ static void scheduler_publish_task_event(uint32_t event_type, const process_t *t
     for (index = 0u; index < target_mailbox_count; ++index) {
         (void)kernel_mailbox_try_send(target_mailboxes[index], &event_buf);
     }
-    /* item 0.13 probe (02/11, campaign): the TERMINATED of the netmgrd run
-     * is published (serial shows `task-event terminated pid=13`) and the
-     * session host keeps polling for thousands of ticks without it. Name
-     * the delivery: how many subscriptions matched, and their queue state. */
+    /* item 0.6 probes (02/11, campaign): name the delivery per matched
+     * subscription, and arm the receive-side witness ONLY from the first
+     * TERMINATED onward — an earlier budget spent pre-termination proved
+     * nothing (ns33's evt-rec fired 8x before the app even exited, the
+     * same budget-burned-too-early trap as wake-stale in run2). */
     if (event_type == MK_TASK_EVENT_TERMINATED) {
-        static int g_evt_pub_trace = 10;
-        if (g_evt_pub_trace != 0) {
-            g_evt_pub_trace--;
-            kernel_debug_printf("evt-pub: pid=%d match=%u cnt0=%u\n",
-                                event_buf.pid,
-                                (unsigned int)target_mailbox_count,
-                                target_mailbox_count != 0u ?
-                                    kernel_mailbox_count(target_mailboxes[0]) : 0u);
+        uint32_t dbg;
+        extern void kernel_debug_printf(const char *fmt, ...);
+        g_evt_term_published = 1u;
+        {
+            static int g_evt_pub_trace = 12;
+            if (g_evt_pub_trace != 0) {
+                g_evt_pub_trace--;
+                kernel_debug_printf("evt-pub: ev=%d match=%u t=%u\n",
+                                    event_buf.pid,
+                                    (unsigned int)target_mailbox_count,
+                                    (unsigned int)event_buf.tick);
+            }
+        }
+        for (dbg = 0u; dbg < target_mailbox_count; ++dbg) {
+            static int g_evt_dlv_trace = 24;
+            if (g_evt_dlv_trace != 0) {
+                g_evt_dlv_trace--;
+                kernel_debug_printf("evt-dlv: ev=%d sub=%d cnt=%u drop=%u\n",
+                                    event_buf.pid,
+                                    (int)g_target_sub_pids[dbg],
+                                    kernel_mailbox_count(target_mailboxes[dbg]),
+                                    kernel_mailbox_dropped(target_mailboxes[dbg]));
+            }
         }
     }
 }
@@ -3574,21 +3599,40 @@ int scheduler_task_event_receive(process_t *subscriber,
         }
         if (kernel_mailbox_try_receive(&subscription->mailbox, event) == 0) {
             spinlock_unlock_irqrestore(&g_task_event_lock, flags);
+            /* rare-event witness: a successful task-event receive. Names
+             * WHICH event the loop consumed and whether it was the waited
+             * pid's TERMINATED (item 0.6 campaign, 02/11). */
+            {
+                static int g_evt_got_trace = 12;
+                if (g_evt_got_trace != 0) {
+                    g_evt_got_trace--;
+                    kernel_debug_printf("evt-got: sub=%d ev=%d ep=%d t=%u\n",
+                                        subscriber->pid, (int)event->event_type,
+                                        (int)event->pid,
+                                        (unsigned int)event->tick);
+                }
+            }
             return 0;
         }
         spinlock_unlock_irqrestore(&g_task_event_lock, flags);
-        /* item 0.13 probe (02/11, campaign): name the mailbox state at the
-         * moment the session host blocks. cnt>0 with rc=-1 would name a
-         * receive bug; cnt=0 + high dropped names a publisher-side loss. */
-        if (subscriber->pid == 11 || subscriber->pid == 12) {
-            static int g_evt_rec_trace = 8;
-            if (g_evt_rec_trace != 0) {
+        /* item 0.6 probe (02/11): name the mailbox state at the moment the
+         * session host finds it empty — ONLY after the first TERMINATED was
+         * published (ns33 burned the pre-gating budget entirely before the
+         * app even exited). cnt=0 here post-exit = delivery never reached
+         * THIS subscriber's mailbox; cnt>0 impossible (try_receive just
+         * failed under the same lock). */
+        if (g_evt_term_published != 0u &&
+            (subscriber->pid == 11 || subscriber->pid == 12)) {
+            static uint32_t g_evt_rec_last;
+            static int g_evt_rec_trace = 16;
+            uint32_t nowt = kernel_timer_get_ticks();
+            if (g_evt_rec_trace != 0u && (uint32_t)(nowt - g_evt_rec_last) >= 400u) {
                 g_evt_rec_trace--;
-                kernel_debug_printf("evt-rec: pid=%d cnt=%u drop=%u pend=%u\n",
-                                    subscriber->pid,
+                g_evt_rec_last = nowt;
+                kernel_debug_printf("evt-rec: pid=%d t=%u cnt=%u drop=%u\n",
+                                    subscriber->pid, (unsigned int)nowt,
                                     kernel_mailbox_count(&subscription->mailbox),
-                                    kernel_mailbox_dropped(&subscription->mailbox),
-                                    kernel_mailbox_pending(&subscription->mailbox));
+                                    kernel_mailbox_dropped(&subscription->mailbox));
             }
         }
         if (timeout_ticks == 0u) {

@@ -397,6 +397,32 @@ exige evidencia executada; o estado corrente da fila de trabalho vive em
   subida a 1800s — run ns33 em curso). NAO e o #19 original (esse fechou na parte 2);
   barra real continua sendo silicio (0.14 + P0). e o gate so fica verde quando o
   marcador chegar.
+  **RODADA 02/11 (parte 4) — retracao honesta do 0.14 + entrega PROVAADA (19_ns34/35):**
+  A atribuição "cada sendkey custa ~30s wall (harness/TCG)" estava ERRADA — benchmark
+  direto no monitor do QEMU mediu 10 round-trips `hmp()` em 0.01s (conexao nova) e a
+  digitacao completa de `netmgrd status` (15 teclas + ret) em 0.9s de wall. O custo real
+  de wall e o boot (menu+ready ~220s no perfil do gate) e o tempo de execucao do app sob
+  o slowdown do TCG, nao o teclado. Correcao registrada aqui porque o item 0.14 fora
+  escrito com a teoria, nao com a medicao (regra da campanha: medir antes de atribuir).
+  MEDIDO entao (19_ns34, testemunhas re-armadas so-para-evento-raro): o TERMINATED do
+  app e publicado e a ENTREGA na mailbox da subscription da shell esta provada —
+  `evt-dlv: ev=13 sub=11 cnt=1 drop=0` (o evento entrou; nenhum drop). O gap atual e
+  estritamente posterior a entrega: consumo no receive (`evt-got` impresso só num
+  try_receive bem-sucedido) e/ou o retorno do `host_wait_for_task_exit`
+  (`host-exit: pid= via=1-event|2-liveness` no userland). As testemunhas desta rodada sao
+  todas disparadas por evento RARO (recebimento/retorno) — a armadilha das rodadas
+  anteriores era budget queimado por poll vazio ANTES do momento que interessa.
+  **NOTA DE METODO (parte 4, 02/11):** o benchmark que "refutou" o custo de wall do
+  sendkey estava errado por construgao — medido contra um boot DESKTOP (sem shell), onde
+  a fila ps2 do QEMU enche e `sendkey` retorna descartando: 15 teclas em 0.9s eram
+  teclas PERDIDAS, nao entregues. No gate real cada tecla leva ~700-1500 ticks de guest
+  (ns34/35: digitacao de `netmgrd status` cruza a janela), e o ns35 expirou ANTES de
+  submeter o comando (variabilidade de carga do host 2-core entre runs). O gargalo de
+  wall e real e e do ambiente (PS/2 + TCG + monitor), como no 0.14 original — o que
+  muda e que o 0.14 agora tem a entrega provada (evt-dlv) e as testemunhas de consumo
+  so-evento-raro (`evt-got`, `host-exit`) no tree para o proximo run. Licao lavrada: um
+  microbenchmark precisa validar que mede o caminho do fenomeno (entrega), nao um
+  efeito-colateral (descarte).
   **Estado do gate apos I/J/H (19_ns22, timeout de comando 900s):** o comando e digitado
   COMPLETO, roda, e o status imprime `backend:`/`transport:`/`ownership:`/`datapath
   executor:`/`socket rx capacity:` — o stall original na linha 1238 do #19 ACABOU. O que
