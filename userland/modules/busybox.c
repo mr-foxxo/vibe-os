@@ -575,6 +575,30 @@ static void busybox_reset_task_exit_subscription(void) {
     }
 }
 
+static void busybox_debug_exit_return(uint32_t pid, uint32_t via) {
+    char msg[48];
+    static int budget = 8;
+
+    /* item 0.6 probe (03/11): the marker `shell: command exit ...` is
+     * printed by the SHELL (busybox) right after busybox_wait_for_task_exit
+     * returns; the host_wait_for_task_exit witness added on 02/11 lives in
+     * the session-host path, which the interactive command never reaches.
+     * Rare-event only (per wait return), budgeted. via: 1=stashed hit,
+     * 2=TERMINATED received, 3=liveness after received event, 4=liveness
+     * after timed-out receive, 5=alive-claim after receive failure. */
+    if (budget == 0) {
+        return;
+    }
+    budget--;
+    msg[0] = '\0';
+    str_append(msg, "bb-wait: pid=", (int)sizeof(msg));
+    append_uint(msg, pid, (int)sizeof(msg));
+    str_append(msg, " via=", (int)sizeof(msg));
+    append_uint(msg, via, (int)sizeof(msg));
+    str_append(msg, "\n", (int)sizeof(msg));
+    sys_write_debug(msg);
+}
+
 static int busybox_wait_for_task_exit(uint32_t pid) {
     struct mk_task_event event;
 
@@ -582,6 +606,7 @@ static int busybox_wait_for_task_exit(uint32_t pid) {
         return -1;
     }
     if (busybox_take_stashed_task_exit(pid, &event) == 0) {
+        busybox_debug_exit_return(pid, 1u);
         return 0;
     }
 
@@ -589,16 +614,29 @@ static int busybox_wait_for_task_exit(uint32_t pid) {
         if (sys_task_event_receive(&event, BUSYBOX_TASK_EXIT_POLL_TICKS) == 0) {
             if (event.pid == pid &&
                 event.event_type == MK_TASK_EVENT_TERMINATED) {
+                busybox_debug_exit_return(pid, 2u);
                 return 0;
             }
             busybox_stash_task_event(&event);
             if (!busybox_task_pid_alive(pid)) {
+                busybox_debug_exit_return(pid, 3u);
                 return 0;
             }
             continue;
         }
         if (!busybox_task_pid_alive(pid)) {
+            busybox_debug_exit_return(pid, 4u);
             return 0;
+        } else {
+            /* item 0.6 probe (03/11): poll returned non-zero (timeout or
+             * nosub) while the child is still claimed alive. Budget 2 —
+             * the first two occurrences name the state; a stream of these
+             * would mean receive never sees the delivered event. */
+            static int poll_budget = 2;
+            if (poll_budget != 0) {
+                poll_budget--;
+                busybox_debug_exit_return(pid, 5u);
+            }
         }
     }
 }

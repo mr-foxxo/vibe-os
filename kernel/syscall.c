@@ -1688,7 +1688,22 @@ static uint32_t sys_task_snapshot(uint32_t summary_ptr, uint32_t entries_ptr, ui
         }
     }
 
-    return count;
+    /*
+     * Success is 0. The entry count lives in summary->total_tasks; the
+     * return value carries ONLY the status channel. Returning `count`
+     * here (as this did before 03/11) made every non-empty snapshot look
+     * like a failure to the `!= 0` convention ALL other callers use
+     * (`lang_task_pid_alive`, `busybox_task_pid_alive`,
+     * `host_task_pid_alive`, taskmgr's own `< 0` guard) — so every
+     * child-wait helper concluded "alive" forever, the app-host process
+     * never exited after its ring3 child terminated, and the rescue
+     * shell waited on that never-arriving TERMINATED: the final
+     * `shell: command exit netmgrd rc=0` marker of bug #19 / item 0.14.
+     * It also produced the false `host-wait: stalled ... alive=1`
+     * readings recorded in KNOWN_BUGS parts 8-10 (the children WERE
+     * terminating; the helper misread the status channel).
+     */
+    return 0;
 }
 
 static uint32_t sys_memory_status(uint32_t status_ptr, uint32_t b, uint32_t c,

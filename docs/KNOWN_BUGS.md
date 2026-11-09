@@ -397,6 +397,28 @@ exige evidencia executada; o estado corrente da fila de trabalho vive em
   subida a 1800s — run ns33 em curso). NAO e o #19 original (esse fechou na parte 2);
   barra real continua sendo silicio (0.14 + P0). e o gate so fica verde quando o
   marcador chegar.
+  **RODADA 03/11 (parte 5) — CAUSA RAIZ FINAL DO 0.6: contrato de status do
+  `SYSCALL_TASK_SNAPSHOT` quebrado (19_ns37, marker chegou):** o handler retornava
+  `count` (numero de tarefas) no sucesso, mas TODO o resto do userland usa a
+  convencao `!= 0 -> falha` (`lang_task_pid_alive`, `busybox_task_pid_alive`,
+  `host_task_pid_alive`; taskmgr consumia o retorno como contagem). Qualquer boot
+  com uma unica tarefa retornava >0 -> os helpers de vida liam "falha" ->
+  `return 1 (alive)` PERPETUO: o host do app pid=12 esperava `while(alive(13)) yield`
+  para sempre mesmo com 13 ja TERMINATED, nunca saaia, e o `shell: command exit
+  netmgrd rc=0` esperava um TERMINATED(12) que nunca existia. E a RESTRACAO das
+  partes 8-10: o `host-wait: stalled ... alive=1` que levou a concluso
+  "o filho esta MESMO vivo" era este artefato de canal de status — os filhos
+  MORRIAM sim. Fix: `sys_task_snapshot` retorna 0 no sucesso (canal de status
+  limpo; contagem ja vive em `summary->total_tasks`, que e escrita sempre);
+  taskmgr adaptado no mesmo commit a ler `total_tasks` (comportamento identico:
+  antes usava `count` retornado, que era o mesmo numero). ABI: canal de status
+  consertado em syscall existente sem novos numeros nem structs (-1 erro / 0 ok
+  e a convencao de todo o resto do kernel); callers kernel-side: nenhum alem da
+  tabela. PROVA (19_ns37, gate): `init: task-event terminated pid=12 ... tick=53805`
+  (o host AGORA morre apos o filho), `shell: command exit netmgrd rc=0` na serial
+  do gate pela PRIMEIRA VEZ na historia da campanha — a cadeia
+  launch->exec->wait->exit-marker esta fechada de ponta a ponta; gate seguiu
+  rodando os demais comandos (relatorio final abaixo, por run).
   **RODADA 02/11 (parte 4) — retracao honesta do 0.14 + entrega PROVAADA (19_ns34/35):**
   A atribuição "cada sendkey custa ~30s wall (harness/TCG)" estava ERRADA — benchmark
   direto no monitor do QEMU mediu 10 round-trips `hmp()` em 0.01s (conexao nova) e a
