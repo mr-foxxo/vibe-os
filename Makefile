@@ -1729,7 +1729,13 @@ $(USERLAND_BOOT_APP_BIN): $(USERLAND_BOOT_APP_ELF)
 
 # Ported GNU apps (echo, cat, wc, head, tail, grep, etc)
 # Build once via stamp to avoid parallel duplicate sub-make executions.
-$(PORTED_APPS_STAMP): $(COMPAT_LIB) Build.ported.mk lang/sdk/app_entry.c lang/sdk/app_runtime.c lang/include/vibe_app.h tools/patch_app_header.py
+# The stamp must depend on the app sources AND on the shared ported headers:
+# without them, editing applications/ported/<tool>/*.c left a stale .app in
+# the image (found when dig/host gained a real DNS client and the artifact was
+# not rebuilt). Wildcards keep the list correct as ports are added.
+PORTED_APP_SRCS := $(wildcard applications/ported/*/*.c) $(wildcard applications/ported/include/*.h)
+
+$(PORTED_APPS_STAMP): $(PORTED_APP_SRCS) $(COMPAT_LIB) Build.ported.mk lang/sdk/app_entry.c lang/sdk/app_runtime.c lang/include/vibe_app.h tools/patch_app_header.py
 	@mkdir -p $(dir $@)
 	$(MAKE) -j1 -f Build.ported.mk \
 		CC="$(CC)" LD="$(LD)" OBJCOPY="$(OBJCOPY)" NM="$(NM)" AR="$(AR)" RANLIB="$(RANLIB)" \
@@ -2468,7 +2474,12 @@ test-fdopen:
 	$(CC) $(HOST_TEST_CFLAGS) tests/host_test_fdopen.c lang/sdk/app_runtime.c -o $(BUILD_DIR)/host_test_fdopen
 	$(BUILD_DIR)/host_test_fdopen
 
-test-host: test-fdopen
+test-dns:
+	@mkdir -p $(BUILD_DIR)
+	$(CC) $(HOST_TEST_CFLAGS) -Icompat/include -Iapplications/ported/include -Iheaders tests/host_test_dns.c lang/sdk/app_runtime.c -o $(BUILD_DIR)/host_test_dns
+	$(BUILD_DIR)/host_test_dns
+
+test-host: test-fdopen test-dns
 	@echo "host unit tests passed"
 
 .PHONY: test-host

@@ -536,6 +536,25 @@ static int mk_network_socket_is_inet_udp(const struct mk_network_socket_state *s
            socket_state->protocol == MK_NETWORK_IPPROTO_UDP;
 }
 
+/* Read the address family WITHOUT dereferencing struct sockaddr fields.
+ * The kernel's <sys/socket.h> resolves to the host toolchain header under
+ * `-idirafter headers` (Linux layout: sa_family at offset 0, 2 bytes), while
+ * the published vibeOS ABI (headers/sys/socket.h, which userland compiles
+ * against) is BSD layout: sa_len at 0, sa_family at 1. Any field read through
+ * the host struct silently garbles user-supplied sockaddr buffers - measured:
+ * an app's sin_family=2 arrived at the kernel as 528 (0x0210). Raw byte
+ * access is the only ABI-correct read across the two layouts. */
+static uint32_t mk_network_sockaddr_family(const struct sockaddr *address,
+                                           uint32_t address_length) {
+    const uint8_t *raw;
+
+    if (address == 0 || address_length < 2u) {
+        return 0u;
+    }
+    raw = (const uint8_t *)address;
+    return (uint32_t)raw[1u];
+}
+
 static uint16_t mk_network_sockaddr_port(const struct sockaddr *address, uint32_t address_length) {
     const uint8_t *raw;
     if (address == 0 || address_length < 8u) {
@@ -3965,7 +3984,7 @@ int mk_network_service_bind(int handle, const struct sockaddr *address, uint32_t
     if (socket_state == 0 || socket_state->connected || socket_state->bound) {
         return -1;
     }
-    if ((uint32_t)address->sa_family != socket_state->domain) {
+    if (mk_network_sockaddr_family(address, address_length) != socket_state->domain) {
         return -1;
     }
 
@@ -4011,7 +4030,7 @@ int mk_network_service_socket_connect(int handle, const struct sockaddr *address
     if (socket_state == 0 || socket_state->connected) {
         return -1;
     }
-    if ((uint32_t)address->sa_family != socket_state->domain) {
+    if (mk_network_sockaddr_family(address, address_length) != socket_state->domain) {
         return -1;
     }
     if (mk_network_socket_is_inet_icmp(socket_state)) {
@@ -4360,8 +4379,7 @@ int mk_network_service_send(int handle, const void *data, uint32_t size) {
             mk_network_virtio_send_arp_request(&g_network_state.pci_probe,
                                                g_network_state.local_ipv4,
                                                next_hop);
-            if (mk_network_wait_for_arp(next_hop, dest_mac, MK_NETWORK_ICMP_WAIT_TICKS) != 0) {
-                return -1;
+            if (mk_network_wait_for_arp(next_hop, dest_mac, MK_NETWORK_ICMP_WAIT_TICKS) != 0) {                return -1;
             }
         }
         if (mk_network_virtio_send_udp(&g_network_state.pci_probe,
@@ -4537,16 +4555,24 @@ int mk_network_service_recvfrom_addr(int handle, void *buffer, uint32_t size,
     /* Fill source address if socket is connected and caller provided a buffer */
     if (dequeued > 0 && src_addr != 0 && addrlen != 0 && *addrlen >= sizeof(struct sockaddr_in)) {
         if (socket_state->connected) {
-            struct sockaddr_in *sin = (struct sockaddr_in *)src_addr;
+            /* Write in the PUBLISHED BSD sockaddr_in layout (sa_len@0,
+             * sa_family@1, port@2, addr@4) via raw bytes: the kernel's
+             * struct sockaddr_in comes from the host header (Linux layout,
+             * family@0), and userland reads the repo layout. port/addr
+             * offsets coincide; only the family byte differs, which is
+             * exactly where the host struct would write garbage. */
+            uint8_t *raw = (uint8_t *)src_addr;
             uint32_t addr = socket_state->remote_ipv4;
             uint16_t port = socket_state->remote_port;
 
-            sin->sin_family = (uint16_t)AF_INET;
-            sin->sin_port = (uint16_t)(((port & 0xffu) << 8) | ((port >> 8) & 0xffu));
-            sin->sin_addr.s_addr = (uint32_t)(((addr & 0xffu) << 24) |
-                                              ((addr & 0xff00u) << 8) |
-                                              ((addr & 0xff0000u) >> 8) |
-                                              ((addr & 0xff000000u) >> 24));
+            raw[0] = (uint8_t)sizeof(struct sockaddr_in);
+            raw[1] = (uint8_t)AF_INET;
+            raw[2] = (uint8_t)(port >> 8);
+            raw[3] = (uint8_t)(port & 0xffu);
+            raw[4] = (uint8_t)(addr >> 24);
+            raw[5] = (uint8_t)((addr >> 16) & 0xffu);
+            raw[6] = (uint8_t)((addr >> 8) & 0xffu);
+            raw[7] = (uint8_t)(addr & 0xffu);
             *addrlen = sizeof(struct sockaddr_in);
         }
     }

@@ -657,7 +657,7 @@ build/app_runtime_$(2).o: $$(APP_RUNTIME) | build
 	@mkdir -p $$(dir $$@)
 	$$(CC) $$(CFLAGS) $$(INCLUDES) -c $$< -o $$@
 
-build/ported/$(2)/%.o: applications/ported/$(2)/%.c $$(COMPAT_LIB) | build
+build/ported/$(2)/%.o: applications/ported/$(2)/%.c $$(COMPAT_LIB) $$(wildcard applications/ported/include/*.h) | build
 	@mkdir -p $$(dir $$@)
 	$$(CC) $$(CFLAGS) $$(INCLUDES) -c $$< -o $$@
 

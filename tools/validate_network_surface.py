@@ -409,6 +409,17 @@ def validate_network_surface(qemu_binary: str, image_path: Path, memory_mb: int,
         ("ping 10.0.2.2", ["bytes from 10.0.2.2", "1 packets transmitted"]),
         ("host localhost", ["localhost", "127.0.0.1"]),
         ("dig localhost", ["localhost", "127.0.0.1"]),
+        # item 1.4: the resolver must read the server that came with the
+        # lease / manual config, not a hardcoded address. On QEMU user-net
+        # the DHCP lease always carries a nameserver, so `dig` must reach
+        # the wire path (dns-ok | NXDOMAIN | no-answer) and never report
+        # no-nameserver.
+        # item 1.4 wire path: assert the serial witness lines (app console
+        # output never reaches serial). The marker proves the query went to
+        # the server that came with the lease (10.0.2.3 under QEMU user-net),
+        # not a hardcoded one and not a no-nameserver failure.
+        ("dig example.com", ["query=example.com server=10.0.2.3"]),
+        ("host example.com", ["query=example.com server=10.0.2.3"]),
         ("curl file:///runtime/netmgrd-surface.txt", ["manager=", "lease_state="]),
         ("curl file:///runtime/netmgrd-status.txt", ["state="]),
         ("ftp example.com", ["ftp transport unavailable"]),

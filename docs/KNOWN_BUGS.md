@@ -622,3 +622,48 @@ exige evidencia executada; o estado corrente da fila de trabalho vive em
 - **Correcao aplicada (minima, sem tocar ABI nem semantica de prioridade):** (1) `scheduler_account_runtime` para de zerar o carimbo — o re-dispatch sempre re-carimba (`scheduler_schedule_frame`), e o guard `state!=RUNNING` impede dupla contagem; (2) divisor do envelhecimento 8→4 com teto 128 (> 112+3): boost pleno apos ~512 ticks (~5,1 s) sem rodar; (3) removido o `break` de `score==0`.
 - **Provas executadas:** apos o fix, mesmo harness/perfil: `sel10` de 4→**116028** (shell volta a ser despachada), `sel5` congela em 3485 (init para de ganhar toda rodada), `shell: ready` chega e o shell processa comandos. Cmd `js` completo: `host: argv js` → `lang: image read ok` → `lang: chunk0 verify match` → `app: runtime init ok` → `js: NOT IMPLEMENTED (ENOSYS)` (diagnostico honesto, sem stub) → **`shell: command exit js rc=0`** (`/tmp/vg/06_run7`). Gate `make validate-phase6` 6/6 PASS (build/phase6-validation.md). A shell tambem ganhou flush de type-ahead no start (os scancodes resido do menu de boot do stage2 caíam na fila do PS/2 e prefixavam o primeiro comando — o gate viu `netmgrd` chegar como `ssetmgrd`; flush estilo login-shell, so userland, sem tocar ABI), necessario para os gates de sessao chegarem limpos.
 - **Escopo honesto:** isto fecha o MODO (i) do item 0.6 (a inanicao que impedia a sessao de nascer). O gate `validate-network-surface` avanca mas fica VERMELHO num modo NOVO e distinto (bug #19: stall do `netmgrd status` no meio do print) — NAO e regressao deste commit: o A/B (scheduler original re-stashado) mostra que antes do fix a shell nem chegava a rodar `netmgrd` (FAIL em `shell: command netmgrd`), ou seja, o gate ja estava vermelho por esta causa-raiz.
+
+### [x] 20. ABI do `sockaddr` divergente entre kernel e userland sob o fallback host-toolchain — o kernel lia o `sa_family` no layout do header DO HOST (Linux: offset 0, 2 bytes) e o userland escreve no layout BSD publicado (sa_len@0, sa_family@1) — todo connect/bind com sockaddr de app era rejeitado — CORRIGIDO (10/11, item 1.4)
+
+- **Comportamento observado:** `dig example.com` falhava com `rc=-4` (connect) embora o cliente
+  estivesse correto: o app mandava `sin_family=AF_INET`, `sin_port=htons(53)`, octetos na ordem
+  correta. O cliente DNS real (implementado neste mesmo ciclo para o item 1.4) transformou a
+  falha silenciosa antiga ("dns lookup not implemented yet") em erro DIAGNOSTICADO — e o
+  diagnostico revelou o bug latente de ABI que existia desde a introduction do socket API.
+- **Causa raiz (medida, nao presumida):** o kernel compila com `-idirafter headers`, ou seja os
+  headers DO HOST ganham de `headers/sys/socket.h`. Sob o fallback `gcc -m32` (sem i686-elf),
+  o `struct sockaddr`/`struct sockaddr_in` que o KERNEL ve e o do Linux host (`sa_family` 16-bit
+  em offset 0, SEM sa_len) — enquanto todo o userland compila contra o `headers/sys/socket.h`
+  do repo (BSD: `sa_len` 8-bit em 0, `sa_family` 8-bit em 1). Witness pareado no mesmo boot:
+  app `dig: conn-try h=1 len=16 fam=2` vs kernel `net-connect: h=1 len=16 fam=528` — o kernel
+  lia os bytes `[16,2]` como u16 LE (0x0210=528) e rejeitava `!= AF_INET` em TODOS os
+  connect/bind. Os accessors de porto/endereco (`mk_network_sockaddr_port/ipv4`) ja liam RAW
+  BYTES nos offsets BSD e por isso DHCP/ping funcionavam — so os derefs de struct campo
+  (`->sa_family`) estavam viciados.
+- **Correcao:** novo accessor `mk_network_sockaddr_family()` (leitura raw do byte 1, layout
+  BSD publicado) substituindo os 3 derefs `->sa_family` (bind, connect x2); o preenchimento do
+  `src_addr` no recvfrom agora escreve bytes crus no layout publicado (sa_len=16, family, port,
+  addr) em vez de campos do struct host. Nenhuma mudanca de syscall/struct publicada: a ABI
+  continua a de `headers/sys/socket.h` + `headers/netinet/in.h`; o que mudou e que o kernel
+  agora obedece a ela em vez do header do host.
+- **Correcoes-irmao no mesmo ciclo (mesma superfice):** `dig`/`host` criavam o socket com
+  `protocol=0` e o kernel classifica UDP por `protocol==IPPROTO_UDP(17)` — socket sem protocolo
+  nao entrava em NENHUM branch de send/recv (silencioso; agora o cliente usa IPPROTO_UDP e o
+  client retorna codigos distintos -3/-4/-5 para socket/connect/send); o `netctl dhcp` passava
+  `argc=2` para `netctl_command_connect` que exige `>=3` para ler `argv[2]` — imprimia usage em
+  vez de conectar (witness `app: entry argc=2 1=dhcp` provou que o argv chegava intacto; o bug
+  era o array literal mal contado). E o `Build.ported.mk` nao dependia dos headers compartilhados
+  (`applications/ported/include/*.h`) — editar header deixava `.app` stale (corrigido no padrao
+  de regra e no stamp do Makefile).
+- **Provas executadas:** `make` -Werror verde; `make test-host` 43/43 (fdopen 20 + DNS 23, incl.
+  parse de resposta com compressao, loop de pointer rejeitado, NXDOMAIN); `make
+  validate-phase6-boot-smoke` 6/6; probe focado `tools/probe_dns.py` → **`dig: dns-ok
+  query=example.com server=10.0.2.3 addr=104.20.23.154`** (build/dns-probe-clean.md) — A record
+  REAL resolvido via o nameserver do lease DHCP, com witness wire `udp-tx: OK dport=53
+  sport=15348 dst=0xa000203` + `udp-rx-any: dport=15348 len=69` capturados na fase de
+  instrumentacao (witnesses temporarias removidas da arvore apos o fechamento).
+- **Escopo honesto:** o `validate-network-surface` completo (24 comandos) segue preso ao wall de
+  digitacao TCG do host 2-core (itens 0.15/0.16) — a prova do DNS usa o probe focado; os
+  marcadores novos do gate (`query=example.com server=10.0.2.3`) valem quando o gate rodar
+  completo. Consumer residual do layout host: nenhum deref de campo sockaddr restante em
+  network.c (auditado: 0 ocorrencias de `->sa_family`/`->sin_*`).

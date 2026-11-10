@@ -45,6 +45,7 @@ static int netmgrd_write_state_file(const char *path,
                                     const char *manager_mode,
                                     const char *lease_source);
 static int netmgrd_write_runtime_hosts_file(const struct mk_network_status *status);
+static int netmgrd_write_runtime_resolv_file(const struct mk_network_status *status);
 static int netmgrd_export_runtime_state(const char *manager_mode, const char *lease_source);
 static int netmgrd_status_matches_target(const struct mk_network_status *status,
                                          uint32_t expected_kind,
@@ -829,6 +830,7 @@ static int netmgrd_export_runtime_state(const char *manager_mode, const char *le
                                  lease_source) != 0) {
         return -1;
     }
+    (void)netmgrd_write_runtime_resolv_file(&status);
     return netmgrd_write_runtime_hosts_file(&status);
 }
 
@@ -1148,6 +1150,32 @@ static int netmgrd_write_state_file(const char *path,
              scan_count > 3 ? (unsigned int)scans[3].signal_strength : 0u,
              scan_count > 3 ? (unsigned int)scans[3].connected : 0u);
     return vibe_app_write_file(target, text, (int)strlen(text));
+}
+
+/* resolv.conf-equivalent: the nameserver line mirrors whatever the
+ * lease (or a manual configuration) put in the network status, so the
+ * userland resolver reads the real server instead of a hardcoded one. */
+static int netmgrd_write_runtime_resolv_file(const struct mk_network_status *status) {
+    char text[128];
+    int offset = 0;
+
+    if (status == 0) {
+        return -1;
+    }
+    if (status->dns_server[0] == '\0' || strcmp(status->dns_server, "-") == 0 ||
+        strcmp(status->dns_server, "0.0.0.0") == 0) {
+        return -1; /* no server yet: leave any previous file untouched */
+    }
+    (void)vibe_app_create_dir("/runtime");
+    offset += snprintf(text + offset,
+                       sizeof(text) - (size_t)offset,
+                       "nameserver %s\n",
+                       status->dns_server);
+    if (offset < 0 || (size_t)offset >= sizeof(text)) {
+        offset = (int)sizeof(text) - 1;
+        text[offset] = '\0';
+    }
+    return vibe_app_write_file("/runtime/resolv.conf", text, (int)strlen(text));
 }
 
 static int netmgrd_write_runtime_hosts_file(const struct mk_network_status *status) {

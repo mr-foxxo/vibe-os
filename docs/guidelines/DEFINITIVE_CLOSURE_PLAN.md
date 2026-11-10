@@ -1,8 +1,8 @@
 # Plano de Fechamento Definitivo — VibeOS (Revisão 4)
 
-last: 2026-11-03 — 0.15 HARNESS FEITO (backpressure por tecla + freeze nomeado, ns38-40) e 0.14 FEITO (causa raiz final: contrato de status do SYSCALL_TASK_SNAPSHOT; `PASS netmgrd status` 19_ns37). O wall que resta para os 22 comandos e do main-loop do QEMU (~770 ticks/tecla com wake->dispatch do kernel <=6), medido em ns40.
+last: 2026-11-10 — 1.3/1.4 FEITOS (cliente DNS real em `dig`/`host` sobre o socket API do app; servidor lido do lease via `status.dns_server` ou `/runtime/resolv.conf` espelhado pelo netmgrd; prova `dig: dns-ok query=example.com server=10.0.2.3 addr=104.20.23.154` em build/dns-probe-clean.md). No caminho, duas causas raiz corrigidas: contrato de argv do `netctl dhcp` (argc=2 vs exigencia >=3) e ABI do `sockaddr` lido pelo kernel via header do host-toolchain (KNOWN_BUGS #20). Antes: 0.15 harness feito, 0.14 FEITO.
 doing: backlog definitivo consolidado (v4) — ondas 0-9, um estado terminal por item, prova obrigatoria por linha
-next: Onda 0 — 0.16: timestamp sendkey->rk por tecla no harness (medida direta main-loop-vs-kernel) + corrida completa do gate num host menos carregado; em paralelo, 0.2 (sweep TODO/stub) e 0.3 (knob de telemetria) estao destravados; depois 0.15 fecha com o report 22x e ai `make validate-abi-compat-surface` + `make validate-audio-stack` valem como gate
+next: Onda 0 — 0.15 fecha com 22x PASS em host ocioso e 0.16 coleta a matriz de latencia; em paralelo 0.3 (knob de telemetria) destravado; Onda 1 segue com 1.1 (RX por IRQ) e 1.2 (TCP real) desbloqueadas
 state: active
 intent: execution-backlog
 
@@ -212,8 +212,8 @@ Já fechado (14–15/10, não reabrir): TX self-wipe, ARP/ICMP responders, loopb
 | --- | --- | --- | --- | --- | --- |
 | 1.1 | RX orientado a IRQ | polling 100 Hz, ring 8 slots | RX por interrupção do device com fallback de polling | `validate-network-datapath` + latência | — |
 | 1.2 | TCP cliente real (backlog>1, sockets>8, timers RTT/RTO) | SYN/ACK existe, não validado end-to-end | conexão TCP real cliente↔servidor | novo `validate-network-tcp` | — |
-| 1.3 | UDP cliente real (além de DHCP) | só DHCP | send/recv UDP a arbitrário | caso no validador | — |
-| 1.4 | DNS do DHCP + resolv.conf-equivalente + servidores config. | hardcoded 10.0.2.3 | resolver lê servidor do lease e de config | `host`/`dig` resolvendo nome real | — |
+| 1.3 | UDP cliente real (além de DHCP) | ✅ FEITO (10/11): `dig`/`host` enviam e recebem UDP/53 pelo socket API do app (`SOCK_DGRAM`+`IPPROTO_UDP`) — sendto/ARP/virtio-demux exercitados end-to-end | send/recv UDP a arbitrário | witness `dig: dns-ok ... addr=104.20.23.154` (build/dns-probe-clean.md) | — |
+| 1.4 | DNS do DHCP + resolv.conf-equivalente + servidores config. | ✅ FEITO (10/11): `dns_client.h` (encoder/wire/parse A-record, NXDOMAIN e timeout honestos); servidor vem do lease (status.dns_server) ou de `/runtime/resolv.conf` espelhado pelo netmgrd; sem fallback hardcoded — sem servidor = diagnostico explicito | resolver lê servidor do lease e de config | `dig example.com` → `dns-ok addr=104.20.23.154` via lease 10.0.2.3 (build/dns-probe-clean.md); test-host 23 assertions | — |
 | 1.5 | `ifconfig`/`route`/`netstat` com tabela real | imprimem snapshots | leem estado real do serviço | saída × estado | — |
 | 1.6 | `curl`/`wget` com HTTP pela própria stack | curl só `file://`, wget inexistente | HTTP GET real | GET contra host do user-net | dep 1.2 |
 | 1.7 | Gate HTTP via links2 | aberto | links2 busca página real | report | dep 1.2/1.6 |

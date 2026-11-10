@@ -798,7 +798,12 @@ static int netctl_command_route(void) {
 static int netctl_command_dhcp(const char *if_name) {
     int rc;
     if (if_name == 0 || strcmp(if_name, "em0") == 0 || strcmp(if_name, "ethernet") == 0) {
-        rc = netctl_command_connect(2, (char *[]) { "netctl", "connect", "ethernet" });
+        /* argc must count the interface token: connect() requires argc >= 3
+         * to read argv[2]. Passing 2 here made `netctl dhcp` print the
+         * no-arg usage instead of connecting (measured via the ring3 entry
+         * witness `app: entry argc=2 1=dhcp` - argv arrived intact, the
+         * hand-built argv array was what lied). */
+        rc = netctl_command_connect(3, (char *[]) { "netctl", "connect", "ethernet" });
     } else {
         printf("netctl: unsupported interface %s\n", if_name);
         return 1;
