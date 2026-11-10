@@ -39,11 +39,11 @@ Nada de rebuild obrigatório do userland.
 
 ### [x] 1.5 Wi-Fi real (scan, WPA, conexão) — COMPLETO
 
-- [x] Scan de redes Wi-Fi com probe requests em 11 canais
-- [x] Parse de beacon frames e probe responses
-- [x] Conexão com senha (WPA2) com PBKDF2-SHA1 real (4096 iterações)
-- [x] 4-way handshake EAPOL-Key completo com MIC e GTK
-- [x] Máquina de estados com timeout e recovery
+- [x] Scan de redes Wi-Fi com probe requests em 11 canais *(modulo `wifi_scanning.c` — codigo de frame real, mas ORFAO: nada o liga a um data-plane; o scan do servico devolve lista vazia — linha 84 do COMPLETION_ACTION_PLAN)*
+- [x] Parse de beacon frames e probe responses *(idem: modulo, nao caminho ativo)*
+- [x] Conexão com senha (WPA2) com PBKDF2-SHA1 real (4096 iterações) *(cripto genuine em `wifi_wpa2.c`; SEM caminho de dados 802.11 por baixo — connect do servico recusa ENOSYS; ligar quando frames auth/assoc existirem, linhas 86-87)*
+- [x] 4-way handshake EAPOL-Key completo com MIC e GTK *(idem)*
+- [x] Máquina de estados com timeout e recovery *(idem)*
 - [x] Applet de rede no painel (Wi-Fi real)
 
 ### [x] 1.6 Fazer CLI tools funcionarem de verdade

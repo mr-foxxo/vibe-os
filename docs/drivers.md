@@ -290,7 +290,7 @@ Intel High Definition Audio driver with:
 
 **Resolved:**
 - NVIDIA GPU: ✅ Nouveau modeset implemented (NV40+), CRTC timing programming, framebuffer scanout
-- Wi-Fi: ✅ Intel 7260 with real WPA2 (PBKDF2-SHA1, 4-way handshake). RTL8188/8192, Atheros AR93xx, Broadcom BCM4360 detection in wifi_pci.c
+- Wi-Fi: ⚠️ NOT connectable. `wifi_pci.c` detects Intel 7260 / RTL8188/8192 / AR93xx / BCM4360, and `wifi_scanning.c`/`wifi_wpa2.c` are genuine module code (probe frames; PBKDF2-SHA1 + 4-way EAPOL crypto) but they are ORPHANED: no 802.11 data plane binds them, the service scan returns an empty list and connect refuses with ENOSYS (COMPLETION_ACTION_PLAN line 84). The Intel 7260 register driver in `wifi_data_plane.c` is experimental-gated OFF by default so a production boot never pokes an unattached chip (line 85). Do not claim Wi-Fi connectivity until lines 86-87 (auth/assoc/EAPOL frame path + CCMP) land.
 - Audio: ✅ HDA Intel (ICH6-ICL/TGL, NVIDIA HDMI), AC97 (Intel ICH, SiS, NVIDIA, AMD, ATI, ALI, VIA), USB Audio Class 1.0
 - Storage: ✅ ATA PIO, AHCI, NVMe, USB mass storage (BOT/SCSI)
 

@@ -3414,47 +3414,25 @@ static int mk_network_fill_scan_info(uint32_t index, struct mk_network_scan_info
 }
 
 static int mk_network_state_connect_wifi(const struct mk_network_connect_request *request) {
-    uint32_t index;
-
     if (request == 0 || !mk_network_string_eq(request->if_name, "wlan0")) {
         return -1;
     }
 
-    for (index = 0u; index < g_network_state.scan_count; ++index) {
-        if (!mk_network_string_eq(g_network_state.scans[index].ssid, request->ssid)) {
-            continue;
+    /* There is no 802.11 data plane: no probe/auth/assoc frames reach a
+     * chip, so a "connected" state with an invented 192.168.1.x lease
+     * would be a fabricated success (the exact false-green the contract
+     * forbids). Refuse with a machine-readable diagnostic. The removed
+     * code used to match a hardcoded scan list and report
+     * ip=192.168.1.24 dns=1.1.1.1 as if 802.11 worked; wifi_scanning.c's
+     * real probe-frame builder stays on the shelf until a data plane
+     * binds it (action plan lines 84-87). */
+    {
+        static int wifi_refuse_logged;
+        if (!wifi_refuse_logged) {
+            wifi_refuse_logged = 1;
+            kernel_debug_puts("network: wifi connect refused: no 802.11 data plane (ENOSYS)\n");
         }
-        if (g_network_state.scans[index].security == MK_NETWORK_SECURITY_WPA_PSK &&
-            request->psk[0] == '\0') {
-            return -1;
-        }
-
-        g_network_state.ethernet_pending = 0;
-        g_network_state.ethernet_transition_polls = 0u;
-        g_network_state.status.link_state = MK_NETWORK_LINK_CONNECTED;
-        g_network_state.status.active_kind = MK_NETWORK_IF_WIFI;
-        g_network_state.status.wifi_signal = g_network_state.scans[index].signal_strength;
-        g_network_state.status.visible_network_count = g_network_state.scan_count;
-        (void)mk_network_copy_string(g_network_state.status.active_if,
-                                     sizeof(g_network_state.status.active_if),
-                                     "wlan0");
-        (void)mk_network_copy_string(g_network_state.status.current_ssid,
-                                     sizeof(g_network_state.status.current_ssid),
-                                     g_network_state.scans[index].ssid);
-        (void)mk_network_copy_string(g_network_state.status.ip_address,
-                                     sizeof(g_network_state.status.ip_address),
-                                     "192.168.1.24");
-        (void)mk_network_copy_string(g_network_state.status.gateway,
-                                     sizeof(g_network_state.status.gateway),
-                                     "192.168.1.1");
-        (void)mk_network_copy_string(g_network_state.status.dns_server,
-                                     sizeof(g_network_state.status.dns_server),
-                                     "1.1.1.1");
-        mk_network_publish_status_event();
-        mk_network_publish_lease_dns_events();
-        return 0;
     }
-
     return -1;
 }
 
@@ -3656,8 +3634,12 @@ void mk_network_service_init(void) {
                                  MK_NETWORK_CAPS_CONTROL_PLANE |
                                  MK_NETWORK_CAPS_LOOPBACK_READY |
                                  MK_NETWORK_CAPS_ETHERNET_STATUS |
-                                 MK_NETWORK_CAPS_WIFI_SCAN |
-                                 MK_NETWORK_CAPS_WIFI_CONNECT |
+                                 /* WIFI_SCAN/WIFI_CONNECT intentionally NOT
+                                  * claimed (line 84): scan returns empty and
+                                  * connect refuses until an 802.11 data plane
+                                  * exists. The bits have zero readers in the
+                                  * tree; claiming them was the facade the UI
+                                  * trusted. */
                                  MK_NETWORK_CAPS_DNS_STATUS |
                                  MK_NETWORK_CAPS_EVENT_STREAM_READY |
                                  MK_NETWORK_CAPS_BACKEND_ACTIVITY_EVENTS |
@@ -3723,19 +3705,12 @@ void mk_network_service_init(void) {
         g_network_state.info.wifi_chip_name[0] = '\0';
     }
 
-    g_network_state.scan_count = 4u;
-    (void)mk_network_copy_string(g_network_state.scans[0].ssid, sizeof(g_network_state.scans[0].ssid), "VibeNet");
-    g_network_state.scans[0].signal_strength = 4u;
-    g_network_state.scans[0].security = MK_NETWORK_SECURITY_WPA_PSK;
-    (void)mk_network_copy_string(g_network_state.scans[1].ssid, sizeof(g_network_state.scans[1].ssid), "Laboratorio");
-    g_network_state.scans[1].signal_strength = 3u;
-    g_network_state.scans[1].security = MK_NETWORK_SECURITY_WPA_PSK;
-    (void)mk_network_copy_string(g_network_state.scans[2].ssid, sizeof(g_network_state.scans[2].ssid), "Visitantes");
-    g_network_state.scans[2].signal_strength = 2u;
-    g_network_state.scans[2].security = MK_NETWORK_SECURITY_OPEN;
-    (void)mk_network_copy_string(g_network_state.scans[3].ssid, sizeof(g_network_state.scans[3].ssid), "CompatLab");
-    g_network_state.scans[3].signal_strength = 4u;
-    g_network_state.scans[3].security = MK_NETWORK_SECURITY_WPA_PSK;
+    /* No fabricated scan list (action plan line 84). There is no 802.11
+     * auth/assoc/CCMP data plane, so the honest scan result is an empty
+     * list: every consumer already handles it ("no wifi networks found").
+     * A scan with real results arrives the day wifi_scanning's probe
+     * frames are bound to an attached data plane. */
+    g_network_state.scan_count = 0u;
     mk_network_apply_ethernet_profile();
     mk_network_refresh_socket_telemetry();
     mk_network_log_probe();

@@ -1,8 +1,8 @@
 # Plano de Fechamento Definitivo — VibeOS (Revisão 4)
 
-last: 2026-11-10 — 0.3 FEITO (knob BOOT_TELEMETRY quiet|verbose: 39 witness budgets via VIBE_TRACE_BUDGET; A/B medido 57 vs 8 linhas de testemunho; default quiet = valores historicos; o flip de modo agora reconstroi os .o do kernel — headers em -idirafter NAO entram nos .d, dependencia explicita adicionada). Antes (mesmo dia): 6.1 FEITO (shell sobrevive rc≠0; saida so via canal explicito de `exit`; probe `tools/probe_shell_error.py` 3/3 em build/shell-error-probe.md). Mesmo dia: 1.3/1.4 FEITOS (cliente DNS real em `dig`/`host`; servidor via `status.dns_server`/`/runtime/resolv.conf`; prova `dig: dns-ok query=example.com server=10.0.2.3 addr=104.20.23.154`). No caminho do DNS: contrato de argv do `netctl dhcp` (argc=2 vs exigencia >=3) e ABI do `sockaddr` lido pelo kernel via header do host-toolchain (KNOWN_BUGS #20). Antes: 0.15 harness feito, 0.14 FEITO.
+last: 2026-11-10 — 1.10 FEITA (wifi sem fachada: linha 84 scan=lista vazia + connect=ENOSYS nomeado + caps WIFI retiradas (serial `caps flags=ff3e`); linha 85 data-plane gated off; docs drivers.md/ACTION_PLAN.md re-rotulados; boot-smoke 6/6 + datapath PASS). Antes no mesmo dia: 0.3 knob BOOT_TELEMETRY; 6.1 shell sobrevive rc!=0; 1.3/1.4 DNS real (dig example.com → dns-ok 104.20.23.154); KNOWN_BUGS #20 (ABI sockaddr).
 doing: backlog definitivo consolidado (v4) — ondas 0-9, um estado terminal por item, prova obrigatoria por linha
-next: Onda 0 — 0.15 fecha com 22x PASS em host ocioso e 0.16 coleta a matriz de latencia; 0.3 FEITO (knob BOOT_TELEMETRY); Onda 1 segue com 1.1 (RX por IRQ) e 1.2 (TCP real) desbloqueadas; Onda 6 continua com 6.2/6.3/6.5/6.7-6.10
+next: Onda 0 — 0.15 fecha com 22x PASS em host ocioso e 0.16 coleta a matriz de latencia; Onda 1: 1.10 FEITA (wifi sem fachada); seguem desbloqueadas 1.1 (RX por IRQ), 1.2 (TCP real), 1.6/1.7 (HTTP); Onda 6 continua com 6.2/6.3/6.5/6.7-6.10
 state: active
 intent: execution-backlog
 
@@ -219,7 +219,7 @@ Já fechado (14–15/10, não reabrir): TX self-wipe, ARP/ICMP responders, loopb
 | 1.7 | Gate HTTP via links2 | aberto | links2 busca página real | report | dep 1.2/1.6 |
 | 1.8 | NIC abstraction `[!]` | esboçada em e1000.c:573–610 | `send_frame/attach_mac/link_status`; network.c fala com drivers registrados | virtio pelo caminho novo | **[!1]** |
 | 1.9 | e1000 + rtl8139 ligados de verdade | ✅ FEITO | init a partir do entry, VA==PA de DMA, IRQ de RX | `validate-network-datapath NIC=e1000` / `NIC=rtl8139` PASS (KNOWN_BUGS #12/#13) | — |
-| 1.10 | Wi-Fi: fim da fachada | PARCIAL (10/11): data-plane 7260 agora gated `WIFI_DATA_PLANE_EXPERIMENTAL` default off — NAO inicializa em producao (`network: wifi data plane DISABLED` na serial do boot); scan/connect hardcoded (linhas 84/1.10) seguem abertos | painel reporta "não disponível" e o data-plane não inicializa em produção | serial default+experimental (probes) + boot-smoke 6/6 + datapath PASS; falta scan/connect honestos | — |
+| 1.10 | Wi-Fi: fim da fachada | ✅ FEITO (10/11): data-plane gated off (linha 85) E scan/connect do servico deixaram de fingir (linha 84) — scan=lista vazia, connect=ENOSYS nomeado, caps WIFI_SCAN/CONNECT retiradas (`ff3e`); painel mostra "indisponivel/nao detectado"; docs drivers.md/ACTION_PLAN.md rotulam os modulos orfaos como tal | painel reporta "não disponível" e o data-plane não inicializa em produção | serial `caps flags=ff3e datapath=1`; boot-smoke 6/6; datapath PASS | — |
 | 1.11 | Wi-Fi 802.11 real (driver+supplicant+CCMP) | `wifi_wpa2.c` tem cripto real órfã | associação real com AP | hwsim/HW | **[!5]** |
 | 1.12 | Panel/UI de rede | scans hardcoded | reporta estado real | UI × estado | dep 1.10 |
 
