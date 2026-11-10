@@ -219,7 +219,7 @@ Já fechado (14–15/10, não reabrir): TX self-wipe, ARP/ICMP responders, loopb
 | 1.7 | Gate HTTP via links2 | aberto | links2 busca página real | report | dep 1.2/1.6 |
 | 1.8 | NIC abstraction `[!]` | esboçada em e1000.c:573–610 | `send_frame/attach_mac/link_status`; network.c fala com drivers registrados | virtio pelo caminho novo | **[!1]** |
 | 1.9 | e1000 + rtl8139 ligados de verdade | ✅ FEITO | init a partir do entry, VA==PA de DMA, IRQ de RX | `validate-network-datapath NIC=e1000` / `NIC=rtl8139` PASS (KNOWN_BUGS #12/#13) | — |
-| 1.10 | Wi-Fi: fim da fachada | `wifi_read_pci_bar0` BDF fixo 0:0:0, scan hardcoded, connect inventa IP | painel reporta "não disponível" e o data-plane não inicializa em produção | código + doc | — |
+| 1.10 | Wi-Fi: fim da fachada | PARCIAL (10/11): data-plane 7260 agora gated `WIFI_DATA_PLANE_EXPERIMENTAL` default off — NAO inicializa em producao (`network: wifi data plane DISABLED` na serial do boot); scan/connect hardcoded (linhas 84/1.10) seguem abertos | painel reporta "não disponível" e o data-plane não inicializa em produção | serial default+experimental (probes) + boot-smoke 6/6 + datapath PASS; falta scan/connect honestos | — |
 | 1.11 | Wi-Fi 802.11 real (driver+supplicant+CCMP) | `wifi_wpa2.c` tem cripto real órfã | associação real com AP | hwsim/HW | **[!5]** |
 | 1.12 | Panel/UI de rede | scans hardcoded | reporta estado real | UI × estado | dep 1.10 |
 

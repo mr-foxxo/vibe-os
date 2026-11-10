@@ -82,7 +82,7 @@ Camada 2 — stack:
 Camada 3 — WiFi (deixar de ser fachada):
 
 - [ ] Panel/UI: ate 802.11 existir, scan/conectar reportam "nao disponivel" — hoje scans hardcoded (network.c:3096-3110) e connect escreve IP inventado (network.c:2813-2856); docs/hw_validation.md e NETWORK_AUDIO_PANEL_PLAN.md afirmam "WPA2 funcional" sem suporte no codigo
-- [ ] `wifi_data_plane.c` nao fala com nenhum chip real (barra fixa em bus:dev 0:0:0) — marcar como experimental e nao inicializar no boot de producao
+- [x] `wifi_data_plane.c` nao fala com nenhum chip real — FORA DO BOOT DE PRODUCAO (10/11): gate compile-time `WIFI_DATA_PLANE_EXPERIMENTAL` default 0 — sem registro, sem tocar BAR; serial diz `wifi data plane DISABLED (experimental-only...)`. Opt-in honesto `make WIFI_DATA_PLANE_EXPERIMENTAL=1` (verificado: `probing` → `no intel 7260 wifi hardware found, skipping`). No caminho, corrigido o hazard de rebuild (flag -D nao invalidava o .o — mesma familia do BOOT_TELEMETRY; stamp por-valor adicionado) e removido o hack de auto-registracao recursiva que nunca chegava a registrar. Provas: boot default e experimental capturados em serial; `validate-phase6-boot-smoke` 6/6; `validate-network-datapath` PASS
 - [ ] Caminho real incremental: 802.11 auth/assoc + EAPOL com encapsulamento LLC/SNAP + RNG real nos nonces (wifi_wpa2.c hoje usa formulas deterministas) + instalar TK/GTK num caminho CCMP (nao existe criptografia de dados 802.11 no kernel)
 - [ ] Manter `wifi_wpa2.c` (criptografia PBKDF2/PTK/4-way genuine) plugada quando o plano de frames existir
 

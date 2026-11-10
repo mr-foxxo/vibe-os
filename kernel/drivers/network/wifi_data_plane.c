@@ -426,8 +426,6 @@ int wifi_device_poll_interrupts(struct wifi_device *dev) {
     return wifi_handle_interrupts(dev);
 }
 
-static int g_wifi_data_plane_registered = 0;
-
 int kernel_wifi_data_plane_ioctl(int cmd, void *arg, size_t arg_size) {
     struct wifi_device *dev = &g_wifi_device;
     (void)arg_size;
@@ -458,17 +456,33 @@ int kernel_wifi_data_plane_ioctl(int cmd, void *arg, size_t arg_size) {
     }
 }
 
+/* Experimental-only gate (action plan line 85 / closure plan 1.10):
+ * the 7260 register layout this driver pokes (BAR offsets, ring programming,
+ * firmware handshake) is written against a chip nobody here has ever
+ * attached — a wrong write on the maintainer's T400 is exactly the class of
+ * bug the hardware campaign cannot afford. The data plane therefore stays
+ * OUT of the production boot by default; developers opt in explicitly with
+ * `make WIFI_DATA_PLANE_EXPERIMENTAL=1`. When off, the driver neither
+ * registers nor touches a device, and says so once on the serial. */
+#ifndef WIFI_DATA_PLANE_EXPERIMENTAL
+#define WIFI_DATA_PLANE_EXPERIMENTAL 0
+#endif
+
 void kernel_wifi_data_plane_init(void) {
-    if (!g_wifi_data_plane_registered) {
-        register_driver("wifi-data-plane", "network", kernel_wifi_data_plane_init);
-        g_wifi_data_plane_registered = 1;
-        return;
+#if !WIFI_DATA_PLANE_EXPERIMENTAL
+    static int disabled_logged;
+
+    if (!disabled_logged) {
+        disabled_logged = 1;
+        kernel_debug_puts("network: wifi data plane DISABLED (experimental-only; "
+                          "build with WIFI_DATA_PLANE_EXPERIMENTAL=1 to attach)\n");
     }
+    return;
+#else
     kernel_debug_puts("network: wifi data plane probing\n");
     pci_device_t *pci_dev = pci_find_device(INTEL_WIFI_7260_VENDOR, INTEL_WIFI_7260_DEVICE);
     if (!pci_dev) {
         kernel_debug_puts("network: no intel 7260 wifi hardware found, skipping\n");
-        g_wifi_data_plane_registered = 0;
         return;
     }
     if (wifi_device_init(&g_wifi_device, INTEL_WIFI_7260_VENDOR, INTEL_WIFI_7260_DEVICE) == 0) {
@@ -476,4 +490,5 @@ void kernel_wifi_data_plane_init(void) {
     } else {
         kernel_debug_puts("network: wifi data plane init failed\n");
     }
+#endif
 }

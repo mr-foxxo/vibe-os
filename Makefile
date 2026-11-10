@@ -863,6 +863,25 @@ CFLAGS += -I$(APP_CATALOG_GENERATED_DIR)
 CFLAGS += -MMD -MP
 LUA_CFLAGS := -Iuserland/lua/include -Iuserland/lua/vendor/lua-5.4.6/src
 # i915 modeset is now enabled by default (was experimental)
+# Experimental hardware paths that are NOT safe for the default boot image
+# (see kernel/drivers/network/wifi_data_plane.c header comment). The wifi
+# data plane is off by default precisely because the production artifact must
+# never poke an 8086:08B1 BAR it has never seen; developers enable it
+# explicitly with make WIFI_DATA_PLANE_EXPERIMENTAL=1.
+WIFI_DATA_PLANE_EXPERIMENTAL ?= 0
+CFLAGS += -DWIFI_DATA_PLANE_EXPERIMENTAL=$(WIFI_DATA_PLANE_EXPERIMENTAL)
+# A -D alone does not invalidate existing .o files (make sees no dependency,
+# and -idirafter headers never reach the .d files - same hazard the
+# BOOT_TELEMETRY header solved). The stamp carries the mode in its NAME:
+# flipping the flag changes which stamp exists, so the dependent object is
+# older than its prerequisite and rebuilds.
+WIFI_DP_STAMP := $(BUILD_DIR)/.wifidp_$(WIFI_DATA_PLANE_EXPERIMENTAL)
+$(WIFI_DP_STAMP):
+	@mkdir -p $(BUILD_DIR)
+	@rm -f $(BUILD_DIR)/.wifidp_*
+	@touch $@
+$(BUILD_DIR)/kernel/drivers/network/wifi_data_plane.o: $(WIFI_DP_STAMP)
+
 INTEL_I915_EXPERIMENTAL_COMMIT ?= 1
 CFLAGS += -DINTEL_I915_EXPERIMENTAL_COMMIT=$(INTEL_I915_EXPERIMENTAL_COMMIT)
 VIDEO_DRM_TEST_FORCE_HANDOFF_FAIL ?= 0
