@@ -12,6 +12,10 @@
 #define VIBE_FILE_FLAG_WRITE 0x02
 #define VIBE_FILE_FLAG_APPEND 0x04
 #define VIBE_FILE_FLAG_CONSOLE 0x08
+/* fd-backed stream (fdopen): I/O goes straight through the host fd table
+ * (read_fd/write_fd/close_fd/seek_fd) instead of the in-memory buffer
+ * that fopen() loads. */
+#define VIBE_FILE_FLAG_FD 0x10
 
 typedef struct FILE {
     int fd;
@@ -185,6 +189,9 @@ static int vibe_file_flush(FILE *f) {
     }
     if (vibe_is_console_file(f)) {
         return 0;
+    }
+    if (f->flags & VIBE_FILE_FLAG_FD) {
+        return 0; /* fd-backed streams are unbuffered; the host holds the bytes */
     }
     if ((f->flags & VIBE_FILE_FLAG_WRITE) == 0 || !f->dirty) {
         return 0;
@@ -540,9 +547,34 @@ FILE *fopen(const char *filename, const char *mode) {
 }
 
 FILE *fdopen(int fd, const char *mode) {
-    (void)fd;
-    (void)mode;
-    return 0;
+    int flags;
+    FILE *f;
+
+    if (!mode || vibe_parse_mode(mode, &flags) != 0) {
+        return 0;
+    }
+    /* fds 0/1/2 belong to the host console (its own key/putc loop); return
+     * the canonical streams rather than a second handle on the same fd. */
+    if (fd == 0) {
+        return stdin;
+    }
+    if (fd == 1) {
+        return stdout;
+    }
+    if (fd == 2) {
+        return stderr;
+    }
+    if (fd < 3) {
+        return 0;
+    }
+    f = vibe_alloc_file();
+    if (!f) {
+        return 0;
+    }
+    f->fd = fd;
+    f->flags = flags | VIBE_FILE_FLAG_FD;
+    f->pos = 0;
+    return f;
 }
 
 int fclose(FILE *stream) {
@@ -551,6 +583,14 @@ int fclose(FILE *stream) {
     }
     if (vibe_is_console_file(stream)) {
         return 0;
+    }
+    if (stream->flags & VIBE_FILE_FLAG_FD) {
+        int rc = vibe_app_close(stream->fd);
+
+        free(stream->buf);
+        stream->buf = 0;
+        stream->in_use = 0;
+        return rc == 0 ? 0 : -1;
     }
     if (vibe_file_flush(stream) != 0) {
         free(stream->buf);
@@ -579,6 +619,31 @@ size_t fread(void *ptr, size_t size, size_t nmemb, FILE *stream) {
         return 0;
     }
     total = size * nmemb;
+    if (stream->flags & VIBE_FILE_FLAG_FD) {
+        int rc;
+        size_t done = 0u;
+
+        if ((stream->flags & VIBE_FILE_FLAG_READ) == 0) {
+            stream->error = 1;
+            return 0;
+        }
+        while (done < total) {
+            rc = vibe_app_read(stream->fd, (unsigned char *)ptr + done,
+                               (int)(total - done));
+            if (rc > 0) {
+                done += (size_t)rc;
+                stream->pos += rc;
+                continue;
+            }
+            if (rc < 0) {
+                stream->error = 1;
+            } else {
+                stream->eof = 1;
+            }
+            break;
+        }
+        return done / size;
+    }
     if (stream->pos >= stream->size) {
         stream->eof = 1;
         return 0;
@@ -614,6 +679,21 @@ size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream) {
         return 0;
     }
     total = size * nmemb;
+    if (stream->flags & VIBE_FILE_FLAG_FD) {
+        int rc;
+
+        if ((stream->flags & VIBE_FILE_FLAG_WRITE) == 0) {
+            stream->error = 1;
+            return 0;
+        }
+        rc = vibe_app_write(stream->fd, ptr, (int)total);
+        if (rc < 0) {
+            stream->error = 1;
+            return 0;
+        }
+        stream->pos += rc;
+        return (size_t)rc / size;
+    }
     if (stream->flags & VIBE_FILE_FLAG_APPEND) {
         stream->pos = stream->size;
     }
@@ -646,6 +726,11 @@ int fputc(int c, FILE *stream) {
     if (stream == stdout || stream == stderr) {
         vibe_app_console_putc((char)c);
         return c;
+    }
+    if (stream && (stream->flags & VIBE_FILE_FLAG_FD)) {
+        unsigned char ch = (unsigned char)c;
+
+        return fwrite(&ch, 1u, 1u, stream) == 1u ? c : EOF;
     }
     return EOF;
 }
@@ -684,6 +769,14 @@ int fputs(const char *s, FILE *stream) {
         }
         return 0;
     }
+    if (stream->flags & VIBE_FILE_FLAG_FD) {
+        int len = 0;
+
+        while (s[len] != '\0') {
+            ++len;
+        }
+        return fwrite(s, 1u, (size_t)len, stream) == (size_t)len ? 0 : EOF;
+    }
     return EOF;
 }
 
@@ -718,6 +811,17 @@ int fseek(FILE *stream, long offset, int whence) {
 
     if (!stream || vibe_is_console_file(stream)) {
         return -1;
+    }
+    if (stream->flags & VIBE_FILE_FLAG_FD) {
+        int rc = vibe_app_lseek(stream->fd, (int)offset, whence);
+
+        if (rc < 0) {
+            stream->error = 1;
+            return -1;
+        }
+        stream->pos = rc;
+        stream->eof = 0;
+        return 0;
     }
     switch (whence) {
         case 0:

@@ -23,7 +23,7 @@ int atexit(void (*func)(void));
 unsigned int sleep(unsigned int seconds);
 int usleep(unsigned int microseconds);
 
-/* Random number generator stubs */
+/* Random number generator: LCG implemented in compat/src/libc/stdlib.c */
 int rand(void);
 void srand(unsigned int seed);
 

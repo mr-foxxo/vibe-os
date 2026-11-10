@@ -49,6 +49,10 @@ struct heap_block {
 #define VIBE_FILE_FLAG_WRITE 0x02
 #define VIBE_FILE_FLAG_APPEND 0x04
 #define VIBE_FILE_FLAG_CONSOLE 0x08
+/* fd-backed stream (fdopen): I/O streams straight through the host fd
+ * table (read_fd/write_fd/close_fd/seek_fd) instead of the in-memory
+ * file buffer used by fopen(). */
+#define VIBE_FILE_FLAG_FD 0x10
 
 typedef struct FILE {
     int fd;
@@ -1340,6 +1344,9 @@ static int vibe_file_flush(FILE *f) {
     if (vibe_is_console_file(f)) {
         return 0;
     }
+    if (f->flags & VIBE_FILE_FLAG_FD) {
+        return 0; /* fd-backed streams are unbuffered; the host owns the bytes */
+    }
     if ((f->flags & VIBE_FILE_FLAG_WRITE) == 0) {
         return 0;
     }
@@ -1721,10 +1728,35 @@ FILE *fopen(const char *filename, const char *mode) {
 }
 
 FILE *fdopen(int fd, const char *mode) {
-    /* Not implemented in this embedded context */
-    (void)fd;
-    (void)mode;
-    return 0;
+    int flags;
+    FILE *f;
+
+    if (!mode || vibe_parse_mode(mode, &flags) != 0) {
+        return 0;
+    }
+    /* The host console owns fds 0/1/2 with its own key/putc loop;
+     * hand back the canonical streams instead of a second handle. */
+    if (fd == 0) {
+        return stdin;
+    }
+    if (fd == 1) {
+        return stdout;
+    }
+    if (fd == 2) {
+        return stderr;
+    }
+    if (fd < 3) {
+        return 0;
+    }
+    f = vibe_alloc_file();
+    if (!f) {
+        return 0;
+    }
+    f->fd = fd;
+    f->flags = flags | VIBE_FILE_FLAG_FD;
+    f->pos = 0;
+    vibe_copy_limited(f->path, (int)sizeof(f->path), "<fd>");
+    return f;
 }
 
 int fclose(FILE *stream) {
@@ -1733,6 +1765,14 @@ int fclose(FILE *stream) {
     }
     if (vibe_is_console_file(stream)) {
         return 0;
+    }
+    if (stream->flags & VIBE_FILE_FLAG_FD) {
+        int rc = vibe_app_close(stream->fd);
+
+        free(stream->buf);
+        stream->buf = 0;
+        stream->in_use = 0;
+        return rc == 0 ? 0 : -1;
     }
     if (vibe_file_flush(stream) != 0) {
         free(stream->buf);
@@ -1769,6 +1809,29 @@ size_t fread(void *ptr, size_t size, size_t nmemb, FILE *stream) {
         return 0;
     }
     total = size * nmemb;
+    if (stream->flags & VIBE_FILE_FLAG_FD) {
+        int rc;
+
+        if ((stream->flags & VIBE_FILE_FLAG_READ) == 0) {
+            stream->error = 1;
+            return 0;
+        }
+        while (copied < total) {
+            rc = vibe_app_read(stream->fd, out + copied, (int)(total - copied));
+            if (rc > 0) {
+                copied += (size_t)rc;
+                stream->pos += rc;
+                continue;
+            }
+            if (rc < 0) {
+                stream->error = 1;
+            } else {
+                stream->eof = 1;
+            }
+            break;
+        }
+        return copied / size;
+    }
     if (stream->ungot_valid && total > 0u) {
         out[copied++] = (unsigned char)stream->ungot_char;
         stream->ungot_valid = 0;
@@ -1814,6 +1877,21 @@ size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream) {
         return 0;
     }
     total = size * nmemb;
+    if (stream->flags & VIBE_FILE_FLAG_FD) {
+        int rc;
+
+        if ((stream->flags & VIBE_FILE_FLAG_WRITE) == 0) {
+            stream->error = 1;
+            return 0;
+        }
+        rc = vibe_app_write(stream->fd, ptr, (int)total);
+        if (rc < 0) {
+            stream->error = 1;
+            return 0;
+        }
+        stream->pos += rc;
+        return (size_t)rc / size;
+    }
     if (stream->flags & VIBE_FILE_FLAG_APPEND) {
         stream->pos = stream->size;
     }
@@ -1937,6 +2015,18 @@ int fseek(FILE *stream, long offset, int whence) {
 
     if (!stream || vibe_is_console_file(stream)) {
         return -1;
+    }
+    if (stream->flags & VIBE_FILE_FLAG_FD) {
+        int rc = vibe_app_lseek(stream->fd, (int)offset, whence);
+
+        if (rc < 0) {
+            stream->error = 1;
+            return -1;
+        }
+        stream->pos = rc;
+        stream->eof = 0;
+        vibe_file_clear_pushback(stream);
+        return 0;
     }
     switch (whence) {
         case 0:

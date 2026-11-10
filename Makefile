@@ -2458,6 +2458,21 @@ imb: $(IMAGE)
 	@cp $(IMAGE) build/vibe-os-usb.img
 	@echo "Imagem para hardware real pronta: build/vibe-os-usb.img"
 
+# Host-side unit tests for the freestanding app runtime. These compile
+# lang/sdk/app_runtime.c against a fake host vtable and run on the build
+# host - no QEMU, no kernel, seconds to run.
+HOST_TEST_CFLAGS := -m32 -ffreestanding -fno-builtin -I. -Ilang/include
+
+test-fdopen:
+	@mkdir -p $(BUILD_DIR)
+	$(CC) $(HOST_TEST_CFLAGS) tests/host_test_fdopen.c lang/sdk/app_runtime.c -o $(BUILD_DIR)/host_test_fdopen
+	$(BUILD_DIR)/host_test_fdopen
+
+test-host: test-fdopen
+	@echo "host unit tests passed"
+
+.PHONY: test-host
+
 # Links2 Web Browser port
 LINKS2_APP_BIN := build/links2/links2.app
 LINKS2_STAMP := build/links2.stamp
