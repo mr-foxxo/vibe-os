@@ -1014,8 +1014,10 @@ static int cmd_cd(int argc, char **argv) {
     }
     int idx = fs_resolve(argv[1]);
     if (idx < 0 || !g_fs_nodes[idx].is_dir) {
+        /* Real failure gets a real status (item 6.1 made the shell survive
+         * non-zero rc; the honest rc is what makes that path observable). */
         console_write("error: invalid directory\n");
-        return 0;
+        return 1;
     }
     g_fs_cwd = idx;
     return 0;
@@ -1101,9 +1103,24 @@ static int cmd_uname(int argc, char **argv) {
     return 0;
 }
 
+/* Session-exit request, set by `exit` and consumed by the shell loop.
+ * The shell NO LONGER treats a command's non-zero rc as "quit the session"
+ * (item 6.1): a failing command must not kill the rescue shell. Exit is an
+ * explicit request, so the channel must be separate from the rc. */
+static int g_busybox_exit_requested;
+
+int busybox_exit_requested(void) {
+    return g_busybox_exit_requested;
+}
+
+void busybox_clear_exit_request(void) {
+    g_busybox_exit_requested = 0;
+}
+
 static int cmd_exit(int argc, char **argv) {
     (void)argc; (void)argv;
-    return 1; /* signal shell to quit */
+    g_busybox_exit_requested = 1;
+    return 0;
 }
 
 static int cmd_shutdown(int argc, char **argv) {

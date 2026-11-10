@@ -409,10 +409,24 @@ void shell_start_ready(void) {
 
         rc = busybox_main(argc, argv);
         shell_debug_cmd_status(argv[0], rc);
-        if (rc != 0) {
-            fs_flush();
+        if (busybox_exit_requested()) {
             break;
         }
+        /* Item 6.1: a failing command must NOT kill the rescue session —
+         * the shell is the field tool on real hardware. Report the rc to
+         * the user and keep prompting; `exit` (explicit request channel)
+         * is the only command that leaves the loop. */
+        if (rc != 0) {
+            char notice[96];
+
+            notice[0] = '\0';
+            str_append(notice, argv[0], (int)sizeof(notice));
+            str_append(notice, ": exit status ", (int)sizeof(notice));
+            shell_append_int(notice, (int)sizeof(notice), rc);
+            str_append(notice, "\n", (int)sizeof(notice));
+            console_write(notice);
+        }
+        fs_tick();
     }
 
     fs_flush();

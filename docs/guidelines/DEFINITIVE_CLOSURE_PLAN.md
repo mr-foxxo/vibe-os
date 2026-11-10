@@ -1,8 +1,8 @@
 # Plano de Fechamento Definitivo — VibeOS (Revisão 4)
 
-last: 2026-11-10 — 1.3/1.4 FEITOS (cliente DNS real em `dig`/`host` sobre o socket API do app; servidor lido do lease via `status.dns_server` ou `/runtime/resolv.conf` espelhado pelo netmgrd; prova `dig: dns-ok query=example.com server=10.0.2.3 addr=104.20.23.154` em build/dns-probe-clean.md). No caminho, duas causas raiz corrigidas: contrato de argv do `netctl dhcp` (argc=2 vs exigencia >=3) e ABI do `sockaddr` lido pelo kernel via header do host-toolchain (KNOWN_BUGS #20). Antes: 0.15 harness feito, 0.14 FEITO.
+last: 2026-11-10 — 6.1 FEITO (shell sobrevive rc≠0; saida so via canal explicito de `exit`; probe `tools/probe_shell_error.py` 3/3 em build/shell-error-probe.md). Mesmo dia: 1.3/1.4 FEITOS (cliente DNS real em `dig`/`host`; servidor via `status.dns_server`/`/runtime/resolv.conf`; prova `dig: dns-ok query=example.com server=10.0.2.3 addr=104.20.23.154`). No caminho do DNS: contrato de argv do `netctl dhcp` (argc=2 vs exigencia >=3) e ABI do `sockaddr` lido pelo kernel via header do host-toolchain (KNOWN_BUGS #20). Antes: 0.15 harness feito, 0.14 FEITO.
 doing: backlog definitivo consolidado (v4) — ondas 0-9, um estado terminal por item, prova obrigatoria por linha
-next: Onda 0 — 0.15 fecha com 22x PASS em host ocioso e 0.16 coleta a matriz de latencia; em paralelo 0.3 (knob de telemetria) destravado; Onda 1 segue com 1.1 (RX por IRQ) e 1.2 (TCP real) desbloqueadas
+next: Onda 0 — 0.15 fecha com 22x PASS em host ocioso e 0.16 coleta a matriz de latencia; em paralelo 0.3 (knob de telemetria) destravado; Onda 1 segue com 1.1 (RX por IRQ) e 1.2 (TCP real) desbloqueadas; Onda 6 continua com 6.2/6.3/6.5/6.7-6.10
 state: active
 intent: execution-backlog
 
@@ -91,8 +91,8 @@ provada a sua alcançabilidade (0 hits de uma sonda não comprovadamente viva n�
 - `BOOTINFO`, header de AppFS e structs de syscall só mudam com versão nova publicada;
 - uma unidade de trabalho coesa por commit; implementação + prova + doc no mesmo commit;
 - `main` é a única branch de longa duração; merge/promoção é da mantenedora;
-- **a shell rescue não pode morrer por comando com erro** (hoje ela sai em rc≠0,
-  `userland/modules/shell.c:402` — item 6.1).
+- **a shell rescue não pode morrer por comando com erro** — invariante HOJE
+  obedecido (item 6.1 FEITO 10/11: rc≠0 reporta e continua; saída só por `exit`).
 
 ### 0.4 Fila de decisão [!] da mantenedora (única lista)
 
@@ -301,7 +301,7 @@ Fontes: P8, `CRAFT_OPTIMIZATION_PLAN.md` (67 abertos),
 
 | # | Item | Estado | DoD | Prova | Bloqueio |
 | --- | --- | --- | --- | --- | --- |
-| 6.1 | **Shell rescue morre em rc≠0** | `shell.c:402` sai do loop em qualquer rc≠0; um typo mata a sessão | a shell sobrevive a erro de comando (mostra rc, continua) | sessão interativa: comando com erro + próxima linha roda | — |
+| 6.1 | **Shell rescue morre em rc≠0** | ✅ FEITO (10/11): o loop da shell não quebra mais em rc≠0 — reporta `"<cmd>: exit status N"` e continua; `exit` agora usa um canal explícito (`busybox_exit_requested`) em vez de contrabandear rc=1 (comportamento idêntico para o usuário, sem magic number) | a shell sobrevive a erro de comando (mostra rc, continua) | `tools/probe_shell_error.py` → `cd` inválido `rc=1` + `shell: ready` de volta + `true` `rc=0` + `exit` → `app: main returned` (build/shell-error-probe.md); phase6 6/6 + boot-smoke 6/6 | — |
 | 6.2 | Craft = clone funcional (mundo, chunks async, SMP workers, renderer voxel, gameplay, perf) | `upstream/src/world.c` com 77 linhas; sem mundo visível | checklist 7.1–7.6 do CRAFT | sessão real: mundo, andar/destruir/colocar, sem corrupção | dep 2 |
 | 6.3 | MicroUI: consumir ou remover | `desktop_new.c` fora do build | decidido e aplicado | build | — |
 | 6.4 | Ramo órfão `shell_bsd.c` + `applications/ported/ksh` | FEITO: removidos — pdksh real já ligado ao terminal via `libksh.a` (`ksh_main` em `terminal.elf`); os 2 arquivos eram wrappers mortos | build limpo sem os wrappers | `make` verde + `validate-phase6-boot-smoke` 6/6 (abi-compat-surface segue família-flake pré-Onda 0) | — |
