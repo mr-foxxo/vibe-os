@@ -1,8 +1,8 @@
 # Plano de Fechamento Definitivo — VibeOS (Revisão 4)
 
-last: 2026-11-10 — 1.10 FEITA (wifi sem fachada: linha 84 scan=lista vazia + connect=ENOSYS nomeado + caps WIFI retiradas (serial `caps flags=ff3e`); linha 85 data-plane gated off; docs drivers.md/ACTION_PLAN.md re-rotulados; boot-smoke 6/6 + datapath PASS). Antes no mesmo dia: 0.3 knob BOOT_TELEMETRY; 6.1 shell sobrevive rc!=0; 1.3/1.4 DNS real (dig example.com → dns-ok 104.20.23.154); KNOWN_BUGS #20 (ABI sockaddr).
+last: 2026-11-10 — 1.1 FEITA (RX por IRQ no virtio-net; PIIX roteado; ELCR level; chaining PIC; EOI por entrega) e a causa raiz oculta: `ioapic_isa_entry` +2 quebrava TODO o roteamento ISA->RTE menos o timer — toda linha 8-15 morta (KNOWN_BUGS #21), inclusive o AHCI IRQ10 do T400. Antes no dia: 1.10 FEITA (wifi sem fachada), 6.1 shell sobrevive rc!=0, 0.3 BOOT_TELEMETRY, 1.3/1.4 DNS real.
 doing: backlog definitivo consolidado (v4) — ondas 0-9, um estado terminal por item, prova obrigatoria por linha
-next: Onda 0 — 0.15 fecha com 22x PASS em host ocioso e 0.16 coleta a matriz de latencia; Onda 1: 1.10 FEITA (wifi sem fachada); seguem desbloqueadas 1.1 (RX por IRQ), 1.2 (TCP real), 1.6/1.7 (HTTP); Onda 6 continua com 6.2/6.3/6.5/6.7-6.10
+next: Onda 0 — 0.15 fecha com 22x PASS em host ocioso e 0.16 coleta a matriz de latencia; Onda 1: restam 1.2 (TCP real), 1.6/1.7 (HTTP), 1.5 (tabela real ifconfig/route/netstat); linhas 86-87 Wi-Fi dependem do caminho de frames; `[!]` seguem na fila da mantenedora
 state: active
 intent: execution-backlog
 
@@ -210,7 +210,7 @@ Já fechado (14–15/10, não reabrir): TX self-wipe, ARP/ICMP responders, loopb
 
 | # | Item | Estado | DoD | Prova | Bloqueio |
 | --- | --- | --- | --- | --- | --- |
-| 1.1 | RX orientado a IRQ | polling 100 Hz, ring 8 slots | RX por interrupção do device com fallback de polling | `validate-network-datapath` + latência | — |
+| 1.1 | RX orientado a IRQ | ✅ FEITO (10/11) virtio-net: INTx armado com handler IRQ-context + EOI, PIIX PIRQRC roteado pelo kernel, ELCR level, chaining 4/linha no PIC; polling 100 Hz mantido como fallback; IOAPIC ISA-mapping corrigido (KNOWN_BUGS #21 — afetava toda linha 8-15, inclusive AHCI no hw real) | RX por interrupção do device com fallback de polling | serial `rx-irq #1` + DHCP bound completo; boot-smoke 6/6; datapath PASS; validate-smp baseline | — |
 | 1.2 | TCP cliente real (backlog>1, sockets>8, timers RTT/RTO) | SYN/ACK existe, não validado end-to-end | conexão TCP real cliente↔servidor | novo `validate-network-tcp` | — |
 | 1.3 | UDP cliente real (além de DHCP) | ✅ FEITO (10/11): `dig`/`host` enviam e recebem UDP/53 pelo socket API do app (`SOCK_DGRAM`+`IPPROTO_UDP`) — sendto/ARP/virtio-demux exercitados end-to-end | send/recv UDP a arbitrário | witness `dig: dns-ok ... addr=104.20.23.154` (build/dns-probe-clean.md) | — |
 | 1.4 | DNS do DHCP + resolv.conf-equivalente + servidores config. | ✅ FEITO (10/11): `dns_client.h` (encoder/wire/parse A-record, NXDOMAIN e timeout honestos); servidor vem do lease (status.dns_server) ou de `/runtime/resolv.conf` espelhado pelo netmgrd; sem fallback hardcoded — sem servidor = diagnostico explicito | resolver lê servidor do lease e de config | `dig example.com` → `dns-ok addr=104.20.23.154` via lease 10.0.2.3 (build/dns-probe-clean.md); test-host 23 assertions | — |

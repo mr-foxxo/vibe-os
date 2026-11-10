@@ -4,7 +4,16 @@
 #include <kernel/interrupt.h>
 #include <kernel/hal/io.h>
 
-static kernel_irq_handler_t g_kernel_irq_handlers[16];
+#define KERNEL_IRQ_MAX_HANDLERS 4
+/* PCI INTx lines are SHARED by design (PIIX routes several PIRQs to one ISA
+ * IRQ). The old single-slot table meant the last driver to register silently
+ * killed the others - observed with virtio-net (line 11) clobbering UHCI.
+ * Up to KERNEL_IRQ_MAX_HANDLERS handlers per line; each handler is expected
+ * to check its own device and EOI (kernel_irq_complete) as today - a
+ * duplicate EOI for a line already acknowledged is a no-op on both the 8259
+ * (second command when nothing is in-service) and the IOAPIC (EOI register
+ * write with cleared ISR bit). */
+static kernel_irq_handler_t g_kernel_irq_handlers[16][KERNEL_IRQ_MAX_HANDLERS];
 
 static void pic_remap(void) {
     const uint8_t mask_master = 0xFF;
@@ -89,11 +98,21 @@ void kernel_irq_mask(uint8_t irq_line) {
 }
 
 int kernel_irq_register_handler(uint8_t irq_line, kernel_irq_handler_t handler) {
+    uint8_t i;
+
     if (irq_line >= 16u || handler == 0) {
         return -1;
     }
-    g_kernel_irq_handlers[irq_line] = handler;
-    return 0;
+    for (i = 0u; i < KERNEL_IRQ_MAX_HANDLERS; ++i) {
+        if (g_kernel_irq_handlers[irq_line][i] == handler) {
+            return 0; /* already installed: idempotent */
+        }
+        if (g_kernel_irq_handlers[irq_line][i] == 0) {
+            g_kernel_irq_handlers[irq_line][i] = handler;
+            return 0;
+        }
+    }
+    return -1; /* line full: caller must keep polling fallback */
 }
 
 void kernel_irq_dispatch(uint8_t irq_line) {
@@ -103,9 +122,15 @@ void kernel_irq_dispatch(uint8_t irq_line) {
         return;
     }
 
-    handler = g_kernel_irq_handlers[irq_line];
+    handler = g_kernel_irq_handlers[irq_line][0];
     if (handler != 0) {
-        handler();
+        uint8_t i;
+
+        for (i = 0u; i < KERNEL_IRQ_MAX_HANDLERS; ++i) {
+            if (g_kernel_irq_handlers[irq_line][i] != 0) {
+                g_kernel_irq_handlers[irq_line][i]();
+            }
+        }
         return;
     }
 

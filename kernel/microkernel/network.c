@@ -5,6 +5,7 @@
 #include <kernel/event.h>
 #include <kernel/hal/io.h>
 #include <kernel/lock.h>
+#include <kernel/interrupt.h>
 #include <kernel/microkernel/message.h>
 #include <kernel/microkernel/network.h>
 #include <kernel/microkernel/network_queue.h>
@@ -2335,6 +2336,128 @@ static void mk_network_virtio_poll_queues(struct mk_network_pci_probe_state *pro
     mk_network_virtio_drain_rx_queue(probe);
 }
 
+/* Item line 70 (P3): RX oriented by device interrupt. The legacy virtio-pci
+ * device raises INTx when it fills an RX buffer (used-ring update); reading
+ * the ISR byte acknowledges it. The handler drains the SAME path the tick
+ * poll uses, under the same g_virtio_ring_lock discipline (the timer hook
+ * already calls it from IRQ context, so this adds no new locking surface).
+ * The 100 Hz tick poll stays armed as fallback: if the line never arrives
+ * (no PIRQ routing, shared spurious) behavior is exactly pre-KB. */
+static volatile uint32_t g_virtio_rx_irqs;
+static uint8_t g_virtio_irq_line;
+static int g_virtio_irq_state; /* 0 = not tried, 1 = armed, -1 = none */
+
+static void mk_network_virtio_irq_handler(void) {
+    struct mk_network_pci_probe_state *probe = &g_network_state.pci_probe;
+    uint8_t isr;
+    uint8_t line = g_virtio_irq_line;
+
+    if (probe->io_base == 0u || !probe->virtio_queue_ready) {
+        return;
+    }
+    isr = inb((uint16_t)(probe->io_base + VIRTIO_CONFIG_ISR_STATUS));
+    if ((isr & 0x01u) != 0u) {
+        g_virtio_rx_irqs++;
+        if (g_virtio_rx_irqs == 1u) {
+            kernel_debug_puts("network: virtio-net rx-irq #1 (RX delivered by interrupt)\n");
+        }
+        mk_network_virtio_poll_queues(probe);
+    }
+    /* EOI THIS LINE on every dispatch - measured the hard way: the generic
+     * IRQ_STUB does not acknowledge, and per-handler EOI is the convention
+     * (pit/keyboard/audio do it). Without it the IOAPIC ISR bit for vector
+     * 0x2B stayed set after the first RX, the PIT vector 0x20 (lower
+     * priority) was never delivered again, and DHCP froze between OFFER and
+     * REQUEST. Reading ISR above already deasserted our INTx, so the EOI is
+     * always safe here; on a shared line it stands in for a chained handler
+     * that has no EOI of its own (the old UHCI glue never acks). */
+    (void)line;
+    kernel_irq_complete(g_virtio_irq_line);
+}
+
+static void mk_network_virtio_irq_arm(struct mk_network_pci_probe_state *probe) {
+    uint8_t line;
+    uint8_t pin;
+
+    if (g_virtio_irq_state != 0 || probe == 0 || probe->io_base == 0u) {
+        return;
+    }
+    {
+        uint32_t linereg = kernel_pci_config_read_u32(probe->bus, probe->slot, probe->function, 0x3Cu);
+        unsigned int link;
+        uint32_t pirqd;
+
+        line = (uint8_t)(linereg & 0xFFu);
+        pin = (uint8_t)((linereg >> 8) & 0xFFu);
+
+        /* PIIX3/PIIX4 route PIRQ0..3 -> ISA IRQ through config bytes 0x60..63
+         * (bit7 = routed). Measured on QEMU -machine pc: SeaBIOS leaves ALL
+         * links unrouted (pirqrc=0a,00,00,00) - so the device's INTx is
+         * asserted on the pin but vanishes at the bridge and the PIC never
+         * sees it. Program the one link our slot/pin needs using the same
+         * formula the bridge model uses (link = (slot + pin - 1) % 4). This
+         * is host-bridge state no other owner claims; leaving it untouched
+         * would make "irq armed" a silent lie, which the contract forbids. */
+        if (pin >= 1u && pin <= 4u) {
+            /* PIIX3/PIIX4 link formula (matches QEMU's piix.c): the pin's
+             * PIRQ link is (slot + pin - 1) % 4. SeaBIOS leaves every link
+             * unrouted; without writing bit7 (routed) + the ISA IRQ here,
+             * the asserted INTx dies at the bridge and no handler on the
+             * line can ever run. */
+            unsigned int linksel = (probe->slot + (pin - 1u)) & 3u;
+
+            pirqd = kernel_pci_config_read_u32(0u, 1u, 0u, 0x60u);
+            {
+                unsigned int byte = (pirqd >> (linksel * 8u)) & 0xFFu;
+
+                if ((byte & 0x80u) == 0u || (byte & 0x0Fu) != (line & 0x0Fu)) {
+                    pirqd &= ~(0xFFu << (linksel * 8u));
+                    pirqd |= (uint32_t)(0x80u | (line & 0x0Fu)) << (linksel * 8u);
+                    kernel_pci_config_write_u32(0u, 1u, 0u, 0x60u, pirqd);
+                    kernel_debug_printf("network: piix pirq%u routed -> irq%u\n", linksel, (unsigned int)line);
+                }
+            }
+        }
+        (void)link;
+    }
+    if (line == 0u || line == 0xFFu || line >= 16u) {
+        g_virtio_irq_state = -1;
+        kernel_debug_printf("network: virtio-net no usable irq line (%u); polling fallback\n",
+                            (unsigned int)line);
+        return;
+    }
+    if (kernel_irq_register_handler(line, mk_network_virtio_irq_handler) != 0) {
+        g_virtio_irq_state = -1;
+        kernel_debug_puts("network: virtio-net irq handler rejected; polling fallback\n");
+        return;
+    }
+    /* PIIX devices are LEVEL-triggered on the ISA line; the 8259 boots in
+     * edge mode (ELCR=0). In edge mode QEMU's 8259 ignores a new level if
+     * IRR was already pending from before the unmask - the classic "IRQ
+     * armed but never fires" trap for every line that is masked at boot
+     * (anything not 0/1/2/12). Setting ELCR to level first is what every
+     * OS does for these lines; do it here before the unmask. */
+    {
+        /* ELCR1 (0x4D0) = IRQ0-7, ELCR2 (0x4D1) = IRQ8-15, bit n-(base). */
+        uint16_t elcr_port = (line >= 8u) ? 0x4D1u : 0x4D0u;
+        uint8_t bit = (uint8_t)(line - ((line >= 8u) ? 8u : 0u));
+        uint8_t elcr = inb(elcr_port);
+
+        if ((elcr & (uint8_t)(1u << bit)) == 0u) {
+            elcr = (uint8_t)(elcr | (uint8_t)(1u << bit));
+            outb(elcr_port, elcr);
+            kernel_debug_printf("network: elcr%u=%02x (irq%u set to level)\n",
+                                (unsigned int)((line >= 8u) ? 2u : 1u),
+                                (unsigned int)elcr, (unsigned int)line);
+        }
+    }
+    g_virtio_irq_line = line;
+    kernel_irq_unmask(line);
+    g_virtio_irq_state = 1;
+    kernel_debug_printf("network: virtio-net irq=%u armed (RX interrupt-driven, polling fallback kept)\n",
+                        (unsigned int)line);
+}
+
 static void mk_network_virtio_spin_poll(struct mk_network_pci_probe_state *probe, uint32_t iterations) {
     uint32_t i;
 
@@ -2353,6 +2476,11 @@ static void mk_network_virtio_maybe_activate_runtime(struct mk_network_pci_probe
     }
     if (!g_network_virtio_link.rx_posted) {
         mk_network_virtio_post_rx_buffers(probe);
+    }
+    if (g_network_virtio_link.rx_posted) {
+        /* RX buffers must exist before the device can signal "used" —
+         * arming later would lose the first doorbell. */
+        mk_network_virtio_irq_arm(probe);
     }
     if (!g_network_virtio_link.tx_smoke_sent) {
         mk_network_virtio_send_tx_smoke(probe);

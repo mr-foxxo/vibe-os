@@ -430,10 +430,25 @@ uint32_t ioapic_max_redirect_entries(void) {
  * masked entry: the timer never fires once the LAPIC/IOAPIC path is active,
  * which froze kernel_timer_get_ticks() and wedged the SMP bring-up waits.
  */
-#define IOAPIC_ISA_ENTRY_OFFSET 2u
+/* PC-AT wiring (and QEMU's pc machine): ISA IRQ0 enters the IOAPIC at input
+ * 2, the IRQ2 cascade at input 0, and every other ISA IRQ at its own number
+ * (3-7 identity, 8-15 identity). The previous fixed "+2" offset only matched
+ * the timer (0->2) by coincidence; IRQ8-15 landed on inputs 10-17 which no
+ * wire drives - so every PCI INTx routed to IRQ9-15 (and the IRQ12 PS/2
+ * mouse under IOAPIC boots) could never fire no matter how correctly the PIRQ
+ * router and the handler chain were set up. Discovered by measurement while
+ * wiring the virtio-net RX interrupt (action plan line 70). */
 
 static int ioapic_isa_entry(uint32_t irq, uint32_t *entry_out) {
-    uint32_t entry = irq + IOAPIC_ISA_ENTRY_OFFSET;
+    uint32_t entry;
+
+    if (irq == 0u) {
+        entry = 2u;
+    } else if (irq == 2u) {
+        entry = 0u;
+    } else {
+        entry = irq;
+    }
 
     if (!g_ioapic_found || entry > g_ioapic_max_redir) {
         return -1;
