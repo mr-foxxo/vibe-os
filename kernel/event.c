@@ -1,4 +1,5 @@
 #include <kernel/event.h>
+#include <kernel/telemetry.h>
 
 #include <kernel/kernel_string.h>
 #include <kernel/interrupt.h>
@@ -25,7 +26,7 @@
  */
 #define KERNEL_WAITABLE_WALK_CAP 512u
 
-static volatile uint32_t g_waitable_chain_budget = 8u;
+static volatile uint32_t g_waitable_chain_budget = VIBE_TRACE_BUDGET(8u);
 
 static int kernel_waitable_task_node_ok(const process_t *task) {
     return task != 0 && task != (const process_t *)~0u &&

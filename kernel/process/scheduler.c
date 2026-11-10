@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <kernel/telemetry.h>
 #include <stddef.h>
 #include <kernel/kernel_string.h>  /* memcpy/memset helpers */
 
@@ -55,7 +56,7 @@ uint32_t scheduler_frame_entry_count(uint32_t cpu_index) {
  * trace is budgeted so the guard itself is observable and never silent.
  */
 static volatile uint32_t g_sched_idle_mask;
-static volatile uint32_t g_sched_idle_reentry_budget = 8u;
+static volatile uint32_t g_sched_idle_reentry_budget = VIBE_TRACE_BUDGET(8u);
 
 void scheduler_frame_counts_dump(void) {
     kernel_debug_printf("sched-frame: cpu0=%u cpu1=%u cpu2=%u cpu3=%u\n",
@@ -79,7 +80,7 @@ static volatile int g_sched_frame_last_cur_pid = -2;
 static volatile uint32_t g_sched_sel_count[32];
 
 /* bug #19 ring3 resume-eip witness (see sched-rip in the dispatch path). */
-static volatile uint32_t g_sched_rip_budget = 10u;
+static volatile uint32_t g_sched_rip_budget = VIBE_TRACE_BUDGET(10u);
 /* Per-pid last-emit tick: a hot 4-tick poller (shell host, bug #19 run2 spent
  * the whole budget on p=11 before the app even launched) must not starve the
  * sampling of the task under investigation. */
@@ -101,7 +102,7 @@ static volatile uint32_t g_sched_rip_last[32];
  */
 static volatile uint32_t g_ipc_wake_tick[32];
 static volatile uint32_t g_wake_max_d[32];
-static volatile uint32_t g_wake_stale_budget = 12u;
+static volatile uint32_t g_wake_stale_budget = VIBE_TRACE_BUDGET(12u);
 
 /*
  * item 0.13 (02/11): the probe above only stamps SIGNALED+IPC wakes, so
@@ -117,7 +118,7 @@ static volatile uint32_t g_wake_stale_budget = 12u;
  */
 static volatile uint32_t g_tmo_wake_tick[32];
 static volatile uint32_t g_tmo_wake_max_d[32];
-static volatile uint32_t g_tmo_stale_budget = 16u;
+static volatile uint32_t g_tmo_stale_budget = VIBE_TRACE_BUDGET(16u);
 
 /*
  * Overdue-wake detector (COMPLETION_ACTION_PLAN P4 / KNOWN_BUGS "Sessao
@@ -139,12 +140,12 @@ struct sched_block_record {
 };
 static struct sched_block_record g_sched_block_ring[SCHED_BLOCK_RING];
 static uint32_t g_sched_block_ring_next;
-static volatile uint32_t g_sched_overdue_budget = 12u;
+static volatile uint32_t g_sched_overdue_budget = VIBE_TRACE_BUDGET(12u);
 
 
 /* Budget for the ghost-RUNNING repair trace (the repair itself is not
  * budgeted: an unrepaired ghost is a permanent deadlock). */
-static volatile uint32_t g_sched_ghost_running_budget = 16u;
+static volatile uint32_t g_sched_ghost_running_budget = VIBE_TRACE_BUDGET(16u);
 
 static void scheduler_note_block(process_t *task, uint32_t wait_deadline) {
     uint32_t idx;
@@ -185,8 +186,8 @@ static int scheduler_walk_reaches(process_t *needle) {
  * long command never got to run inside the window. Less noise per second
  * buys the guest ticks, and 12 rows is still plenty to see a phase.
  */
-static volatile uint32_t g_sched_census_budget = 12u;
-static volatile uint32_t g_sched_score_budget = 24u;
+static volatile uint32_t g_sched_census_budget = VIBE_TRACE_BUDGET(12u);
+static volatile uint32_t g_sched_score_budget = VIBE_TRACE_BUDGET(24u);
 
 static int scheduler_task_score(const process_t *task, uint32_t cpu_index);
 
@@ -462,16 +463,16 @@ static spinlock_t g_scheduler_lock;
 /* Face-1 witnesses (P4 classe #5): budget for the AP esp-vs-stack report
  * (6 anomalies) + 2 "OK" baseline reports per cpu-role so a silent witness
  * is never confused with an armed one. */
-static volatile uint32_t g_sched_apsp_budget = 6u;
+static volatile uint32_t g_sched_apsp_budget = VIBE_TRACE_BUDGET(6u);
 static volatile uint32_t g_sched_apsp_baseline = 2u;
 
 /* Face-1 intra-execution stack guard (adendo 7 candidate #1). */
-static volatile uint32_t g_sched_tick_guard_budget = 8u;
-static volatile uint32_t g_sched_tick_field_budget = 8u;
-static volatile uint32_t g_sched_tick_tss_budget = 8u;
-static volatile uint32_t g_sched_tick_bottom_budget = 8u;
-static volatile uint32_t g_sched_tick_ctx_budget = 8u;
-static volatile uint32_t g_sched_rsp_idle_budget = 4u;
+static volatile uint32_t g_sched_tick_guard_budget = VIBE_TRACE_BUDGET(8u);
+static volatile uint32_t g_sched_tick_field_budget = VIBE_TRACE_BUDGET(8u);
+static volatile uint32_t g_sched_tick_tss_budget = VIBE_TRACE_BUDGET(8u);
+static volatile uint32_t g_sched_tick_bottom_budget = VIBE_TRACE_BUDGET(8u);
+static volatile uint32_t g_sched_tick_ctx_budget = VIBE_TRACE_BUDGET(8u);
+static volatile uint32_t g_sched_rsp_idle_budget = VIBE_TRACE_BUDGET(4u);
 static volatile uint32_t g_sched_rsp_idle_baseline = 2u;
 static volatile uint32_t g_sched_rsp_idle_boot_edge_baseline = 2u;
 

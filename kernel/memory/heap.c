@@ -1,4 +1,5 @@
 #include <kernel/memory/heap.h>
+#include <kernel/telemetry.h>
 #include <kernel/lock.h>
 #include <kernel/kernel_string.h>
 #include <kernel/drivers/debug/debug.h>
@@ -97,7 +98,7 @@ static int heap_canary_ok(const struct free_block *block) {
 #define HEAP_WATCH_MAX 8u
 static uintptr_t g_heap_watch_pcs[HEAP_WATCH_MAX];
 static uint32_t g_heap_watch_count;
-static volatile uint32_t g_heap_watch_budget = 12u;
+static volatile uint32_t g_heap_watch_budget = VIBE_TRACE_BUDGET(12u);
 
 void kernel_heap_watch_pc(uintptr_t pc) {
     uint32_t i;
@@ -268,7 +269,7 @@ void *kernel_malloc(size_t size) {
         int rec_victim;
 
         if (victim >= 0) {
-            static volatile uint32_t g_heap_alias_budget = 6u;
+            static volatile uint32_t g_heap_alias_budget = VIBE_TRACE_BUDGET(6u);
             if (g_heap_alias_budget != 0u) {
                 g_heap_alias_budget--;
                 kernel_debug_printf("heap-alias: alloc=[%x,%x) overlaps live pid=%d state=%d stack=[%x,%x) allocpc=%x\n",
@@ -285,7 +286,7 @@ void *kernel_malloc(size_t size) {
         ost = -1;
         rec_victim = scheduler_record_overlap(blo, bhi, &os, &oe, &ost);
         if (rec_victim >= 0) {
-            static volatile uint32_t g_heap_recalias_budget = 6u;
+            static volatile uint32_t g_heap_recalias_budget = VIBE_TRACE_BUDGET(6u);
             if (g_heap_recalias_budget != 0u) {
                 g_heap_recalias_budget--;
                 kernel_debug_printf("heap-recalias: alloc=[%x,%x) overlaps live pid=%d state=%d rec=[%x,%x) allocpc=%x\n",
@@ -448,7 +449,7 @@ void kernel_free(void *ptr) {
         int victim = scheduler_stack_overlap(lo, hi, &os, &oe, &ost);
 
         if (victim >= 0) {
-            static volatile uint32_t g_heap_free_live_budget = 6u;
+            static volatile uint32_t g_heap_free_live_budget = VIBE_TRACE_BUDGET(6u);
             if (g_heap_free_live_budget != 0u) {
                 g_heap_free_live_budget--;
                 kernel_debug_printf("heap-free-live-stack: free=[%x,%x) names live pid=%d state=%d stack=[%x,%x) allocpc=%x freepc=%x\n",
@@ -469,7 +470,7 @@ void kernel_free(void *ptr) {
                                                       &os, &oe, &ost);
 
             if (rec_victim >= 0) {
-                static volatile uint32_t g_heap_free_rec_budget = 6u;
+                static volatile uint32_t g_heap_free_rec_budget = VIBE_TRACE_BUDGET(6u);
                 if (g_heap_free_rec_budget != 0u) {
                     g_heap_free_rec_budget--;
                     kernel_debug_printf("heap-free-live-record: free=[%x,%x) live pid=%d state=%d rec=[%x,%x) freepc=%x\n",

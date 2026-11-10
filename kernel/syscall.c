@@ -1,4 +1,5 @@
 #include <kernel/kernel.h>
+#include <kernel/telemetry.h>
 #include <kernel/scheduler.h>
 #include <kernel/drivers/debug/debug.h>
 #include <kernel/drivers/storage/ata.h>
@@ -72,7 +73,7 @@ static uint32_t g_shm_count = 0u;
  * windows alone are not enough; conversely mmap at 0x40000000+ is legal
  * user memory (pages mapped 0x007 = P|RW|U) and must pass.
  */
-#define SYS_EFAULT_TRACE_BUDGET 8u
+#define SYS_EFAULT_TRACE_BUDGET VIBE_TRACE_BUDGET(8u)
 static uint32_t g_sys_efault_trace_budget = SYS_EFAULT_TRACE_BUDGET;
 
 static int sys_va_in_user_window(uintptr_t va) {
@@ -657,7 +658,7 @@ static uint32_t sys_storage_backend_read_sectors(uint32_t lba, uint32_t ptr, uin
          * storage task calls this per chunk; mk_storage_local_handler is
          * dead code in steady state — probes there were unreachable).
          * Duration in local CPU ticks, 6 budget prints. */
-        static uint32_t g_be_dur_budget = 6u;
+        static uint32_t g_be_dur_budget = VIBE_TRACE_BUDGET(6u);
         uint32_t bcpu = kernel_cpu_index();
         uint32_t bt0 = smp_tick_count(bcpu);
         int64_t brc = kernel_storage_read_sectors(lba, (void *)(uintptr_t)ptr,
@@ -2036,7 +2037,7 @@ static uint32_t sys_task_create(uint32_t entry_ptr, uint32_t arg_ptr, uint32_t s
          * callers (services, init) keep the derived behavior unchanged.
          */
         if (current->runs_in_user_mode != 0u) {
-            static uint32_t priv_reject_budget = 8u;
+            static uint32_t priv_reject_budget = VIBE_TRACE_BUDGET(8u);
             if (priv_reject_budget != 0u) {
                 priv_reject_budget--;
                 kernel_debug_printf("syscall: TASK-CREATE-PRIV-REJECT entry=0x%x caller_pid=%d\n",
@@ -2052,7 +2053,7 @@ static uint32_t sys_task_create(uint32_t entry_ptr, uint32_t arg_ptr, uint32_t s
                                           (uintptr_t)arg_ptr);
     }
     {
-        static uint32_t create_trace_budget = 32u;
+        static uint32_t create_trace_budget = VIBE_TRACE_BUDGET(32u);
         if (create_trace_budget != 0u) {
             create_trace_budget--;
             kernel_debug_printf("syscall: TASK-CREATE pid=%d entry=0x%x mode=%s caller_ring3=%d\n",
@@ -4662,7 +4663,7 @@ uint32_t syscall_dispatch_internal(uint32_t num, uint32_t a, uint32_t b,
             uintptr_t want = (uintptr_t)t->stack + t->stack_size;
 
             if (esp0 != 0u && esp0 != want) {
-                static volatile uint32_t g_syscall_esp0_budget = 8u;
+                static volatile uint32_t g_syscall_esp0_budget = VIBE_TRACE_BUDGET(8u);
                 if (g_syscall_esp0_budget != 0u) {
                     g_syscall_esp0_budget--;
                     kernel_debug_printf("sys-esp0: STALE-AT-ENTRY pid=%d cpu=%u esp0=%x want=%x num=%u\n",

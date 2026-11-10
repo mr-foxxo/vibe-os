@@ -1,4 +1,5 @@
 #include <kernel/bootinfo.h>
+#include <kernel/telemetry.h>
 #include <kernel/microkernel/service.h>
 #include <kernel/kernel_string.h>
 #include <kernel/drivers/timer/timer.h>
@@ -18,17 +19,17 @@ static int g_console_request_trace_emitted = 0;
 static int g_console_worker_entry_trace_emitted = 0;
 static int g_console_worker_trace_emitted = 0;
 static int g_console_reply_trace_emitted = 0;
-static int g_transport_fallback_budget = 16;
-static int g_request_send_fail_budget = 16;
-static int g_unexpected_reply_budget = 16;
-static int g_request_timeout_budget = 16;
-static int g_storage_request_trace_budget = 8;
-static int g_storage_waitloop_trace_budget = 16;
+static int g_transport_fallback_budget = VIBE_TRACE_BUDGET(16u);
+static int g_request_send_fail_budget = VIBE_TRACE_BUDGET(16u);
+static int g_unexpected_reply_budget = VIBE_TRACE_BUDGET(16u);
+static int g_request_timeout_budget = VIBE_TRACE_BUDGET(16u);
+static int g_storage_request_trace_budget = VIBE_TRACE_BUDGET(8u);
+static int g_storage_waitloop_trace_budget = VIBE_TRACE_BUDGET(16u);
 /* P4 adendo 20: the hang is a USERLAND task (pid5, entry=userland_entry)
  * hammering ~20 requests/tick. Name WHICH message type per source. */
-static int g_request_rate_trace_budget = 8;
+static int g_request_rate_trace_budget = VIBE_TRACE_BUDGET(8u);
 static int g_storage_write_request_trace_emitted = 0;
-static int g_storage_worker_trace_budget = 8;
+static int g_storage_worker_trace_budget = VIBE_TRACE_BUDGET(8u);
 static int g_storage_reply_trace_budget = 8;
 static int g_interactive_request_trace_budget = 24;
 static spinlock_t g_service_event_lock;

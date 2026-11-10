@@ -1,4 +1,5 @@
 #include <kernel/drivers/storage/ata.h>
+#include <kernel/telemetry.h>
 #include <kernel/drivers/storage/block_device.h>
 #include <kernel/drivers/debug/debug.h>
 #include <kernel/kernel_string.h>
@@ -33,7 +34,7 @@ static struct mk_message g_last_storage_reply;
  */
 #define MK_STORAGE_MAX_SECTORS_PER_REQUEST 65536u
 
-static uint32_t g_storage_sector_ceiling_trace_budget = 8u;
+static uint32_t g_storage_sector_ceiling_trace_budget = VIBE_TRACE_BUDGET(8u);
 
 static void mk_storage_reject_ceiling(const char *what, uint32_t sector_count) {
     if (g_storage_sector_ceiling_trace_budget == 0u) {
@@ -130,7 +131,7 @@ static int mk_storage_local_handler(const struct mk_message *request,
 
     switch (request->type) {
     case MK_MSG_BLOCK_READ: {
-        static uint32_t g_hostbr_budget = 4u;
+        static uint32_t g_hostbr_budget = VIBE_TRACE_BUDGET(4u);
         if (g_hostbr_budget != 0u) {
             g_hostbr_budget--;
             kernel_debug_printf("storage: HOST-BREAD sz=%u\n",
@@ -302,7 +303,7 @@ int mk_storage_service_read_sectors(uint32_t lba, void *dst, uint32_t sector_cou
          * context==0 selects THIS branch) reads app images here, NOT through
          * the host round-trip. Adendo 43 measurement lives on this side:
          * per-chunk host cost in ticks, 6 prints. */
-        static uint32_t g_hot_dur_budget = 6u;
+        static uint32_t g_hot_dur_budget = VIBE_TRACE_BUDGET(6u);
         uint32_t hcpu = kernel_cpu_index();
         uint32_t ht0 = smp_tick_count(hcpu);
         int hrc = kernel_storage_read_sectors(lba, dst, sector_count);

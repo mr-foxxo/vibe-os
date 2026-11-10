@@ -867,6 +867,39 @@ INTEL_I915_EXPERIMENTAL_COMMIT ?= 1
 CFLAGS += -DINTEL_I915_EXPERIMENTAL_COMMIT=$(INTEL_I915_EXPERIMENTAL_COMMIT)
 VIDEO_DRM_TEST_FORCE_HANDOFF_FAIL ?= 0
 CFLAGS += -DVIDEO_DRM_TEST_FORCE_HANDOFF_FAIL=$(VIDEO_DRM_TEST_FORCE_HANDOFF_FAIL)
+# Boot telemetry knob (closure plan 0.3): quiet keeps every kernel witness
+# budget at its historical value (scale 1); verbose multiplies all witness
+# budgets by 8 for long-field-boot diagnosis (make BOOT_TELEMETRY=verbose).
+# The mode reaches the kernel through a GENERATED HEADER rather than a -D:
+# -D does not invalidate the existing .o files (make sees no dependency),
+# which silently kept the old mode in the image on the first trial. The
+# header is regenerated (compare-and-swap, so an unchanged mode does not
+# touch mtime) on every make invocation, like the app catalog above.
+BOOT_TELEMETRY ?= quiet
+ifeq ($(filter quiet verbose,$(BOOT_TELEMETRY)),)
+$(error BOOT_TELEMETRY must be quiet or verbose, got: $(BOOT_TELEMETRY))
+endif
+BOOT_TELEMETRY_MACRO := $(if $(filter verbose,$(BOOT_TELEMETRY)),VIBE_BOOT_TELEMETRY_VERBOSE,VIBE_BOOT_TELEMETRY_QUIET)
+
+pound := \#
+BOOT_TELEMETRY_HEADER := $(BUILD_DIR)/generated/boot_telemetry.h
+BOOT_TELEMETRY_GEN := $(shell mkdir -p $(dir $(BOOT_TELEMETRY_HEADER)); \
+        printf '$(pound)ifndef BOOT_TELEMETRY_H\n$(pound)define BOOT_TELEMETRY_H\n$(pound)define $(BOOT_TELEMETRY_MACRO) 1\n$(pound)endif\n' > $(BOOT_TELEMETRY_HEADER).tmp; \
+        if [ -f $(BOOT_TELEMETRY_HEADER) ] && cmp -s $(BOOT_TELEMETRY_HEADER).tmp $(BOOT_TELEMETRY_HEADER); then \
+          rm -f $(BOOT_TELEMETRY_HEADER).tmp; \
+        else \
+          mv $(BOOT_TELEMETRY_HEADER).tmp $(BOOT_TELEMETRY_HEADER); \
+        fi; echo done)
+# Header dependency is NOT automatic here: `headers/` is passed as
+# -idirafter, so -MMD classifies those headers as system and omits them
+# from the .d files (which is why a mode flip left stale objects until
+# this explicit edge existed). The kernel witnesses are compiled from
+# kernel/ only, so one blanket edge covers them all.
+# The $(shell ...) above regenerates/compare-swaps the header at parse
+# time, so the file always exists before any rule runs; the edge is purely
+# for mtime-driven rebuilds when the mode flips.
+$(KERNEL_OBJS): $(BOOT_TELEMETRY_HEADER)
+
 KERNEL_CFLAGS := $(CFLAGS) -D__VIBE_KERNEL__
 LDFLAGS_KERNEL := -m elf_i386 -T $(LINKER_DIR)/kernel.ld -nostdlib -N --allow-multiple-definition
 LDFLAGS_USERLAND := -m elf_i386 -T $(LINKER_DIR)/userland.ld -nostdlib -N

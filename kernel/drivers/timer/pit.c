@@ -1,11 +1,12 @@
 #include <kernel/drivers/timer/timer.h>
+#include <kernel/telemetry.h>
 #include <kernel/drivers/debug/debug.h>
 #include <kernel/hal/io.h>
 #include <kernel/interrupt.h>
 #include <kernel/scheduler.h>
 
 static volatile uint32_t g_kernel_ticks = 0u;
-static volatile uint32_t g_timer_trace_budget = 8u;
+static volatile uint32_t g_timer_trace_budget = VIBE_TRACE_BUDGET(8u);
 static kernel_timer_tick_hook_t g_timer_tick_hooks[4];
 
 uint32_t kernel_timer_get_ticks(void) {

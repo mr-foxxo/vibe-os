@@ -1,4 +1,5 @@
 #include <kernel/bootinfo.h>
+#include <kernel/telemetry.h>
 #include <kernel/kernel_string.h>
 #include <kernel/drivers/debug/debug.h>
 #include <kernel/microkernel/launch.h>
@@ -116,7 +117,7 @@ static struct mk_launch_record *mk_launch_alloc_record(void) {
  * path must emit an explicit diagnostic, never a silent -1 that userland can
  * only report as "launch failed"). Budgeted so it cannot flood the serial.
  */
-static volatile uint32_t g_launch_fail_budget = 16u;
+static volatile uint32_t g_launch_fail_budget = VIBE_TRACE_BUDGET(16u);
 
 static void mk_launch_fail(const char *why, const struct mk_launch_descriptor *d) {
     if (g_launch_fail_budget == 0u) {
