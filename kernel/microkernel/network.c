@@ -82,7 +82,13 @@
 #define MK_TCP_OPT_MSS_LEN 4u
 #define MK_TCP_DEFAULT_MSS 1460u
 #define MK_TCP_HEADER_LEN 20u
-#define MK_TCP_RETRY_TICKS 50
+#define MK_TCP_RETRY_TICKS 50            /* legacy alias; timers now use per-socket tcp_rto */
+#define MK_TCP_RTO_INITIAL 100u          /* initial RTO: 1 s in 10 ms PIT ticks (RFC 6298) */
+#define MK_TCP_RTO_MIN 20u               /* 200 ms floor */
+#define MK_TCP_RTO_MAX 6000u             /* 60 s ceiling */
+#define MK_TCP_ACCEPT_Q 4                /* listen backlog ring capacity */
+#define MK_TCP_LOOPBACK_PORT 9u
+#define MK_TCP_LOOPBACK_CLI_PORT 40001u
 #define MK_TCP_MAX_RETRIES 5
 
 struct mk_network_scan_entry_state {
@@ -91,7 +97,7 @@ struct mk_network_scan_entry_state {
     uint32_t security;
 };
 
-#define MK_NETWORK_SOCKET_MAX 8
+#define MK_NETWORK_SOCKET_MAX 16
 #define MK_NETWORK_SOCKET_RX_CAPACITY 512
 #define MK_NETWORK_SOCKET_ADDRESS_MAX ((uint32_t)sizeof(struct sockaddr_storage))
 
@@ -105,7 +111,11 @@ struct mk_network_socket_state {
     int listening;
     int connected;
     int peer_handle;
-    int pending_accept_handle;
+    /* Accept queue: backlog ring replacing the old single-slot
+     * pending_accept_handle. Items are child socket handles. */
+    int accept_ring[MK_TCP_ACCEPT_Q];
+    uint32_t accept_head;
+    uint32_t accept_count;
     uint32_t address_length;
     struct sockaddr_storage address;
     uint32_t remote_ipv4;
@@ -118,6 +128,22 @@ struct mk_network_socket_state {
     uint32_t tcp_snd_una;
     int tcp_retries;
     int tcp_retry_ticks;
+    /* RFC 6298 timers: srtt/rttvar are kept in 1/1-tick integer units
+     * scaled by 4 bits of fraction (<<4) so integer math keeps the
+     * 1/8 / 1/4 coefficients exact. tcp_rto is the retransmission
+     * deadline in ticks; tcp_retry_ticks counts it down. Karn's rule:
+     * tcp_rtt_blocked suppresses samples while a retransmission is
+     * unacked (ambiguous RTTM). */
+    uint32_t tcp_srtt;         /* <<4 */
+    uint32_t tcp_rttvar;       /* <<4 */
+    uint32_t tcp_rto;          /* ticks */
+    uint32_t tcp_rtt_start;    /* send tick of the in-flight sample */
+    uint32_t tcp_rtt_seq;      /* seq whose ack ends the sample */
+    int tcp_rtt_have;          /* srtt initialized? */
+    int tcp_rtt_sampling;      /* a sample is in flight */
+    int tcp_rtt_blocked;       /* Karn: retransmission outstanding */
+    int tcp_backlog;           /* listen queue depth */
+    int loopback_echo;         /* TCP loopback self-test scaffolding only */
     uint32_t tcp_tx_pending_len;
     uint8_t tcp_tx_pending_data[MK_NETWORK_SOCKET_RX_CAPACITY];
 };
@@ -379,6 +405,16 @@ static struct mk_network_socket_state *mk_network_socket_allocate(uint32_t owner
                                                                    uint32_t type,
                                                                    uint32_t protocol,
                                                                    int *handle_out);
+static int mk_network_tcp_input(uint32_t source_ipv4, uint32_t destination_ipv4,
+                                uint16_t src_port, uint16_t dest_port,
+                                uint8_t tcp_flags, uint32_t seq_number, uint32_t ack_number,
+                                const uint8_t *tcp_data, uint32_t data_len);
+static int mk_network_tcp_output(struct mk_network_socket_state *sock,
+                                 uint8_t flags, uint32_t seq, uint32_t ack,
+                                 const uint8_t *data, uint32_t len);
+static void mk_network_tcp_loopback_smoke(void);
+static void mk_network_tcp_rtt_start(struct mk_network_socket_state *sock);
+static void mk_network_tcp_rtt_ack(struct mk_network_socket_state *sock, uint32_t ack_number);
 
 static uint16_t mk_network_be16_load(const uint8_t *src) {
     if (src == 0) {
@@ -1733,13 +1769,6 @@ static void mk_network_backend_ingest_ipv4(const uint8_t *frame, uint32_t payloa
         const uint8_t *tcp_header;
         uint32_t tcp_header_len;
         uint32_t tcp_len;
-        uint16_t dest_port;
-        uint16_t src_port;
-        uint8_t tcp_flags;
-        uint32_t seq_number;
-        uint32_t ack_number;
-        uint32_t tcp_index;
-        int matched = 0;
 
         tcp_header = ip_header + ip_header_len;
         tcp_len = ip_total_len - ip_header_len;
@@ -1750,251 +1779,395 @@ static void mk_network_backend_ingest_ipv4(const uint8_t *frame, uint32_t payloa
         if (tcp_header_len < 20u || tcp_len < tcp_header_len) {
             return;
         }
-        dest_port = mk_network_be16_load(tcp_header + 2u);
-        src_port = mk_network_be16_load(tcp_header);
-        tcp_flags = tcp_header[13];
-        seq_number = mk_network_be32_load(tcp_header + 4u);
-        ack_number = mk_network_be32_load(tcp_header + 8u);
+        (void)mk_network_tcp_input(source_ipv4, destination_ipv4,
+                                   mk_network_be16_load(tcp_header),
+                                   mk_network_be16_load(tcp_header + 2u),
+                                   tcp_header[13],
+                                   mk_network_be32_load(tcp_header + 4u),
+                                   mk_network_be32_load(tcp_header + 8u),
+                                   tcp_header + tcp_header_len,
+                                   tcp_len - tcp_header_len);
+        return;
+    }
+}
 
-        /* Phase 1: match connected/connecting sockets by 4-tuple */
-        for (tcp_index = 0u; tcp_index < MK_NETWORK_SOCKET_MAX; ++tcp_index) {
-            struct mk_network_socket_state *tcp_sock = &g_network_state.sockets[tcp_index];
 
-            if (!tcp_sock->used || !mk_network_socket_is_inet_tcp(tcp_sock)) {
-                continue;
-            }
-            if (tcp_sock->local_port != dest_port) {
-                continue;
-            }
-            if (tcp_sock->connected < 2) {
-                continue;
-            }
-            if (tcp_sock->remote_port != src_port ||
-                tcp_sock->remote_ipv4 != source_ipv4) {
-                continue;
-            }
-            matched = 1;
+/* ---------------- TCP core: timers, backlog ring, input, loopback -------- */
 
-            /* RST */
-            if (tcp_flags & MK_TCP_FLAG_RST) {
+/* Accept queue helpers (line 78 "backlog >1"): a bounded per-listener ring
+ * replacing the old single pending_accept_handle slot. push returns -1 when
+ * the listener is full; the SYN handler then falls through to the RST
+ * branch (correct TCP behavior under pressure). */
+static int mk_network_accept_push(struct mk_network_socket_state *l, int child_handle) {
+    uint32_t cap;
+
+    if (l == 0 || child_handle <= 0) {
+        return -1;
+    }
+    cap = (uint32_t)(l->tcp_backlog > 0 ? l->tcp_backlog : 1);
+    if (cap > MK_TCP_ACCEPT_Q) {
+        cap = MK_TCP_ACCEPT_Q;
+    }
+    if (l->accept_count >= cap) {
+        return -1;
+    }
+    l->accept_ring[(l->accept_head + l->accept_count) % MK_TCP_ACCEPT_Q] = child_handle;
+    l->accept_count++;
+    return 0;
+}
+
+static int mk_network_accept_pop(struct mk_network_socket_state *l) {
+    int handle;
+
+    if (l == 0 || l->accept_count == 0u) {
+        return -1;
+    }
+    handle = l->accept_ring[l->accept_head];
+    l->accept_ring[l->accept_head] = 0;
+    l->accept_head = (l->accept_head + 1u) % MK_TCP_ACCEPT_Q;
+    l->accept_count--;
+    return handle;
+}
+
+/* RFC 6298 RTT estimator in integer fixed-point (<<4). Karn's rule:
+ * samples are only taken while no retransmission is outstanding
+ * (tcp_rtt_blocked) and only one sample is in flight at a time. */
+static void mk_network_tcp_rtt_start(struct mk_network_socket_state *sock) {
+    if (sock == 0 || sock->tcp_rtt_sampling || sock->tcp_rtt_blocked) {
+        return;
+    }
+    sock->tcp_rtt_start = kernel_timer_get_ticks();
+    sock->tcp_rtt_seq = sock->tcp_snd_nxt; /* exclusive end of the segment sent */
+    sock->tcp_rtt_sampling = 1;
+}
+
+static void mk_network_tcp_rtt_ack(struct mk_network_socket_state *sock, uint32_t ack_number) {
+    uint32_t rtt;
+    uint32_t now;
+    int32_t err;
+    uint32_t ae;
+    uint32_t rto;
+
+    if (sock == 0) {
+        return;
+    }
+    if (sock->tcp_rtt_sampling && !sock->tcp_rtt_blocked &&
+        (int32_t)(ack_number - sock->tcp_rtt_seq) >= 0) {
+        now = kernel_timer_get_ticks();
+        rtt = (uint32_t)(now - sock->tcp_rtt_start);
+        if (rtt == 0u) {
+            rtt = 1u;
+        }
+        sock->tcp_rtt_sampling = 0;
+        if (!sock->tcp_rtt_have) {
+            sock->tcp_srtt = rtt << 4;
+            sock->tcp_rttvar = (rtt << 4) / 2u;
+            sock->tcp_rtt_have = 1;
+        } else {
+            err = (int32_t)(rtt << 4) - (int32_t)sock->tcp_srtt;
+            ae = (uint32_t)((err < 0) ? -err : err);
+            sock->tcp_rttvar = (uint32_t)((int32_t)sock->tcp_rttvar +
+                                          ((int32_t)ae - (int32_t)sock->tcp_rttvar) / 4);
+            sock->tcp_srtt = (uint32_t)((int32_t)sock->tcp_srtt + err / 8);
+        }
+        rto = (sock->tcp_srtt + 4u * sock->tcp_rttvar + 15u) >> 4;
+        if (rto < MK_TCP_RTO_MIN) {
+            rto = MK_TCP_RTO_MIN;
+        }
+        if (rto > MK_TCP_RTO_MAX) {
+            rto = MK_TCP_RTO_MAX;
+        }
+        sock->tcp_rto = (int)rto;
+    }
+    if (sock->tcp_snd_una == sock->tcp_snd_nxt) {
+        /* Nothing outstanding anymore: unblock sampling. */
+        sock->tcp_rtt_blocked = 0;
+        sock->tcp_rtt_sampling = 0;
+    }
+}
+
+/* Emit one segment on sock's path. If the peer is 127/8 the segment is
+ * delivered straight back into the stack input (no NIC, no ARP - the
+ * loopback smoke and 127/8 services share this single wire-or-loop
+ * decision point). tcp sequence accounting (SYN/FIN +1, data +len) stays
+ * with the callers exactly like the previous inline send sites. */
+static int mk_network_tcp_output(struct mk_network_socket_state *sock,
+                                 uint8_t flags, uint32_t seq, uint32_t ack,
+                                 const uint8_t *data, uint32_t len) {
+    if (sock == 0 || sock->local_port == 0u || sock->remote_port == 0u) {
+        return -1;
+    }
+
+    if ((sock->remote_ipv4 >> 24) == 127u) {
+        uint32_t index;
+
+        for (index = 0u; index < MK_NETWORK_SOCKET_MAX; ++index) {
+            struct mk_network_socket_state *peer = &g_network_state.sockets[index];
+
+            if (!peer->used || !mk_network_socket_is_inet_tcp(peer)) {
+                continue;
+            }
+            if (peer->local_port != sock->remote_port) {
+                continue;
+            }
+            /* SYN goes to the listener; every other segment must reach the
+             * connected child - matching a bare listener for ACK/data would
+             * silently drop the payload (found by the self-test). */
+            if ((flags & MK_TCP_FLAG_SYN) && !(flags & MK_TCP_FLAG_ACK)) {
+                if (!peer->listening) {
+                    continue;
+                }
+            } else if (!(peer->remote_ipv4 == 0x7F000001u &&
+                         peer->remote_port == sock->local_port &&
+                         peer->connected >= 2)) {
+                continue;
+            }
+            return mk_network_tcp_input(0x7F000001u, 0x7F000001u,
+                                        sock->local_port, sock->remote_port,
+                                        flags, seq, ack, data, len);
+        }
+        return -1;
+    }
+
+    {
+        uint32_t next_hop = mk_network_next_hop_ipv4(sock->remote_ipv4);
+        uint8_t dest_mac[6];
+
+        if (next_hop == 0u) {
+            return -1;
+        }
+        if (mk_network_lookup_arp(next_hop, dest_mac) != 0) {
+            /* Previously the inline sites just skipped the send silently;
+             * returning -1 keeps that behavior while making it visible to
+             * the retransmission timer (the segment stays pending). */
+            return -1;
+        }
+        return mk_network_virtio_send_tcp_segment(&g_network_state.pci_probe,
+                                                  dest_mac,
+                                                  sock->remote_ipv4,
+                                                  g_network_state.local_ipv4,
+                                                  sock->remote_port,
+                                                  sock->local_port,
+                                                  seq, ack, flags, data, len);
+    }
+}
+
+/* The TCP state machine, extracted from the IPv4 frame handler so the
+ * 127/8 loopback can drive the very same code. Returns 0 when the segment
+ * was consumed (matched socket / listener / RST sent), -1 otherwise. */
+static int mk_network_tcp_input(uint32_t source_ipv4, uint32_t destination_ipv4,
+                                uint16_t src_port, uint16_t dest_port,
+                                uint8_t tcp_flags, uint32_t seq_number, uint32_t ack_number,
+                                const uint8_t *tcp_data, uint32_t data_len) {
+    uint32_t tcp_index;
+    int matched = 0;
+
+    if (src_port == 0u || dest_port == 0u) {
+        return -1;
+    }
+
+    /* Phase 1: match connected/connecting sockets by 4-tuple */
+    for (tcp_index = 0u; tcp_index < MK_NETWORK_SOCKET_MAX; ++tcp_index) {
+        struct mk_network_socket_state *tcp_sock = &g_network_state.sockets[tcp_index];
+
+        if (!tcp_sock->used || !mk_network_socket_is_inet_tcp(tcp_sock)) {
+            continue;
+        }
+        if (tcp_sock->local_port != dest_port) {
+            continue;
+        }
+        if (tcp_sock->connected < 2) {
+            continue;
+        }
+        if (tcp_sock->remote_port != src_port ||
+            tcp_sock->remote_ipv4 != source_ipv4) {
+            continue;
+        }
+        matched = 1;
+
+        /* RST */
+        if (tcp_flags & MK_TCP_FLAG_RST) {
+            tcp_sock->connected = 0;
+            tcp_sock->tcp_tx_pending_len = 0u;
+            tcp_sock->tcp_rtt_sampling = 0;
+            tcp_sock->tcp_rtt_blocked = 0;
+            kernel_debug_printf("network: tcp reset\n");
+            break;
+        }
+
+        /* SYN-ACK: client connect complete (SYN_SENT -> ESTABLISHED) */
+        if (tcp_sock->connected == 2 &&
+            (tcp_flags & MK_TCP_FLAG_SYN) &&
+            (tcp_flags & MK_TCP_FLAG_ACK)) {
+            tcp_sock->tcp_rcv_nxt = seq_number + 1u;
+            if ((int32_t)(ack_number - tcp_sock->tcp_snd_una) > 0) {
+                tcp_sock->tcp_snd_una = ack_number;
+                mk_network_tcp_rtt_ack(tcp_sock, ack_number);
+            }
+            tcp_sock->connected = 3;
+            tcp_sock->tcp_retries = 0;
+
+            (void)mk_network_tcp_output(tcp_sock, MK_TCP_FLAG_ACK,
+                                        tcp_sock->tcp_snd_nxt, tcp_sock->tcp_rcv_nxt, 0, 0u);
+            kernel_debug_printf("network: tcp connected rto=%d\n", tcp_sock->tcp_rto);
+            (void)mk_network_publish_event(MK_NETWORK_EVENT_SOCKET_SEND,
+                                           (int32_t)(tcp_index + 1),
+                                           -1,
+                                           g_network_state.status.link_state,
+                                           0u);
+            break;
+        }
+
+        /* ACK/data/FIN on ESTABLISHED connection */
+        if (tcp_sock->connected == 3 && (tcp_flags & MK_TCP_FLAG_ACK)) {
+            if ((int32_t)(ack_number - tcp_sock->tcp_snd_una) > 0) {
+                tcp_sock->tcp_snd_una = ack_number;
+                mk_network_tcp_rtt_ack(tcp_sock, ack_number);
+            }
+            if (tcp_sock->tcp_snd_una == tcp_sock->tcp_snd_nxt) {
+                tcp_sock->tcp_tx_pending_len = 0u;
+            }
+
+            if (data_len > 0u) {
+                (void)network_queue_rx_enqueue(tcp_data, data_len,
+                                               (int32_t)tcp_index + 1);
+                (void)mk_network_publish_event(MK_NETWORK_EVENT_SOCKET_RECV,
+                                                (int32_t)(tcp_index + 1),
+                                                (int32_t)source_ipv4,
+                                                g_network_state.status.link_state,
+                                                data_len);
+            }
+
+            if (seq_number == tcp_sock->tcp_rcv_nxt && data_len > 0u) {
+                tcp_sock->tcp_rcv_nxt += data_len;
+                (void)mk_network_tcp_output(tcp_sock, MK_TCP_FLAG_ACK,
+                                            tcp_sock->tcp_snd_nxt, tcp_sock->tcp_rcv_nxt, 0, 0u);
+            }
+
+            /* Loopback self-test echo scaffolding: ONLY sockets explicitly
+             * marked by mk_network_tcp_loopback_smoke echo their listener,
+             * so the deterministic proof needs no external server. Never
+             * set for wire sockets. */
+            if (tcp_sock->loopback_echo && data_len > 0u) {
+                (void)mk_network_tcp_output(tcp_sock,
+                                            (uint8_t)(MK_TCP_FLAG_PSH | MK_TCP_FLAG_ACK),
+                                            tcp_sock->tcp_snd_nxt, tcp_sock->tcp_rcv_nxt,
+                                            tcp_data, data_len);
+                tcp_sock->tcp_snd_nxt += data_len;
+                (void)mk_network_tcp_output(tcp_sock, MK_TCP_FLAG_ACK,
+                                            tcp_sock->tcp_snd_nxt, tcp_sock->tcp_rcv_nxt, 0, 0u);
+            }
+
+            if (tcp_flags & MK_TCP_FLAG_FIN) {
+                tcp_sock->tcp_rcv_nxt += 1u;
                 tcp_sock->connected = 0;
-                kernel_debug_printf("network: tcp reset\n");
-                break;
-            }
-
-            /* SYN-ACK: client connect complete (SYN_SENT -> ESTABLISHED) */
-            if (tcp_sock->connected == 2 &&
-                (tcp_flags & MK_TCP_FLAG_SYN) &&
-                (tcp_flags & MK_TCP_FLAG_ACK)) {
-                uint32_t next_hop;
-                uint8_t dest_mac[6];
-
-                tcp_sock->tcp_rcv_nxt = seq_number + 1u;
-                if (ack_number == tcp_sock->tcp_snd_nxt) {
-                    tcp_sock->tcp_snd_una = ack_number;
-                }
-                tcp_sock->connected = 3;
-
-                next_hop = mk_network_next_hop_ipv4(tcp_sock->remote_ipv4);
-                if (next_hop != 0u && mk_network_lookup_arp(next_hop, dest_mac) == 0) {
-                    mk_network_virtio_send_tcp_segment(&g_network_state.pci_probe,
-                                                       dest_mac,
-                                                       tcp_sock->remote_ipv4,
-                                                       g_network_state.local_ipv4,
-                                                       tcp_sock->remote_port,
-                                                       tcp_sock->local_port,
-                                                       tcp_sock->tcp_snd_nxt,
-                                                       tcp_sock->tcp_rcv_nxt,
-                                                       MK_TCP_FLAG_ACK,
-                                                       0, 0u);
-                }
-                kernel_debug_printf("network: tcp connected\n");
-                (void)mk_network_publish_event(MK_NETWORK_EVENT_SOCKET_SEND,
-                                               (int32_t)(tcp_index + 1),
-                                               -1,
-                                               g_network_state.status.link_state,
-                                               0u);
-                break;
-            }
-
-            /* ACK/data/FIN on ESTABLISHED connection */
-            if (tcp_sock->connected == 3 && (tcp_flags & MK_TCP_FLAG_ACK)) {
-                uint32_t data_len = 0u;
-                uint32_t payload_offset = tcp_header_len;
-
-                /* Clear pending data when ACK acknowledges everything sent */
-                if (ack_number == tcp_sock->tcp_snd_nxt) {
-                    tcp_sock->tcp_snd_una = ack_number;
-                    tcp_sock->tcp_tx_pending_len = 0u;
-                }
-
-                if (tcp_len > payload_offset) {
-                    data_len = tcp_len - payload_offset;
-                    if (data_len > 0u) {
-                        (void)network_queue_rx_enqueue(tcp_header + payload_offset,
-                                                        data_len,
-                                                        (int32_t)tcp_index + 1);
-                        (void)mk_network_publish_event(MK_NETWORK_EVENT_SOCKET_RECV,
-                                                       (int32_t)(tcp_index + 1),
-                                                       (int32_t)source_ipv4,
-                                                       g_network_state.status.link_state,
-                                                       data_len);
-                    }
-                }
-
-                if (seq_number == tcp_sock->tcp_rcv_nxt && data_len > 0u) {
-                    tcp_sock->tcp_rcv_nxt += data_len;
-
-                    /* Send ACK for received data if ARP is available */
-                    {
-                        uint32_t ack_next_hop;
-                        uint8_t ack_dest_mac[6];
-
-                        ack_next_hop = mk_network_next_hop_ipv4(tcp_sock->remote_ipv4);
-                        if (ack_next_hop != 0u && mk_network_lookup_arp(ack_next_hop, ack_dest_mac) == 0) {
-                            mk_network_virtio_send_tcp_segment(&g_network_state.pci_probe,
-                                                               ack_dest_mac,
-                                                               tcp_sock->remote_ipv4,
-                                                               g_network_state.local_ipv4,
-                                                               tcp_sock->remote_port,
-                                                               tcp_sock->local_port,
-                                                               tcp_sock->tcp_snd_nxt,
-                                                               tcp_sock->tcp_rcv_nxt,
-                                                               MK_TCP_FLAG_ACK,
-                                                               0, 0u);
-                        }
-                    }
-                }
-
-                if (tcp_flags & MK_TCP_FLAG_FIN) {
-                    uint32_t next_hop;
-                    uint8_t dest_mac[6];
-
-                    tcp_sock->tcp_rcv_nxt += 1u;
-                    tcp_sock->connected = 0;
-
-                    next_hop = mk_network_next_hop_ipv4(tcp_sock->remote_ipv4);
-                    if (next_hop != 0u && mk_network_lookup_arp(next_hop, dest_mac) == 0) {
-                        mk_network_virtio_send_tcp_segment(&g_network_state.pci_probe,
-                                                           dest_mac,
-                                                           tcp_sock->remote_ipv4,
-                                                           g_network_state.local_ipv4,
-                                                           tcp_sock->remote_port,
-                                                           tcp_sock->local_port,
-                                                           tcp_sock->tcp_snd_nxt,
-                                                           tcp_sock->tcp_rcv_nxt,
-                                                           MK_TCP_FLAG_ACK | MK_TCP_FLAG_FIN,
-                                                           0, 0u);
-                        tcp_sock->tcp_snd_nxt += 1u;
-                    }
-                    kernel_debug_printf("network: tcp closed by peer\n");
-                    break;
-                }
+                (void)mk_network_tcp_output(tcp_sock,
+                                            (uint8_t)(MK_TCP_FLAG_ACK | MK_TCP_FLAG_FIN),
+                                            tcp_sock->tcp_snd_nxt, tcp_sock->tcp_rcv_nxt, 0, 0u);
+                tcp_sock->tcp_snd_nxt += 1u;
+                kernel_debug_printf("network: tcp closed by peer\n");
                 break;
             }
             break;
         }
+        break;
+    }
 
-        if (matched) {
-            return;
-        }
+    if (matched) {
+        return 0;
+    }
 
-        /* Phase 2: handle incoming SYN to listening socket */
-        if ((tcp_flags & MK_TCP_FLAG_SYN) && !(tcp_flags & MK_TCP_FLAG_ACK)) {
-            uint32_t listen_index;
+    /* Phase 2: handle incoming SYN to listening socket */
+    if ((tcp_flags & MK_TCP_FLAG_SYN) && !(tcp_flags & MK_TCP_FLAG_ACK)) {
+        uint32_t listen_index;
 
-            for (listen_index = 0u; listen_index < MK_NETWORK_SOCKET_MAX; ++listen_index) {
-                struct mk_network_socket_state *listen_sock = &g_network_state.sockets[listen_index];
+        for (listen_index = 0u; listen_index < MK_NETWORK_SOCKET_MAX; ++listen_index) {
+            struct mk_network_socket_state *listen_sock = &g_network_state.sockets[listen_index];
+            int child_handle;
+            struct mk_network_socket_state *child;
 
-                if (!listen_sock->used || !mk_network_socket_is_inet_tcp(listen_sock) ||
-                    !listen_sock->listening || listen_sock->local_port != dest_port) {
-                    continue;
+            if (!listen_sock->used || !mk_network_socket_is_inet_tcp(listen_sock) ||
+                !listen_sock->listening || listen_sock->local_port != dest_port) {
+                continue;
+            }
+            {
+                uint32_t cap = (uint32_t)(listen_sock->tcp_backlog > 0 ? listen_sock->tcp_backlog : 1);
+                if (cap > MK_TCP_ACCEPT_Q) {
+                    cap = MK_TCP_ACCEPT_Q;
                 }
-
-                {
-                    int child_handle;
-                    struct mk_network_socket_state *child;
-                    uint32_t next_hop;
-                    uint8_t dest_mac[6];
-
-                    child = mk_network_socket_allocate(listen_sock->owner_pid,
-                                                       listen_sock->domain,
-                                                       listen_sock->type,
-                                                       listen_sock->protocol,
-                                                       &child_handle);
-                    if (child == 0) {
-                        break;
-                    }
-
-                    child->bound = 1;
-                    child->address_length = listen_sock->address_length;
-                    if (listen_sock->address_length > 0u) {
-                        memcpy(&child->address, &listen_sock->address, listen_sock->address_length);
-                    }
-                    child->local_port = listen_sock->local_port;
-                    child->remote_ipv4 = source_ipv4;
-                    child->remote_port = src_port;
-                    child->connected = 3;
-                    child->peer_handle = -1;
-
-                    child->tcp_snd_nxt = kernel_timer_get_ticks() ^ (uint32_t)(uintptr_t)child;
-                    if (child->tcp_snd_nxt == 0u) child->tcp_snd_nxt = 1u;
-                    child->tcp_rcv_nxt = seq_number + 1u;
-                    child->tcp_snd_una = child->tcp_snd_nxt;
-                    child->tcp_retries = 0;
-                    child->tcp_retry_ticks = MK_TCP_RETRY_TICKS;
-
-                    next_hop = mk_network_next_hop_ipv4(source_ipv4);
-                    if (next_hop != 0u && mk_network_lookup_arp(next_hop, dest_mac) == 0) {
-                        mk_network_virtio_send_tcp_segment(&g_network_state.pci_probe,
-                                                           dest_mac,
-                                                           source_ipv4,
-                                                           g_network_state.local_ipv4,
-                                                           src_port,
-                                                           listen_sock->local_port,
-                                                           child->tcp_snd_nxt,
-                                                           child->tcp_rcv_nxt,
-                                                           MK_TCP_FLAG_SYN | MK_TCP_FLAG_ACK,
-                                                           0, 0u);
-                        child->tcp_snd_nxt += 1u;
-                    }
-
-                    listen_sock->pending_accept_handle = child_handle;
-                    (void)mk_network_publish_event(MK_NETWORK_EVENT_SOCKET_ACCEPT,
-                                                   (int32_t)(listen_index + 1),
-                                                   child_handle,
-                                                   g_network_state.status.link_state,
-                                                   0u);
-                    kernel_debug_printf("network: tcp syn accept port=%u child=%d\n",
-                                        (unsigned int)dest_port, child_handle);
+                if (listen_sock->accept_count >= cap) {
+                    break; /* backlog full: fall through to the RST below */
                 }
+            }
+
+            child = mk_network_socket_allocate(listen_sock->owner_pid,
+                                               listen_sock->domain,
+                                               listen_sock->type,
+                                               listen_sock->protocol,
+                                               &child_handle);
+            if (child == 0) {
                 break;
             }
-        }
 
-        /* Send RST for unmatched SYN or data segments */
-        if (!(tcp_flags & MK_TCP_FLAG_RST) && g_network_state.local_ipv4 != 0u &&
-            destination_ipv4 == g_network_state.local_ipv4) {
-            uint32_t rst_next_hop;
-            uint8_t rst_mac[6];
-            uint32_t rst_seq = ack_number;
-
-            rst_next_hop = mk_network_next_hop_ipv4(source_ipv4);
-            if (rst_next_hop != 0u && mk_network_lookup_arp(rst_next_hop, rst_mac) == 0) {
-                mk_network_virtio_send_tcp_segment(&g_network_state.pci_probe,
-                                                   rst_mac,
-                                                   source_ipv4,
-                                                   g_network_state.local_ipv4,
-                                                   src_port,
-                                                   dest_port,
-                                                   rst_seq,
-                                                   0u,
-                                                   MK_TCP_FLAG_RST,
-                                                   0, 0u);
+            child->bound = 1;
+            child->address_length = listen_sock->address_length;
+            if (listen_sock->address_length > 0u) {
+                memcpy(&child->address, &listen_sock->address, listen_sock->address_length);
             }
+            child->local_port = listen_sock->local_port;
+            child->remote_ipv4 = source_ipv4;
+            child->remote_port = src_port;
+            child->connected = 3;
+            child->peer_handle = -1;
+            child->loopback_echo = listen_sock->loopback_echo;
+
+            child->tcp_snd_nxt = kernel_timer_get_ticks() ^ (uint32_t)(uintptr_t)child;
+            if (child->tcp_snd_nxt == 0u) child->tcp_snd_nxt = 1u;
+            child->tcp_rcv_nxt = seq_number + 1u;
+            child->tcp_snd_una = child->tcp_snd_nxt;
+            child->tcp_retries = 0;
+            child->tcp_rto = MK_TCP_RTO_INITIAL;
+            child->tcp_retry_ticks = child->tcp_rto;
+
+            (void)mk_network_tcp_output(child, (uint8_t)(MK_TCP_FLAG_SYN | MK_TCP_FLAG_ACK),
+                                        child->tcp_snd_nxt, child->tcp_rcv_nxt, 0, 0u);
+            child->tcp_snd_nxt += 1u;
+            mk_network_tcp_rtt_start(child);
+
+            (void)mk_network_accept_push(listen_sock, child_handle);
+            (void)mk_network_publish_event(MK_NETWORK_EVENT_SOCKET_ACCEPT,
+                                           (int32_t)(listen_index + 1),
+                                           child_handle,
+                                           g_network_state.status.link_state,
+                                           0u);
+            kernel_debug_printf("network: tcp syn accept port=%u child=%d\n",
+                                (unsigned int)dest_port, child_handle);
+            return 0;
         }
-        return;
     }
+
+    /* Send RST for unmatched SYN or data segments */
+    if (!(tcp_flags & MK_TCP_FLAG_RST) && g_network_state.local_ipv4 != 0u &&
+        destination_ipv4 == g_network_state.local_ipv4) {
+        uint32_t rst_next_hop;
+        uint8_t rst_mac[6];
+
+        rst_next_hop = mk_network_next_hop_ipv4(source_ipv4);
+        if (rst_next_hop != 0u && mk_network_lookup_arp(rst_next_hop, rst_mac) == 0) {
+            (void)mk_network_virtio_send_tcp_segment(&g_network_state.pci_probe,
+                                                     rst_mac,
+                                                     source_ipv4,
+                                                     g_network_state.local_ipv4,
+                                                     src_port,
+                                                     dest_port,
+                                                     ack_number,
+                                                     0u,
+                                                     MK_TCP_FLAG_RST,
+                                                     0, 0u);
+        }
+        return 0;
+    }
+    return -1;
 }
 
 static void mk_network_backend_ingest_arp(const uint8_t *frame, uint32_t payload_len) {
@@ -2837,7 +3010,8 @@ static struct mk_network_socket_state *mk_network_socket_allocate(uint32_t owner
         socket_state->type = type;
         socket_state->protocol = protocol;
         socket_state->peer_handle = -1;
-        socket_state->pending_accept_handle = -1;
+        socket_state->accept_head = 0u;
+        socket_state->accept_count = 0u;
         
         // Register socket with queue system
         if (handle_out != 0) {
@@ -3246,7 +3420,10 @@ static void mk_network_tcp_retry(void) {
             continue;
         }
 
-        /* SYN_SENT: retransmit SYN on timeout */
+        /* SYN_SENT: retransmit SYN on timeout. RFC 6298: the countdown
+         * runs tcp_rto (measured after the first sample), every timeout
+         * halves confidence by doubling rto, and the retransmission
+         * arms Karn's block so the ambiguous sample never feeds srtt. */
         if (tcp_sock->connected == 2) {
             if (tcp_sock->tcp_retry_ticks > 0) {
                 tcp_sock->tcp_retry_ticks -= 1;
@@ -3254,29 +3431,24 @@ static void mk_network_tcp_retry(void) {
             if (tcp_sock->tcp_retry_ticks == 0) {
                 if (tcp_sock->tcp_retries >= MK_TCP_MAX_RETRIES) {
                     tcp_sock->connected = 0;
-                    kernel_debug_printf("network: tcp connect timeout\n");
+                    tcp_sock->tcp_tx_pending_len = 0u;
+                    tcp_sock->tcp_rtt_sampling = 0;
+                    kernel_debug_printf("network: tcp connect timeout retries=%d rto=%d\n",
+                                        tcp_sock->tcp_retries, tcp_sock->tcp_rto);
                 } else {
-                    uint32_t next_hop;
-                    uint8_t dest_mac[6];
-
                     tcp_sock->tcp_retries += 1;
-                    tcp_sock->tcp_retry_ticks = MK_TCP_RETRY_TICKS;
-
-                    next_hop = mk_network_next_hop_ipv4(tcp_sock->remote_ipv4);
-                    if (next_hop != 0u && mk_network_lookup_arp(next_hop, dest_mac) == 0) {
-                        mk_network_virtio_send_tcp_segment(&g_network_state.pci_probe,
-                                                           dest_mac,
-                                                           tcp_sock->remote_ipv4,
-                                                           g_network_state.local_ipv4,
-                                                           tcp_sock->remote_port,
-                                                           tcp_sock->local_port,
-                                                           tcp_sock->tcp_snd_nxt - 1u,
-                                                           0u,
-                                                           MK_TCP_FLAG_SYN,
-                                                           0, 0u);
-                        kernel_debug_printf("network: tcp syn retry %d\n",
-                                            tcp_sock->tcp_retries);
+                    tcp_sock->tcp_rtt_blocked = 1;
+                    tcp_sock->tcp_rtt_sampling = 0;
+                    tcp_sock->tcp_rto *= 2;
+                    if (tcp_sock->tcp_rto > (int)MK_TCP_RTO_MAX) {
+                        tcp_sock->tcp_rto = (int)MK_TCP_RTO_MAX;
                     }
+                    tcp_sock->tcp_retry_ticks = tcp_sock->tcp_rto;
+
+                    (void)mk_network_tcp_output(tcp_sock, MK_TCP_FLAG_SYN,
+                                                tcp_sock->tcp_snd_nxt - 1u, 0u, 0, 0u);
+                    kernel_debug_printf("network: tcp syn retry %d rto=%d\n",
+                                        tcp_sock->tcp_retries, tcp_sock->tcp_rto);
                 }
             }
         }
@@ -3287,35 +3459,163 @@ static void mk_network_tcp_retry(void) {
                 tcp_sock->tcp_retry_ticks -= 1;
             }
             if (tcp_sock->tcp_retry_ticks == 0) {
-                uint32_t next_hop;
-                uint8_t dest_mac[6];
-
                 tcp_sock->tcp_retries += 1;
                 if (tcp_sock->tcp_retries >= MK_TCP_MAX_RETRIES) {
                     tcp_sock->connected = 0;
-                    kernel_debug_printf("network: tcp send timeout\n");
+                    tcp_sock->tcp_tx_pending_len = 0u;
+                    tcp_sock->tcp_rtt_sampling = 0;
+                    kernel_debug_printf("network: tcp send timeout retries=%d rto=%d\n",
+                                        tcp_sock->tcp_retries, tcp_sock->tcp_rto);
                 } else {
-                    tcp_sock->tcp_retry_ticks = MK_TCP_RETRY_TICKS;
-
-                    next_hop = mk_network_next_hop_ipv4(tcp_sock->remote_ipv4);
-                    if (next_hop != 0u && mk_network_lookup_arp(next_hop, dest_mac) == 0) {
-                        mk_network_virtio_send_tcp_segment(&g_network_state.pci_probe,
-                                                           dest_mac,
-                                                           tcp_sock->remote_ipv4,
-                                                           g_network_state.local_ipv4,
-                                                           tcp_sock->remote_port,
-                                                           tcp_sock->local_port,
-                                                           tcp_sock->tcp_snd_nxt - tcp_sock->tcp_tx_pending_len,
-                                                           tcp_sock->tcp_rcv_nxt,
-                                                           MK_TCP_FLAG_ACK | MK_TCP_FLAG_PSH,
-                                                           tcp_sock->tcp_tx_pending_data,
-                                                           tcp_sock->tcp_tx_pending_len);
-                        kernel_debug_printf("network: tcp data retry %d len=%u\n",
-                                            tcp_sock->tcp_retries,
-                                            (unsigned int)tcp_sock->tcp_tx_pending_len);
+                    tcp_sock->tcp_rtt_blocked = 1;
+                    tcp_sock->tcp_rtt_sampling = 0;
+                    tcp_sock->tcp_rto *= 2;
+                    if (tcp_sock->tcp_rto > (int)MK_TCP_RTO_MAX) {
+                        tcp_sock->tcp_rto = (int)MK_TCP_RTO_MAX;
                     }
+                    tcp_sock->tcp_retry_ticks = tcp_sock->tcp_rto;
+
+                    {
+                        int rst = mk_network_tcp_output(tcp_sock,
+                                                       (uint8_t)(MK_TCP_FLAG_PSH | MK_TCP_FLAG_ACK),
+                                                       tcp_sock->tcp_snd_nxt - tcp_sock->tcp_tx_pending_len,
+                                                       tcp_sock->tcp_rcv_nxt,
+                                                       tcp_sock->tcp_tx_pending_data,
+                                                       tcp_sock->tcp_tx_pending_len);
+                        (void)rst;
+                    }
+                    kernel_debug_printf("network: tcp data retry %d len=%u rto=%d\n",
+                                        tcp_sock->tcp_retries,
+                                        (unsigned int)tcp_sock->tcp_tx_pending_len,
+                                        tcp_sock->tcp_rto);
                 }
             }
+        }
+    }
+}
+
+
+/*
+ * TCP loopback self-test (item line 78 / closure 1.2 proof).
+ *
+ * A listener on 127.0.0.1:9 whose accepted child echoes, and a client on
+ * 127.0.0.1:40001 that runs connect -> send -> recv against it. Every
+ * segment traverses mk_network_tcp_output -> mk_network_tcp_input, so the
+ * SYN/SYN-ACK/ACK handshake, the RFC 6298 RTT sample on the first ACK, the
+ * backlog ring and the data path all execute exactly as they do on the
+ * wire - with no NIC, no ARP and no external server. Bounded: each stage
+ * gets 200 ticks (2 s) and a missed stage reports FAIL, never a fake ok.
+ */
+static int g_tcp_lb_state; /* 0 setup, 1 wait-connect, 2 wait-echo, 9 done */
+static uint32_t g_tcp_lb_deadline;
+static int g_tcp_lb_client;
+static int g_tcp_lb_listen;
+
+static void mk_network_tcp_loopback_smoke(void) {
+    static const char msg[] = "vibe-tcp-loopback";
+    const uint32_t msg_len = (uint32_t)(sizeof(msg) - 1u);
+    uint32_t now;
+
+    if (g_tcp_lb_state == 9) {
+        return;
+    }
+    now = kernel_timer_get_ticks();
+
+    if (g_tcp_lb_state == 0) {
+        int lh = -1;
+        int ch = -1;
+        struct mk_network_socket_state *l;
+        struct mk_network_socket_state *c;
+
+        l = mk_network_socket_allocate(0u, AF_INET, SOCK_STREAM,
+                                       MK_NETWORK_IPPROTO_TCP, &lh);
+        c = mk_network_socket_allocate(0u, AF_INET, SOCK_STREAM,
+                                       MK_NETWORK_IPPROTO_TCP, &ch);
+        if (l == 0 || c == 0) {
+            kernel_debug_puts("network: tcp loopback smoke FAILED (alloc)\n");
+            g_tcp_lb_state = 9;
+            return;
+        }
+        l->bound = 1;
+        l->local_port = MK_TCP_LOOPBACK_PORT;
+        l->listening = 1;
+        l->tcp_backlog = MK_TCP_ACCEPT_Q;
+        l->loopback_echo = 1;
+
+        c->bound = 1;
+        c->local_port = MK_TCP_LOOPBACK_CLI_PORT;
+        c->remote_ipv4 = 0x7F000001u;
+        c->remote_port = MK_TCP_LOOPBACK_PORT;
+        c->tcp_snd_nxt = now ^ (uint32_t)(uintptr_t)c;
+        if (c->tcp_snd_nxt == 0u) {
+            c->tcp_snd_nxt = 1u;
+        }
+        c->tcp_rcv_nxt = 0u;
+        c->tcp_snd_una = c->tcp_snd_nxt;
+        c->tcp_rto = (int)MK_TCP_RTO_INITIAL;
+        c->tcp_retry_ticks = c->tcp_rto;
+        c->tcp_retries = 0;
+        c->connected = 2;
+
+        if (mk_network_tcp_output(c, MK_TCP_FLAG_SYN, c->tcp_snd_nxt, 0u, 0, 0u) != 0) {
+            kernel_debug_puts("network: tcp loopback smoke FAILED (syn)\n");
+            g_tcp_lb_state = 9;
+            return;
+        }
+        c->tcp_snd_nxt += 1u;
+        mk_network_tcp_rtt_start(c);
+        g_tcp_lb_listen = lh;
+        g_tcp_lb_client = ch;
+        g_tcp_lb_deadline = now + 200u;
+        g_tcp_lb_state = 1;
+        return;
+    }
+
+    if (kernel_timer_get_ticks() >= g_tcp_lb_deadline) {
+        kernel_debug_printf("network: tcp loopback smoke FAILED at state %d\n",
+                            g_tcp_lb_state);
+        g_tcp_lb_state = 9;
+        return;
+    }
+
+    if (g_tcp_lb_state == 1) {
+        struct mk_network_socket_state *c = mk_network_socket_by_handle(g_tcp_lb_client);
+
+        if (c == 0 || c->connected != 3) {
+            return;
+        }
+        if (msg_len > MK_NETWORK_SOCKET_RX_CAPACITY) {
+            g_tcp_lb_state = 9;
+            return;
+        }
+        c->tcp_tx_pending_len = msg_len;
+        memcpy(c->tcp_tx_pending_data, msg, msg_len);
+        c->tcp_retries = 0;
+        c->tcp_retry_ticks = c->tcp_rto;
+        (void)mk_network_tcp_output(c, (uint8_t)(MK_TCP_FLAG_PSH | MK_TCP_FLAG_ACK),
+                                    c->tcp_snd_nxt, c->tcp_rcv_nxt,
+                                    c->tcp_tx_pending_data, msg_len);
+        c->tcp_snd_nxt += msg_len;
+        mk_network_tcp_rtt_start(c);
+        g_tcp_lb_deadline = kernel_timer_get_ticks() + 200u;
+        g_tcp_lb_state = 2;
+        return;
+    }
+
+    if (g_tcp_lb_state == 2) {
+        uint8_t buf[64];
+        uint32_t got = 0u;
+        int rc = network_queue_rx_dequeue(buf, (uint32_t)sizeof(buf),
+                                          g_tcp_lb_client, &got, NULL);
+
+        if (rc > 0 && got == msg_len && memcmp(buf, msg, msg_len) == 0) {
+            struct mk_network_socket_state *c = mk_network_socket_by_handle(g_tcp_lb_client);
+
+            kernel_debug_printf("network: tcp loopback smoke ok echo=%u rto=%d srtt=%u\n",
+                                (unsigned int)got,
+                                c != 0 ? c->tcp_rto : 0,
+                                c != 0 ? (unsigned int)(c->tcp_srtt >> 4) : 0u);
+            g_tcp_lb_state = 9;
         }
     }
 }
@@ -3470,6 +3770,7 @@ static void mk_network_progress_state(void) {
     mk_dhcp_tick();
     mk_dhcp_apply_lease_if_bound();
     mk_network_loopback_smoke();
+    mk_network_tcp_loopback_smoke();
     mk_network_icmp_probe_tick();
     mk_network_responder_selftest();
     mk_network_tcp_retry();
@@ -3514,7 +3815,7 @@ static void mk_network_refresh_socket_telemetry(void) {
         g_network_state.status.open_socket_count += 1u;
         if (socket_state->listening) {
             g_network_state.status.listening_socket_count += 1u;
-            if (socket_state->pending_accept_handle > 0) {
+            if (socket_state->accept_count > 0u) {
                 g_network_state.status.accept_ready_count += 1u;
             }
         }
@@ -3808,7 +4109,7 @@ void mk_network_service_init(void) {
     g_network_state.info.max_packet_size = 1500u;
     g_network_state.info.socket_rx_capacity = MK_NETWORK_SOCKET_RX_CAPACITY;
     g_network_state.info.event_queue_depth = MK_NETWORK_EVENT_QUEUE_SIZE;
-    g_network_state.info.listen_backlog_max = 1u;
+    g_network_state.info.listen_backlog_max = MK_TCP_ACCEPT_Q;
 
     /* Capability audit line: lets a hardware campaign (and serial-only runs)
      * see exactly what the stack claims vs. what it can do — the honest
@@ -4226,17 +4527,21 @@ int mk_network_service_socket_connect(int handle, const struct sockaddr *address
             }
         }
 
-        mk_network_progress_state();
-        next_hop = mk_network_next_hop_ipv4(remote_ipv4);
-        if (next_hop == 0u) {
-            return -1;
-        }
-        if (mk_network_lookup_arp(next_hop, dest_mac) != 0) {
-            mk_network_virtio_send_arp_request(&g_network_state.pci_probe,
-                                               g_network_state.local_ipv4,
-                                               next_hop);
-            if (mk_network_wait_for_arp(next_hop, dest_mac, MK_NETWORK_ICMP_WAIT_TICKS) != 0) {
+        /* 127/8 needs no route and no ARP - tcp_output delivers it into the
+         * stack directly; everything else waits for ARP exactly as before. */
+        if ((remote_ipv4 >> 24) != 127u) {
+            mk_network_progress_state();
+            next_hop = mk_network_next_hop_ipv4(remote_ipv4);
+            if (next_hop == 0u) {
                 return -1;
+            }
+            if (mk_network_lookup_arp(next_hop, dest_mac) != 0) {
+                mk_network_virtio_send_arp_request(&g_network_state.pci_probe,
+                                                   g_network_state.local_ipv4,
+                                                   next_hop);
+                if (mk_network_wait_for_arp(next_hop, dest_mac, MK_NETWORK_ICMP_WAIT_TICKS) != 0) {
+                    return -1;
+                }
             }
         }
 
@@ -4245,23 +4550,22 @@ int mk_network_service_socket_connect(int handle, const struct sockaddr *address
         socket_state->tcp_rcv_nxt = 0u;
         socket_state->tcp_snd_una = socket_state->tcp_snd_nxt;
         socket_state->tcp_retries = 0;
-        socket_state->tcp_retry_ticks = MK_TCP_RETRY_TICKS;
+        socket_state->tcp_rto = (int)MK_TCP_RTO_INITIAL;
+        socket_state->tcp_retry_ticks = socket_state->tcp_rto;
+        socket_state->tcp_srtt = 0u;
+        socket_state->tcp_rttvar = 0u;
+        socket_state->tcp_rtt_have = 0;
+        socket_state->tcp_rtt_sampling = 0;
+        socket_state->tcp_rtt_blocked = 0;
         socket_state->connected = 2;
         socket_state->peer_handle = -1;
 
-        if (mk_network_virtio_send_tcp_segment(&g_network_state.pci_probe,
-                                                dest_mac,
-                                                remote_ipv4,
-                                                g_network_state.local_ipv4,
-                                                remote_port,
-                                                socket_state->local_port,
-                                                socket_state->tcp_snd_nxt,
-                                                0u,
-                                                MK_TCP_FLAG_SYN,
-                                                0, 0u) != 0) {
+        if (mk_network_tcp_output(socket_state, MK_TCP_FLAG_SYN,
+                                  socket_state->tcp_snd_nxt, 0u, 0, 0u) != 0) {
             return -1;
         }
         socket_state->tcp_snd_nxt += 1u;
+        mk_network_tcp_rtt_start(socket_state);
         return 0;
     }
 
@@ -4280,7 +4584,7 @@ int mk_network_service_socket_connect(int handle, const struct sockaddr *address
             continue;
         }
         if (peer->listening) {
-            if (peer->pending_accept_handle > 0) {
+            if (peer->accept_count > 0u) {
                 return -1;
             }
             accepted_socket = mk_network_socket_allocate(peer->owner_pid,
@@ -4298,7 +4602,7 @@ int mk_network_service_socket_connect(int handle, const struct sockaddr *address
             accepted_socket->peer_handle = handle;
             socket_state->connected = 1;
             socket_state->peer_handle = accepted_handle;
-            peer->pending_accept_handle = accepted_handle;
+            (void)mk_network_accept_push(peer, accepted_handle);
             (void)mk_network_publish_event(MK_NETWORK_EVENT_SOCKET_ACCEPT,
                                            (int32_t)((peer - g_network_state.sockets) + 1),
                                            accepted_handle,
@@ -4532,9 +4836,11 @@ int mk_network_service_send(int handle, const void *data, uint32_t size) {
             socket_state->tcp_tx_pending_len = size;
             memcpy(socket_state->tcp_tx_pending_data, data, size);
             socket_state->tcp_retries = 0;
-            socket_state->tcp_retry_ticks = MK_TCP_RETRY_TICKS;
+            socket_state->tcp_retry_ticks = socket_state->tcp_rto > 0 ? socket_state->tcp_rto
+                                                                      : (int)MK_TCP_RTO_INITIAL;
         }
         socket_state->tcp_snd_nxt += size;
+        mk_network_tcp_rtt_start(socket_state);
         return (int)size;
     }
 
@@ -4756,8 +5062,13 @@ int mk_network_service_close(int handle) {
 
     peer_handle = socket_state->peer_handle;
 
-    if (socket_state->pending_accept_handle > 0) {
-        pending = mk_network_socket_by_handle(socket_state->pending_accept_handle);
+    for (;;) {
+        int done_handle = mk_network_accept_pop(socket_state);
+
+        if (done_handle <= 0) {
+            break;
+        }
+        pending = mk_network_socket_by_handle(done_handle);
         if (pending != 0) {
             mk_network_socket_disconnect_peer(pending);
             memset(pending, 0, sizeof(*pending));
@@ -4779,7 +5090,6 @@ int mk_network_service_close(int handle) {
 int mk_network_service_listen(int handle, int backlog) {
     struct mk_network_socket_state *socket_state = mk_network_socket_by_handle_for_current_pid(handle);
 
-    (void)backlog;
     if (socket_state == 0 || !socket_state->bound || socket_state->connected) {
         return -1;
     }
@@ -4787,7 +5097,15 @@ int mk_network_service_listen(int handle, int backlog) {
         return -1;
     }
     socket_state->listening = 1;
-    socket_state->pending_accept_handle = -1;
+    socket_state->accept_head = 0u;
+    socket_state->accept_count = 0u;
+    /* Line 78 "backlog > 1": keep the requested depth (capped by the ring).
+     * A non-positive backlog keeps the historical single-slot behavior. */
+    if (backlog > 0) {
+        socket_state->tcp_backlog = (backlog > MK_TCP_ACCEPT_Q) ? MK_TCP_ACCEPT_Q : backlog;
+    } else {
+        socket_state->tcp_backlog = 1;
+    }
     return 0;
 }
 
@@ -4795,11 +5113,13 @@ int mk_network_service_accept(int handle) {
     struct mk_network_socket_state *socket_state = mk_network_socket_by_handle_for_current_pid(handle);
     int accepted_handle;
 
-    if (socket_state == 0 || !socket_state->listening || socket_state->pending_accept_handle <= 0) {
+    if (socket_state == 0 || !socket_state->listening) {
         return -1;
     }
-    accepted_handle = socket_state->pending_accept_handle;
-    socket_state->pending_accept_handle = -1;
+    accepted_handle = mk_network_accept_pop(socket_state);
+    if (accepted_handle <= 0) {
+        return -1;
+    }
     return accepted_handle;
 }
 
