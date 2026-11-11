@@ -2311,6 +2311,9 @@ validate-audio-hda-playback: $(IMAGE)
 validate-audio-hda-startup: $(IMAGE)
 	$(PYTHON) tools/validate_audio_stack.py --image $(IMAGE) --report build/audio-hda-startup-validation.md --qemu $(QEMU) --memory-mb $(QEMU_MEMORY_MB) --audio-device intel-hda --audio-device hda-duplex --expect-backend compat-azalia --skip-capture --require-boot-startup-sound --require-desktop-startup-sound
 
+validate-audio-hda-capture: $(IMAGE)
+	$(PYTHON) tools/validate_audio_stack.py --image $(IMAGE) --report build/audio-hda-capture-validation.md --qemu $(QEMU) --memory-mb $(QEMU_MEMORY_MB) --audio-device intel-hda --audio-device hda-duplex --expect-backend compat-azalia --skip-capture --require-capture-smoke
+
 validate-audio-pcspkr-startup: $(IMAGE)
 	$(PYTHON) tools/validate_audio_stack.py --image $(IMAGE) --report build/audio-pcspkr-startup-validation.md --qemu $(QEMU) --memory-mb $(QEMU_MEMORY_MB) --machine 'pc,pcspk-audiodev=snd0' --no-default-audio-device --qemu-arg=-audiodev --qemu-arg=wav,id=snd0,path=build/audio-pcspkr-startup.wav --expect-backend pcspkr --skip-capture --require-boot-startup-sound --require-desktop-startup-sound
 
@@ -2321,6 +2324,7 @@ validate-audio-matrix: $(IMAGE)
 	$(MAKE) validate-audio-hda-smoke
 	$(MAKE) validate-audio-hda-playback
 	$(MAKE) validate-audio-hda-startup
+	$(MAKE) validate-audio-hda-capture
 	$(MAKE) validate-audio-pcspkr-startup
 
 validate-gpu-backends: $(IMAGE)

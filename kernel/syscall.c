@@ -2433,30 +2433,20 @@ static uint32_t sys_fork(uint32_t a, uint32_t b, uint32_t c,
     child->context = (kernel_trap_frame_t *)((uintptr_t)child->stack + stack_offset);
 
     if (current->runs_in_user_mode) {
-        /* Forking a user-mode task. Create a fresh user-mode context
-         * for the child instead of copying the parent's (possibly
-         * kernel-mode) saved context from the last timer interrupt. */
+        /*
+         * KNOWN_BUGS #23: the external "som-e-net" merge duplicated the
+         * user-fork stack handling and computed "used stack" as
+         * top - top/4 (an ADDRESS difference against the stack top, not
+         * against the arena base) -> tens of MB (possibly unmapped) copied
+         * inside kernel context on every fork: the ctrl-x terminal open
+         * froze the WHOLE guest, census and all (measured 11/11: zero
+         * serial bytes for 60s after `desktop: key 24`). The honest copy
+         * is the bounded 8KB block below ("copy parent's user stack, top
+         * 8KB") — this pre-block was redundant AND the stall. Keep only
+         * the frame-size choice here.
+         */
         context_size = sizeof(kernel_user_trap_frame_t);
         user_stack_top = current->user_stack_top;
-        uintptr_t child_stack_top = 0u;
-        if (current->user_stack_top == VIBE_APP_DESKTOP_STACK_TOP)
-            child_stack_top = VIBE_APP_DESKTOP_LOAD_ADDR + VIBE_APP_DESKTOP_ARENA_SIZE / 2u;
-        else if (current->user_stack_top == VIBE_APP_STACK_TOP)
-            child_stack_top = VIBE_APP_LOAD_ADDR + VIBE_APP_ARENA_SIZE / 2u;
-        else if (current->user_stack_top == VIBE_APP_BOOT_STACK_TOP)
-            child_stack_top = VIBE_APP_BOOT_LOAD_ADDR + VIBE_APP_BOOT_ARENA_SIZE / 2u;
-        if (child_stack_top != 0u) {
-            uint32_t parent_used = current->user_stack_top - current->user_stack_top / 4u;
-            uint32_t max_stack = VIBE_APP_DESKTOP_ARENA_SIZE / 4u;
-            if (parent_used > max_stack) parent_used = max_stack;
-            uint32_t child_esp = (uint32_t)(child_stack_top - parent_used);
-            if (child_esp > VIBE_APP_LOAD_ADDR) {
-                memcpy((void *)(uintptr_t)child_esp,
-                       (void *)(uintptr_t)(current->user_stack_top - parent_used),
-                       parent_used);
-                user_stack_top = child_stack_top;
-            }
-        }
     } else {
         context_size = sizeof(kernel_trap_frame_t);
         user_stack_top = 0u;

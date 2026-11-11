@@ -247,7 +247,7 @@ Fonte: `NETWORK_AUDIO_PANEL_PLAN.md` (áudio), `AUDIO_HARDWARE_VALIDATION_MATRIX
 
 | # | Item | Estado | DoD | Prova | Bloqueio |
 | --- | --- | --- | --- | --- | --- |
-| 3.1 | HDA captura (input stream + BDL) | azalia só playback | record real | `validate-audio-stack-roundtrip` | — |
+| 3.1 | HDA captura (input stream + BDL) | ✅ FEITO 11/11: azalia input stream (GCAP iss, tag 1), ADC→pin programado (0x706/0x701/0x707), BDL+páginas DMA próprias, bloco one-shot BCIS→ring, read no dispatch do serviço, CAPS_CAPTURE/CAPTURE_DMA | record real | `make validate-audio-hda-capture` PASS (`audio: hda capture smoke bytes=256 blocks=2 xruns=0`, build/audio-hda-capture-validation.md); interativo `soundctl record` preso no canal digitado #24 | #24 |
 | 3.2 | IRQ compartilhado INTx em HDA/AC97 | ✅ FEITO (11/11): chain de handlers (4/linha) + UM EOI por dispatch após todos ackarem; handlers de áudio/virtio sem EOI próprio; teclado/mouse/timer em stubs dedicados inalterados. Coexistência real na linha 11 (UHCI-BSD + virtio-net) sem storm | handler compartilhado | boot sem IRQ storm: phase6 6/6 + boot-smoke 6/6 + datapath PASS + smp baseline; áudio-gate endurecido (janela 105s medida → env 180s), segue wall de digitação 0.15 | — |
 | 3.3 | Fechar `compat-azalia` | ~35 sub-itens abertos | rota canônica estável, sem re-probe agressivo | `validate-audio-hda-*` | — |
 | 3.4 | `compat-uaudio` (USB audio) MVP | MVP UHCI-only | playback USB real | `validate-audio-stack` com USB | dep 0/2 |
