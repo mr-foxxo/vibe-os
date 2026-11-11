@@ -233,6 +233,13 @@ int sys_poll_key(void) {
     return syscall5(SYSCALL_INPUT_KEY, 0, 0, 0, 0, 0);
 }
 
+/* Bug #19 item 0.12 (01/11): blocking key read (additive syscall 231).
+ * timeout_ticks=0 waits indefinitely; returns key (>0) or -1. Interactive
+ * loops use this instead of busy-polling SYSCALL_INPUT_KEY. */
+int sys_poll_key_wait(unsigned int timeout_ticks) {
+    return syscall5(SYSCALL_INPUT_KEY_WAIT, (int)timeout_ticks, 0, 0, 0, 0);
+}
+
 int sys_next_input_event(struct input_event *event) {
     return syscall5(SYSCALL_INPUT_EVENT, (int)(uintptr_t)event, 0, 0, 0, 0);
 }
@@ -321,8 +328,8 @@ void sys_leave_graphics(void) {
     (void)syscall5(SYSCALL_GFX_LEAVE, 0, 0, 0, 0, 0);
 }
 
-int sys_gfx_set_mode(uint32_t width, uint32_t height) {
-    return syscall5(SYSCALL_GFX_SET_MODE, (int)width, (int)height, 0, 0, 0);
+int sys_gfx_set_mode(uint32_t width, uint32_t height, uint8_t bpp) {
+    return syscall5(SYSCALL_GFX_SET_MODE, (int)width, (int)height, (int)bpp, 0, 0);
 }
 
 int sys_gfx_set_palette(const uint8_t *rgb_triplets) {
@@ -730,6 +737,10 @@ int sys_network_get_status(struct mk_network_status *status) {
     return syscall5(SYSCALL_NETWORK_GET_STATUS, (int)(uintptr_t)status, 0, 0, 0, 0);
 }
 
+int sys_network_socket_list(uint32_t index, struct mk_network_socket_list_entry *entry) {
+    return syscall5(SYSCALL_NETWORK_SOCKET_LIST, (int)index, (int)(uintptr_t)entry, 0, 0, 0);
+}
+
 int sys_network_scan(uint32_t index, struct mk_network_scan_info *info) {
     return syscall5(SYSCALL_NETWORK_SCAN, (int)index, (int)(uintptr_t)info, 0, 0, 0);
 }
@@ -788,6 +799,26 @@ int sys_network_recv(int handle, void *buffer, uint32_t size) {
                     (int)size,
                     0,
                     0);
+}
+
+int sys_network_sendto(int handle, const void *data, uint32_t size,
+                       const struct sockaddr *dest_addr, uint32_t addrlen) {
+    return syscall5(SYSCALL_NETWORK_SENDTO,
+                    handle,
+                    (int)(uintptr_t)data,
+                    (int)size,
+                    (int)(uintptr_t)dest_addr,
+                    (int)addrlen);
+}
+
+int sys_network_recvfrom(int handle, void *buffer, uint32_t size,
+                         struct sockaddr *src_addr, uint32_t *addrlen) {
+    return syscall5(SYSCALL_NETWORK_RECVFROM,
+                    handle,
+                    (int)(uintptr_t)buffer,
+                    (int)size,
+                    (int)(uintptr_t)src_addr,
+                    (int)(uintptr_t)addrlen);
 }
 
 int sys_network_close(int handle) {
@@ -886,6 +917,10 @@ int sys_service_pid(uint32_t service_type) {
 
 int sys_service_restart(uint32_t service_type) {
     return syscall5(SYSCALL_SERVICE_RESTART, (int)service_type, 0, 0, 0, 0);
+}
+
+int sys_service_health(uint32_t service_type, struct mk_service_health_stats *stats) {
+    return syscall5(SYSCALL_SERVICE_HEALTH, (int)(uintptr_t)stats, (int)service_type, 0, 0, 0);
 }
 
 int sys_service_event_receive(uint32_t service_type,

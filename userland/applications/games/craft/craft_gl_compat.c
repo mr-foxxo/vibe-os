@@ -8,6 +8,16 @@
 
 #include <userland/modules/include/syscalls.h>
 
+#ifndef GL_BACK
+#define GL_BACK 0x0405
+#endif
+#ifndef GL_FRONT
+#define GL_FRONT 0x0404
+#endif
+#ifndef GL_FRONT_AND_BACK
+#define GL_FRONT_AND_BACK 0x0408
+#endif
+
 int doom_snprintf(char *str, size_t size, const char *fmt, ...);
 
 #define CRAFT_MAX_BUFFERS 4096
@@ -132,6 +142,7 @@ static float g_clear_r = 0.0f;
 static float g_clear_g = 0.0f;
 static float g_clear_b = 0.0f;
 static int g_reported_alloc_failure = 0;
+static GLenum g_cull_face_mode = GL_BACK;
 
 struct craft_debug_stats {
     int frame_index;
@@ -403,6 +414,7 @@ static void craft_gl_reset_state(void) {
     g_enable_cull = 0;
     g_enable_scissor = 0;
     g_enable_logic_op = 0;
+    g_cull_face_mode = GL_BACK;
     for (int i = 0; i < 8; ++i) {
         memset(&g_attribs[i], 0, sizeof(g_attribs[i]));
     }
@@ -784,18 +796,26 @@ static void craft_draw_triangle_rasterized(struct craft_program *program,
     }
     /*
      * The software viewport flips Y when converting NDC to screen space, so
-     * the visible face winding is inverted relative to raw screen-space area.
-     * Cull negative-area triangles here to match OpenGL's default CCW front
-     * face. Block geometry should still honor GL_CULL_FACE.
+     * the visible face winding is inverted.  A CCW triangle in NDC (front
+     * face in OpenGL) has negative screen-space area after the Y-flip.
+     * For GL_BACK culling we reject positive-area (back-face) triangles.
      */
     if (g_enable_cull &&
-        mode_kind != CRAFT_PROGRAM_TEXT &&
-        mode_kind != CRAFT_PROGRAM_BLOCK &&
-        area < 0.0f) {
-        if (mode_kind == CRAFT_PROGRAM_BLOCK) {
-            g_craft_debug_stats.block_triangles_culled += 1;
+        mode_kind != CRAFT_PROGRAM_TEXT) {
+        int cull = 0;
+        if (g_cull_face_mode == GL_FRONT_AND_BACK) {
+            cull = 1;
+        } else if (g_cull_face_mode == GL_FRONT && area < 0.0f) {
+            cull = 1;
+        } else if (g_cull_face_mode == GL_BACK && area > 0.0f) {
+            cull = 1;
         }
-        return;
+        if (cull) {
+            if (mode_kind == CRAFT_PROGRAM_BLOCK) {
+                g_craft_debug_stats.block_triangles_culled += 1;
+            }
+            return;
+        }
     }
 
     min_x = (int)floorf(craft_minf(a->sx, craft_minf(b->sx, c->sx)));
@@ -1188,6 +1208,10 @@ void glClearColor(GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha) {
     g_clear_b = blue;
 }
 
+void glCullFace(GLenum mode) {
+    g_cull_face_mode = mode;
+}
+
 void glCompileShader(GLuint shader) { (void)shader; }
 
 GLuint glCreateProgram(void) {
@@ -1253,8 +1277,8 @@ void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
         }
     } else if (mode == GL_LINES) {
         for (GLsizei i = 0; i + 1 < count; i += 2) {
-            struct craft_vertex a;
-            struct craft_vertex b;
+            struct craft_vertex a = {0};
+            struct craft_vertex b = {0};
             if (!craft_fetch_vertex(first, i + 0, program, &a)) continue;
             if (!craft_fetch_vertex(first, i + 1, program, &b)) continue;
             craft_draw_line(&a, &b);

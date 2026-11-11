@@ -17,7 +17,18 @@ enum {
 #define NETWORK_SOCKET_READY_ACCEPT 0x04
 #define NETWORK_SOCKET_READY_CONNECT 0x08
 
-typedef void (*network_queue_ready_event_cb_t)(int32_t socket_handle, uint32_t readiness_flags);
+/*
+ * The ready callback fires while the queue lock is STILL held by the caller,
+ * so it must not call back into any network_queue API that re-acquires it —
+ * get_rx_depth/get_tx_depth self-deadlocked on the non-recursive spinlock
+ * (found 14/10: any socket() path hung the network service). All data the
+ * listener needs is therefore captured from the socket under the lock and
+ * passed by value. Internal kernel-kernel interface; not a userland ABI.
+ */
+typedef void (*network_queue_ready_event_cb_t)(int32_t socket_handle,
+                                               uint32_t readiness_flags,
+                                               uint32_t rx_depth,
+                                               uint32_t tx_depth);
 
 void network_queue_init(void);
 int network_queue_rx_enqueue(const uint8_t *data, uint32_t length, int32_t socket_handle);

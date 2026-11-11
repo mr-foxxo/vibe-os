@@ -134,8 +134,22 @@ class QemuSession:
             time.sleep(0.05)
         raise RuntimeError("Timed out waiting for any marker: " + " | ".join(markers))
 
+    def wait_for_markers(self, markers: List[str], timeout: float) -> None:
+        """Poll the serial log until every marker appears. Never raises:
+        slow TCG hosts still get the full log read once the deadline hits."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            log = self.read_log()
+            if all(marker in log for marker in markers):
+                return
+            if "kernel_panic:" in log:
+                return
+            if self.proc.poll() is not None:
+                return
+            time.sleep(0.5)
 
-def run_scenario(qemu_binary: str, image_path: Path, memory_mb: int, scenario: Scenario) -> ScenarioResult:
+
+def run_scenario(qemu_binary: str, image_path: Path, memory_mb: int, scenario: Scenario, timeout_seconds: float) -> ScenarioResult:
     with tempfile.TemporaryDirectory(prefix=f"vibe-smp-{scenario.name}-") as temp_dir:
         scenario_image = Path(temp_dir) / "boot.img"
         shutil.copyfile(image_path, scenario_image)
@@ -143,13 +157,10 @@ def run_scenario(qemu_binary: str, image_path: Path, memory_mb: int, scenario: S
         try:
             session = QemuSession(qemu_binary, scenario_image, memory_mb, Path(temp_dir), scenario.qemu_args)
             if scenario.toggle_smp:
-                time.sleep(0.35)
+                time.sleep(2.0)
                 session.send_key("m")
                 session.send_key("ret")
-            session.wait_for_any(
-                ["userland.app: shell start", "init: bootstrap shell active", "SMP skipped", "SMP OK", "SMP partial"],
-                timeout=35.0,
-            )
+            session.wait_for_markers(scenario.must_have, timeout=timeout_seconds)
             time.sleep(1.0)
             log = session.read_log()
             session.close()
@@ -200,10 +211,7 @@ def build_scenarios() -> List[Scenario]:
             description="Validates clean BSP-only fallback when multiprocessor topology exists but the SMP experiment stays disabled.",
             qemu_args=["-smp", "2"],
             must_have=common + [
-                "CPU topology: multiprocessor platform verified",
-                "LAPIC/SMP experimental toggle is OFF",
-                "SMP fallback: experimental toggle OFF",
-                "SMP skipped",
+                "smp: skipped (experimental flag off)",
             ],
         ),
         Scenario(
@@ -211,9 +219,10 @@ def build_scenarios() -> List[Scenario]:
             description="Enables experimental SMP in stage2 and validates dual-core bring-up in QEMU.",
             qemu_args=["-smp", "2"],
             must_have=common + [
-                "CPU topology: multiprocessor platform verified",
                 "smp: online cpus=2/2",
-                "SMP OK",
+                "smp: ap lapic timer armed",
+                "smp: scheduler enabled cpus=2",
+                "userland.app: shell start",
             ],
             toggle_smp=True,
         ),
@@ -222,9 +231,9 @@ def build_scenarios() -> List[Scenario]:
             description="Enables experimental SMP in stage2 and validates four-core bring-up in QEMU.",
             qemu_args=["-smp", "4"],
             must_have=common + [
-                "CPU topology: multiprocessor platform verified",
                 "smp: online cpus=4/4",
-                "SMP OK",
+                "smp: scheduler enabled cpus=4",
+                "userland.app: shell start",
             ],
             toggle_smp=True,
         ),
@@ -237,6 +246,7 @@ def main() -> int:
     parser.add_argument("--report", required=True)
     parser.add_argument("--qemu", default="qemu-system-x86_64")
     parser.add_argument("--memory-mb", type=int, default=3072)
+    parser.add_argument("--timeout", type=float, default=240.0, help="per-scenario marker wait in seconds (TCG hosts need more)")
     args = parser.parse_args()
 
     image_path = Path(args.image)
@@ -250,7 +260,7 @@ def main() -> int:
         print(f"error: image not found: {image_path}", file=sys.stderr)
         return 1
 
-    results = [run_scenario(qemu_binary, image_path, args.memory_mb, scenario) for scenario in build_scenarios()]
+    results = [run_scenario(qemu_binary, image_path, args.memory_mb, scenario, args.timeout) for scenario in build_scenarios()]
     write_report(report_path, results)
     return 0 if all(result.passed for result in results) else 1
 

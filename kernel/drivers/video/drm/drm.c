@@ -1,6 +1,9 @@
 #include <kernel/drivers/video/drm/drm.h>
 #include <kernel/drivers/debug/debug.h>
 #include <kernel/drivers/video/drm/i915/i915.h>
+#include <kernel/driver_manager.h>
+#include <kernel/pci_bus.h>
+#include <string.h>
 
 #define PCI_VENDOR_BOCHS_QEMU 0x1234u
 #define PCI_DEVICE_BOCHS_VGA 0x1111u
@@ -117,12 +120,6 @@ static int kernel_drm_candidate_kind(const struct kernel_pci_device_info *info,
     return 0;
 }
 
-struct kernel_drm_probe_ctx {
-    struct kernel_drm_candidate *out;
-    size_t capacity;
-    size_t count;
-};
-
 static const struct kernel_drm_backend_ops *kernel_drm_find_backend(enum kernel_drm_backend_kind kind) {
     size_t i;
 
@@ -181,48 +178,71 @@ static void kernel_drm_clear_mode_out(struct video_mode *mode_out) {
     *mode_out = (struct video_mode){0};
 }
 
-static int kernel_drm_probe_cb(const struct kernel_pci_device_info *info, void *ctx_ptr) {
-    struct kernel_drm_probe_ctx *ctx = (struct kernel_drm_probe_ctx *)ctx_ptr;
-    struct kernel_drm_candidate candidate;
+static void kernel_drm_populate_candidate(pci_device_t *dev, struct kernel_drm_candidate *candidate) {
+    struct kernel_pci_device_info info;
+    uintptr_t bar0_base;
+    size_t bar0_size;
+    uintptr_t bar1_base;
+    size_t bar1_size;
+    uintptr_t bar2_base;
+    size_t bar2_size;
 
-    if (info->class_code != PCI_CLASS_DISPLAY) {
-        return 0;
-    }
-    if (info->subclass != PCI_SUBCLASS_DISPLAY_VGA &&
-        info->subclass != PCI_SUBCLASS_DISPLAY_XGA &&
-        info->subclass != PCI_SUBCLASS_DISPLAY_3D) {
-        return 0;
-    }
+    info.bus = dev->bus;
+    info.slot = dev->slot;
+    info.function = dev->function;
+    info.vendor_id = dev->vendor_id;
+    info.device_id = dev->device_id;
+    info.class_code = dev->class_code;
+    info.subclass = dev->subclass;
+    info.bars[0] = dev->bar_raw[0];
+    info.bars[1] = dev->bar_raw[1];
+    info.bars[2] = dev->bar_raw[2];
 
-    (void)kernel_drm_candidate_kind(info,
-                                    &candidate.backend_kind,
-                                    &candidate.backend_name,
-                                    &candidate.device_name);
-    candidate.pci = *info;
-    candidate.mmio_base = kernel_pci_bar_base(info->bars[0]);
-    candidate.mmio_size = kernel_pci_bar_size(info->bus, info->slot, info->function, 0u);
-    candidate.fb_base = kernel_pci_bar_base(info->bars[1]);
-    candidate.fb_size = kernel_pci_bar_size(info->bus, info->slot, info->function, 1u);
-    if (candidate.backend_kind == KERNEL_DRM_BACKEND_I915) {
-        candidate.fb_base = kernel_pci_bar_base(info->bars[2]);
-        candidate.fb_size = kernel_pci_bar_size(info->bus, info->slot, info->function, 2u);
-    }
+    (void)kernel_drm_candidate_kind(&info,
+                                    &candidate->backend_kind,
+                                    &candidate->backend_name,
+                                    &candidate->device_name);
 
-    if (ctx->count < ctx->capacity) {
-        ctx->out[ctx->count] = candidate;
+    bar0_base = pci_bar_addr(dev, 0);
+    bar0_size = pci_bar_size(dev, 0);
+    bar1_base = pci_bar_addr(dev, 1);
+    bar1_size = pci_bar_size(dev, 1);
+    bar2_base = pci_bar_addr(dev, 2);
+    bar2_size = pci_bar_size(dev, 2);
+
+    candidate->pci = info;
+    candidate->mmio_base = bar0_base;
+    candidate->mmio_size = bar0_size;
+    candidate->fb_base = bar1_base;
+    candidate->fb_size = bar1_size;
+    if (candidate->backend_kind == KERNEL_DRM_BACKEND_I915) {
+        candidate->fb_base = bar2_base;
+        candidate->fb_size = bar2_size;
     }
-    ctx->count += 1u;
-    return 0;
 }
 
 size_t kernel_drm_probe_candidates(struct kernel_drm_candidate *out, size_t capacity) {
-    struct kernel_drm_probe_ctx ctx;
+    size_t count = 0;
 
-    ctx.out = out;
-    ctx.capacity = out != 0 ? capacity : 0u;
-    ctx.count = 0u;
-    kernel_pci_enumerate(kernel_drm_probe_cb, &ctx);
-    return ctx.count;
+    for (int i = 0; i < pci_device_count(); ++i) {
+        pci_device_t *dev = pci_device_get(i);
+
+        if (dev->class_code != PCI_CLASS_DISPLAY) {
+            continue;
+        }
+        if (dev->subclass != PCI_SUBCLASS_DISPLAY_VGA &&
+            dev->subclass != PCI_SUBCLASS_DISPLAY_XGA &&
+            dev->subclass != PCI_SUBCLASS_DISPLAY_3D) {
+            continue;
+        }
+
+        if (out != 0 && count < capacity) {
+            kernel_drm_populate_candidate(dev, &out[count]);
+        }
+        count++;
+    }
+
+    return count;
 }
 
 void kernel_drm_log_candidates(void) {
@@ -405,5 +425,63 @@ void kernel_drm_prepare_for_bios_modeset(void) {
     kernel_drm_prepare_backend_for_bios(backend);
     if (backend == g_kernel_drm_last_attempted_backend) {
         g_kernel_drm_last_attempted_backend = KERNEL_DRM_BACKEND_NONE;
+    }
+}
+
+int kernel_drm_ioctl(int cmd, void *arg, size_t arg_size) {
+    (void)arg_size;
+
+    switch (cmd) {
+    case VID_IOCTL_GET_MODE: {
+        struct vid_mode_info *info = (struct vid_mode_info *)arg;
+        if (info == 0) return -1;
+        info->width = 0;
+        info->height = 0;
+        info->pitch = 0;
+        info->bpp = 8;
+        info->fb_addr = 0;
+        return 0;
+    }
+    case VID_IOCTL_GET_BACKEND: {
+        struct vid_backend_info *info = (struct vid_backend_info *)arg;
+        const char *active_name = kernel_drm_active_backend_name();
+        const char *detected_name = kernel_drm_detected_backend_name();
+        if (info == 0) return -1;
+        info->active = g_kernel_drm_active_backend != KERNEL_DRM_BACKEND_NONE ? 1u : 0u;
+        info->present = g_kernel_drm_detected_backend != KERNEL_DRM_BACKEND_NONE ? 1u : 0u;
+        info->drm_active = info->active;
+        if (active_name != 0 && active_name[0] != '\0') {
+            size_t len = strlen(active_name);
+            if (len >= sizeof(info->name)) len = sizeof(info->name) - 1u;
+            memcpy(info->name, active_name, len);
+            info->name[len] = '\0';
+        } else if (detected_name != 0 && detected_name[0] != '\0') {
+            size_t len = strlen(detected_name);
+            if (len >= sizeof(info->name)) len = sizeof(info->name) - 1u;
+            memcpy(info->name, detected_name, len);
+            info->name[len] = '\0';
+        } else {
+            info->name[0] = '\0';
+        }
+        return 0;
+    }
+    case VID_IOCTL_GET_FRAMEBUFFER: {
+        struct vid_framebuffer_info *info = (struct vid_framebuffer_info *)arg;
+        const struct kernel_pci_device_info *pci = kernel_drm_active_pci_info();
+        if (info == 0) return -1;
+        info->fb_addr = 0;
+        info->fb_size = 0;
+        info->pitch = 0;
+        info->width = 0;
+        info->height = 0;
+        info->bpp = 8;
+        if (pci != 0) {
+            info->fb_addr = (uint32_t)pci->bars[1];
+            info->fb_size = 0;
+        }
+        return 0;
+    }
+    default:
+        return -1;
     }
 }

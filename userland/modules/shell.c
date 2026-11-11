@@ -190,11 +190,46 @@ static int read_line(char *buf, int maxlen, const char *prompt) {
     draft[0] = '\0';
 
     for (;;) {
-        fs_tick();
-        int c = sys_poll_key();
-
+        /*
+         * No maintenance work on the interactive read path (bug #19,
+         * 01/11, gate run 19_ns13): even THROTTLED, fs_tick() here can
+         * enter a STORAGE writeback wait (up to 4 blocking
+         * sys_storage_write_sectors IPCs per step, budget 8192 ticks).
+         * While the shell sits in that wait, every INPUT reply that
+         * arrives is matched against waiting_src=1, deferred (max 8) and
+         * requeued — measured `unexpected reply src=6 dst=11
+         * waiting_src=1` flooding exactly while `netmgrd status` was
+         * being typed, stalling the line at `netmgrd stat`. Input
+         * latency is the contract of this loop. Writeback keeps running
+         * from the command loop (fs_tick per iteration) and the desktop
+         * loop; a rescue shell parked between keystrokes simply does not
+         * dirty-sync, which is fine — sync is not on the typing
+         * critical-path and fs_flush still runs at session exit.
+         *
+         * The 30-tick wait window stays well under the 128-tick service
+         * reply budget on purpose (gate run 19_ns12): at 100 ticks the
+         * host parked in its own mailbox wait while the client re-sent a
+         * duplicate request, and the late reply hit an abandoned client
+         * (`request timeout svc=5 type=109 ... cliQ=1` + `input
+         * degraded`). 30 leaves a 98-tick margin for host wake-up +
+         * reply latency under TCG.
+         */
+        int c = sys_poll_key_wait(30u);
+        {
+            static int g_key_trace = 40;
+            if (g_key_trace != 0 && c > 0) {
+                char km[24];
+                km[0] = '\0';
+                str_append(km, "rk ", (int)sizeof(km));
+                shell_append_int(km, (int)sizeof(km), c);
+                str_append(km, " ", (int)sizeof(km));
+                shell_append_int(km, (int)sizeof(km), len);
+                str_append(km, "\n", (int)sizeof(km));
+                sys_write_debug(km);
+                g_key_trace -= 1;
+            }
+        }
         if (c <= 0) {
-            sys_yield();
             continue;
         }
 
@@ -297,10 +332,54 @@ static int read_line(char *buf, int maxlen, const char *prompt) {
     }
 }
 
+/*
+ * 0.6 (30/10): a freshly-started interactive shell must not execute
+ * keystrokes typed before its prompt existed. The stage2 boot-menu selector
+ * (and the harnesses that drive it) pulses s,s,<ret>; the trailing scancodes
+ * land in the PS/2 queue just after the shell reaches "ready" and the old
+ * code ran them as commands: "ss" -> unknown command, and worse they prefix
+ * the first real command (the network-surface gate saw "netmgrd" arrive as
+ * "ssetmgrd"). Drain the queue until it stays quiet for a short window so a
+ * late-arriving menu byte cannot be mistaken for user input. Bounded by a
+ * poll guard so a stuck key can never wedge the shell. This is the same
+ * type-ahead flush a real login shell performs; it is userland-only and
+ * touches no ABI.
+ */
+static void shell_flush_typeahead(void) {
+    uint32_t start = sys_ticks();
+    uint32_t last_key_tick = start;
+    int saw_key = 0;
+
+    /* Drain until 100 ticks (~1 s) pass with no key arriving; bounded to
+     * 800 ticks (~8 s) so a stuck key can never wedge the shell. A key
+     * resets the quiet window, so a slow in-flight menu byte is still
+     * caught. (01/11, gate run 19_ns2: the old 30-tick window closed while
+     * the selector's s,s,<ret> bursts were still landing ~40-70 ticks
+     * apart under TCG pacing — the leaked bytes executed `ss` four times
+     * and ate the first-command window. The flush exists exactly to eat
+     * those; make its quiet window longer than the burst spacing.) */
+    while (sys_ticks() - start < 800u) {
+        if (sys_poll_key() > 0) {
+            last_key_tick = sys_ticks();
+            saw_key = 1;
+            continue;
+        }
+        if (sys_ticks() - last_key_tick >= 100u) {
+            break;
+        }
+        sys_sleep();
+    }
+    if (saw_key) {
+        sys_write_debug("shell: flushed typeahead\n");
+    }
+}
+
 void shell_start_ready(void) {
     char line[LINE_MAX];
     char *argv[SHELL_MAX_ARGS + 1];
     char prompt[96];
+
+    shell_flush_typeahead();
 
     for (;;) {
         int argc;
@@ -330,10 +409,24 @@ void shell_start_ready(void) {
 
         rc = busybox_main(argc, argv);
         shell_debug_cmd_status(argv[0], rc);
-        if (rc != 0) {
-            fs_flush();
+        if (busybox_exit_requested()) {
             break;
         }
+        /* Item 6.1: a failing command must NOT kill the rescue session —
+         * the shell is the field tool on real hardware. Report the rc to
+         * the user and keep prompting; `exit` (explicit request channel)
+         * is the only command that leaves the loop. */
+        if (rc != 0) {
+            char notice[96];
+
+            notice[0] = '\0';
+            str_append(notice, argv[0], (int)sizeof(notice));
+            str_append(notice, ": exit status ", (int)sizeof(notice));
+            shell_append_int(notice, (int)sizeof(notice), rc);
+            str_append(notice, "\n", (int)sizeof(notice));
+            console_write(notice);
+        }
+        fs_tick();
     }
 
     fs_flush();

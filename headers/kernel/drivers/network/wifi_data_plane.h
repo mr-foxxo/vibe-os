@@ -2,6 +2,7 @@
 #define KERNEL_DRIVERS_NETWORK_WIFI_DATA_PLANE_H
 
 #include <stdint.h>
+#include <stddef.h>
 
 /* WiFi standards */
 #define WIFI_STANDARD_802_11B  0x01u
@@ -111,5 +112,11 @@ int wifi_device_disconnect(struct wifi_device *dev);
 int wifi_device_get_state(struct wifi_device *dev);
 int wifi_device_send_frame(struct wifi_device *dev, const uint8_t *frame, uint16_t len);
 int wifi_device_recv_frame(struct wifi_device *dev, uint8_t *frame, uint16_t *len);
+struct wifi_device *wifi_get_device(void);
+int wifi_device_poll_interrupts(struct wifi_device *dev);
+
+/* Driver registration */
+void kernel_wifi_data_plane_init(void);
+int kernel_wifi_data_plane_ioctl(int cmd, void *arg, size_t arg_size);
 
 #endif /* KERNEL_DRIVERS_NETWORK_WIFI_DATA_PLANE_H */

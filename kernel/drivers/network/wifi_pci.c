@@ -3,6 +3,7 @@
 #include <kernel/drivers/debug/debug.h>
 #include <kernel/hal/io.h>
 #include <kernel/kernel.h>
+#include <kernel/kernel_string.h>
 #include <stddef.h>
 
 #define PCI_CONFIG_ADDRESS_PORT 0xCF8u
@@ -174,4 +175,28 @@ void kernel_wifi_pci_get_chip_name(uint16_t vendor_id, uint16_t device_id,
         buffer[i] = id->name[i];
     }
     buffer[i] = '\0';
+}
+
+int kernel_wifi_pci_ioctl(int cmd, void *arg, size_t arg_size) {
+    (void)arg_size;
+    switch (cmd) {
+    case DRV_IOCTL_GET_STATUS: {
+        struct drv_device_status *st = (struct drv_device_status *)arg;
+        if (!st) return -1;
+        memset(st, 0, sizeof(*st));
+        st->present = (uint32_t)g_present;
+        st->active = (uint32_t)g_present;
+        return 0;
+    }
+    case DRV_IOCTL_GET_INFO: {
+        struct { uint16_t vendor; uint16_t device; const char *name; } *info = (void *)arg;
+        if (!info) return -1;
+        info->vendor = g_vendor_id;
+        info->device = g_device_id;
+        info->name = g_chip_name;
+        return 0;
+    }
+    default:
+        return -1;
+    }
 }

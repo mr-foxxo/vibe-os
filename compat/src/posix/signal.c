@@ -1,10 +1,31 @@
 #include "compat_signal_state.h"
 
 #include <headers/signal.h>
+#include <headers/sys/time.h>
 #include <compat/posix/errno.h>
 #include <compat/posix/unistd.h>
 #include <compat/libc/string.h>
 #include <lang/include/vibe_app_runtime.h>
+#include <include/userland_api.h>
+
+#define SYSCALL_SIGACTION 180
+#define SYSCALL_SIGPROCMASK 181
+#define SYSCALL_SIGSUSPEND 182
+#define SYSCALL_SIGPENDING 183
+#define SYSCALL_ALARM 184
+#define SYSCALL_SETITIMER 185
+#define SYSCALL_GETITIMER 186
+#define SYSCALL_SIGWAIT 187
+#define SYSCALL_SIGWAITINFO 188
+
+static inline long compat_syscall6(long num, long a1, long a2, long a3, long a4, long a5) {
+    long ret;
+    __asm__ volatile("int $0x80"
+                     : "=a"(ret)
+                     : "a"(num), "b"(a1), "c"(a2), "d"(a3), "S"(a4), "D"(a5)
+                     : "memory");
+    return ret;
+}
 
 static struct sigaction g_signal_actions[NSIG];
 static sigset_t g_signal_mask = 0u;
@@ -72,9 +93,19 @@ static int compat_signal_dispatch_one(int signo) {
     return 1;
 }
 
+static void compat_signal_fetch_kernel_pending(void) {
+    sigset_t kernel_pending = 0u;
+
+    if (compat_syscall6(SYSCALL_SIGPENDING, (long)(uintptr_t)&kernel_pending,
+                        0, 0, 0, 0) == 0) {
+        g_signal_pending |= kernel_pending;
+    }
+}
+
 static int compat_signal_dispatch_unblocked(void) {
     int signo;
 
+    compat_signal_fetch_kernel_pending();
     compat_signal_poll_alarm();
     for (signo = 1; signo < NSIG; ++signo) {
         sigset_t bit = sigmask(signo);
@@ -128,23 +159,6 @@ int raise(int signo) {
     return 0;
 }
 
-int kill(pid_t pid, int signo) {
-    pid_t self = getpid();
-
-    if (signo < 0 || signo >= NSIG) {
-        errno = EINVAL;
-        return -1;
-    }
-    if (pid != self && pid != 0) {
-        errno = ESRCH;
-        return -1;
-    }
-    if (signo == 0) {
-        return 0;
-    }
-    return raise(signo);
-}
-
 int sigaction(int signo, const struct sigaction *act, struct sigaction *oldact) {
     if (!compat_signal_is_valid(signo)) {
         errno = EINVAL;
@@ -161,6 +175,10 @@ int sigaction(int signo, const struct sigaction *act, struct sigaction *oldact) 
     if (act != 0) {
         g_signal_actions[signo] = *act;
     }
+
+    (void)compat_syscall6(SYSCALL_SIGACTION, (long)signo,
+                          (long)(uintptr_t)act,
+                          (long)(uintptr_t)oldact, 0, 0);
     return 0;
 }
 
@@ -197,6 +215,9 @@ int sigprocmask(int how, const sigset_t *set, sigset_t *oldset) {
         return -1;
     }
 
+    (void)compat_syscall6(SYSCALL_SIGPROCMASK, (long)how,
+                          (long)(uintptr_t)set,
+                          (long)(uintptr_t)oldset, 0, 0);
     (void)compat_signal_dispatch_unblocked();
     return 0;
 }
@@ -310,6 +331,8 @@ unsigned int alarm(unsigned int seconds) {
     } else {
         g_alarm_deadline_ms = now + ((unsigned long long)seconds * 1000ull);
     }
+
+    (void)compat_syscall6(SYSCALL_ALARM, (long)seconds, 0, 0, 0, 0);
     return remaining;
 }
 
@@ -321,4 +344,122 @@ int pause(void) {
         }
         vibe_app_yield();
     }
+}
+
+int ualarm(useconds_t value, useconds_t interval) {
+    unsigned long long now = vibe_app_millis();
+    useconds_t remaining = 0u;
+
+    (void)interval;
+
+    if (g_alarm_deadline_ms != 0ull && g_alarm_deadline_ms > now) {
+        unsigned long long delta_ms = g_alarm_deadline_ms - now;
+        remaining = (useconds_t)(delta_ms * 1000ull);
+    }
+
+    if (value == 0u) {
+        g_alarm_deadline_ms = 0ull;
+    } else {
+        g_alarm_deadline_ms = now + ((unsigned long long)value / 1000u);
+        if (value % 1000u != 0u) {
+            g_alarm_deadline_ms += 1ull;
+        }
+    }
+
+    (void)compat_syscall6(SYSCALL_ALARM, (long)((value + 999999u) / 1000000u), 0, 0, 0, 0);
+    return (int)remaining;
+}
+
+int setitimer(int which, const struct itimerval *value, struct itimerval *ovalue) {
+    if (value == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (ovalue != 0) {
+        memset(ovalue, 0, sizeof(*ovalue));
+    }
+
+    if (which == ITIMER_REAL) {
+        unsigned long long now = vibe_app_millis();
+        if (ovalue != 0 && g_alarm_deadline_ms > now) {
+            unsigned long long delta = g_alarm_deadline_ms - now;
+            ovalue->it_value.tv_sec = (time_t)(delta / 1000ull);
+            ovalue->it_value.tv_usec = (suseconds_t)((delta % 1000ull) * 1000ll);
+        }
+        if (value->it_value.tv_sec == 0 && value->it_value.tv_usec == 0) {
+            g_alarm_deadline_ms = 0ull;
+        } else {
+            unsigned long long total_ms =
+                (unsigned long long)value->it_value.tv_sec * 1000ull +
+                (unsigned long long)(value->it_value.tv_usec + 999) / 1000ull;
+            g_alarm_deadline_ms = now + total_ms;
+            (void)compat_syscall6(SYSCALL_SETITIMER, (long)which,
+                                  (long)(uintptr_t)value,
+                                  (long)(uintptr_t)ovalue, 0, 0);
+        }
+        return 0;
+    }
+
+    return (int)compat_syscall6(SYSCALL_SETITIMER, (long)which,
+                                (long)(uintptr_t)value,
+                                (long)(uintptr_t)ovalue, 0, 0);
+}
+
+int getitimer(int which, struct itimerval *value) {
+    if (value == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (which == ITIMER_REAL) {
+        unsigned long long now = vibe_app_millis();
+        memset(value, 0, sizeof(*value));
+        if (g_alarm_deadline_ms > now) {
+            unsigned long long delta = g_alarm_deadline_ms - now;
+            value->it_value.tv_sec = (time_t)(delta / 1000ull);
+            value->it_value.tv_usec = (suseconds_t)((delta % 1000ull) * 1000ll);
+        }
+        return 0;
+    }
+
+    return (int)compat_syscall6(SYSCALL_GETITIMER, (long)which,
+                                (long)(uintptr_t)value, 0, 0, 0);
+}
+
+int sigwaitinfo(const sigset_t *set, siginfo_t *info) {
+    int signo;
+
+    if (set == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    compat_signal_fetch_kernel_pending();
+    compat_signal_poll_alarm();
+    for (signo = 1; signo < NSIG; ++signo) {
+        sigset_t bit = sigmask(signo);
+        if (((*set) & bit) != 0u && (g_signal_pending & bit) != 0u) {
+            g_signal_pending &= ~bit;
+            if (info != 0) {
+                memset(info, 0, sizeof(*info));
+                info->si_signo = signo;
+            }
+            return signo;
+        }
+    }
+
+    {
+        long ret = compat_syscall6(SYSCALL_SIGWAITINFO, (long)(uintptr_t)set,
+                                   (long)(uintptr_t)info, 0, 0, 0);
+        if (ret >= 1 && ret < NSIG) {
+            if (info != 0 && info->si_signo == 0) {
+                info->si_signo = (int)ret;
+            }
+            return (int)ret;
+        }
+    }
+
+    errno = EINTR;
+    return -1;
 }

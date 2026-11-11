@@ -41,4 +41,12 @@ size_t strcspn(const char *s, const char *reject);
 char *strdup(const char *s);
 char *strndup(const char *s, size_t n);
 
+char *strtok_r(char *str, const char *delim, char **saveptr);
+char *strcasestr(const char *haystack, const char *needle);
+size_t strnlen(const char *s, size_t maxlen);
+char *strsignal(int sig);
+void *memrchr(const void *s, int c, size_t n);
+size_t strlcat(char *dst, const char *src, size_t size);
+size_t strlcpy(char *dst, const char *src, size_t size);
+
 #endif /* COMPAT_STRING_H */

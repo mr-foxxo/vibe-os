@@ -774,7 +774,7 @@ void ui_release_startup_persist(void) {
 }
 
 int ui_set_resolution(uint32_t width, uint32_t height) {
-    if (sys_gfx_set_mode(width, height) != 0) {
+    if (sys_gfx_set_mode(width, height, 8) != 0) {
         return -1;
     }
     ui_refresh_metrics();

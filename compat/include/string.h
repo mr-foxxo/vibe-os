@@ -37,6 +37,7 @@
 
 #include <sys/cdefs.h>
 #include <sys/_null.h>
+#include <sys/_types.h>
 #include <compat_defs.h>
 
 #if __POSIX_VISIBLE >= 200809

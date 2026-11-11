@@ -144,6 +144,13 @@ Contrato fechado:
 - ancillary data continua fora do contrato ate existir backend real.
 - `SO_ERROR`, blocking/non-blocking e `EWOULDBLOCK`/`EINPROGRESS` continuam sendo a semantica publica de erro.
 
+Adicoes aditivas registradas (append-only, sem tocar structs existentes):
+- `SYSCALL_NETWORK_SOCKET_LIST = 232` + `MK_MSG_NET_SOCKET_LIST = 110` (item 1.5):
+  iteracao `index -> struct mk_network_socket_list_entry` (proto/state/recv_ready/
+  portas/ip remoto/pid), codigos estaveis espelhados em
+  `headers/kernel/microkernel/network.h` e `lang/include/vibe_network_client.h`;
+  reply com payload vazio significa "passou do fim" (mesmo padrao do SCAN).
+
 Casos avancados:
 - control messages (`cmsghdr`) so passam a valer com backend real e ABI nova se necessario
 - `ioctl(SIOCGIF*)` continua como traducao para o estado da stack de rede do microkernel

@@ -1,5 +1,6 @@
 #include "../include/compat/libc/string.h"
 #include <stdint.h>
+#include <stdlib.h>
 
 /* String functions */
 size_t strlen(const char *s) {
@@ -153,4 +154,148 @@ char *strtok(char *str, const char *delim) {
     }
     
     return token;
+}
+
+char *strdup(const char *s) {
+    size_t len;
+    char *copy;
+    if (!s) return 0;
+    len = strlen(s);
+    copy = malloc(len + 1);
+    if (!copy) return 0;
+    memcpy(copy, s, len + 1);
+    return copy;
+}
+
+char *strndup(const char *s, size_t n) {
+    size_t len;
+    char *copy;
+    if (!s) return 0;
+    len = strlen(s);
+    if (len > n) len = n;
+    copy = malloc(len + 1);
+    if (!copy) return 0;
+    memcpy(copy, s, len);
+    copy[len] = '\0';
+    return copy;
+}
+
+char *strtok_r(char *str, const char *delim, char **saveptr) {
+    char *s;
+    if (!delim || !*delim) return str;
+    if (str) {
+        *saveptr = str;
+    }
+    if (!*saveptr) return 0;
+    s = *saveptr;
+    while (*s && strchr(delim, *s)) s++;
+    if (!*s) {
+        *saveptr = 0;
+        return 0;
+    }
+    str = s;
+    while (*s && !strchr(delim, *s)) s++;
+    if (*s) {
+        *s = '\0';
+        *saveptr = s + 1;
+    } else {
+        *saveptr = 0;
+    }
+    return str;
+}
+
+char *strcasestr(const char *haystack, const char *needle) {
+    size_t i;
+    if (!haystack || !needle) return 0;
+    if (*needle == 0) return (char *)haystack;
+    for (; *haystack; haystack++) {
+        for (i = 0; needle[i]; i++) {
+            char h = haystack[i];
+            char n = needle[i];
+            if (h >= 'A' && h <= 'Z') h += 32;
+            if (n >= 'A' && n <= 'Z') n += 32;
+            if (h != n) break;
+        }
+        if (needle[i] == '\0') return (char *)haystack;
+    }
+    return 0;
+}
+
+size_t strnlen(const char *s, size_t maxlen) {
+    size_t n = 0;
+    if (s) while (n < maxlen && s[n]) n++;
+    return n;
+}
+
+static const char *g_sig_str(int sig) {
+    switch (sig) {
+    case 1: return "Hangup";
+    case 2: return "Interrupt";
+    case 3: return "Quit";
+    case 4: return "Illegal instruction";
+    case 5: return "Trace/BPT trap";
+    case 6: return "Abort trap";
+    case 7: return "EMT trap";
+    case 8: return "Floating point exception";
+    case 9: return "Killed";
+    case 10: return "Bus error";
+    case 11: return "Segmentation fault";
+    case 12: return "Bad system call";
+    case 13: return "Broken pipe";
+    case 14: return "Alarm clock";
+    case 15: return "Terminated";
+    default: return "Unknown signal";
+    }
+}
+
+char *strsignal(int sig) {
+    return (char *)g_sig_str(sig);
+}
+
+void *memrchr(const void *s, int c, size_t n) {
+    const unsigned char *p = (const unsigned char *)s + n;
+    while (n--) {
+        p--;
+        if (*p == (unsigned char)c) return (void *)p;
+    }
+    return 0;
+}
+
+size_t strlcat(char *dst, const char *src, size_t size) {
+    size_t dst_len = 0;
+    size_t src_len;
+    if (!dst || !src) return 0;
+    while (dst_len < size && dst[dst_len]) dst_len++;
+    src_len = strlen(src);
+    if (dst_len == size) return size + src_len;
+    if (src_len < size - dst_len) {
+        memcpy(dst + dst_len, src, src_len + 1);
+    } else {
+        memcpy(dst + dst_len, src, size - dst_len - 1);
+        dst[size - 1] = '\0';
+    }
+    return dst_len + src_len;
+}
+
+size_t strlcpy(char *dst, const char *src, size_t size) {
+    size_t src_len;
+    if (!dst || !src) return 0;
+    src_len = strlen(src);
+    if (size == 0) return src_len;
+    if (src_len >= size) {
+        memcpy(dst, src, size - 1);
+        dst[size - 1] = '\0';
+    } else {
+        memcpy(dst, src, src_len + 1);
+    }
+    return src_len;
+}
+
+void *memchr(const void *s, int c, size_t n) {
+    const unsigned char *p = s;
+    while (n--) {
+        if (*p == (unsigned char)c) return (void *)p;
+        p++;
+    }
+    return NULL;
 }

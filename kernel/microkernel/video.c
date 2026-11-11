@@ -135,11 +135,19 @@ static int mk_video_upload_packed_blit8_source(uint32_t transfer_id, const uint8
     }
 
     dst = (uint8_t *)mk_transfer_data_write(transfer_id);
-    if (dst == 0 || mk_transfer_size(transfer_id) < byte_count) {
+    if (dst == 0) {
+        return -1;
+    }
+    if (mk_transfer_size(transfer_id) < byte_count) {
+        mk_transfer_release(transfer_id);
         return -1;
     }
 
-    return mk_video_pack_blit8_source_to_buffer(src, src_w, src_h, dst, byte_count);
+    {
+        int rc = mk_video_pack_blit8_source_to_buffer(src, src_w, src_h, dst, byte_count);
+        mk_transfer_release(transfer_id);
+        return rc;
+    }
 }
 
 static void mk_video_event_init_subscribers(void) {
@@ -333,7 +341,7 @@ static int mk_video_ensure_present_worker(void) {
                        MK_LAUNCH_FLAG_BUILTIN |
                        MK_LAUNCH_FLAG_CRITICAL;
     descriptor.task_class = MK_TASK_CLASS_VIDEO_PRESENT;
-    descriptor.stack_size = 8192u;
+    descriptor.stack_size = 32768u;
     strncpy(descriptor.name, "video-present", MK_LAUNCH_NAME_MAX - 1u);
     descriptor.name[MK_LAUNCH_NAME_MAX - 1u] = '\0';
     descriptor.entry = mk_video_present_worker_entry;
@@ -467,7 +475,7 @@ static int mk_video_ensure_control_worker(void) {
                        MK_LAUNCH_FLAG_BUILTIN |
                        MK_LAUNCH_FLAG_CRITICAL;
     descriptor.task_class = MK_TASK_CLASS_VIDEO_CONTROL;
-    descriptor.stack_size = 8192u;
+    descriptor.stack_size = 32768u;
     strncpy(descriptor.name, "video-control", MK_LAUNCH_NAME_MAX - 1u);
     descriptor.name[MK_LAUNCH_NAME_MAX - 1u] = '\0';
     descriptor.entry = mk_video_control_worker_entry;
@@ -790,10 +798,16 @@ static int mk_video_validate_text_transfer(uint32_t transfer_id,
     }
 
     text = (char *)mk_transfer_data_read(transfer_id);
-    if (text == 0 || mk_transfer_size(transfer_id) < text_length + 1u) {
+    if (text == 0) {
+        return -1;
+    }
+    /* data_read pinned the transfer; release on failure, caller owns on success. */
+    if (mk_transfer_size(transfer_id) < text_length + 1u) {
+        mk_transfer_release(transfer_id);
         return -1;
     }
     if (text[text_length] != '\0') {
+        mk_transfer_release(transfer_id);
         return -1;
     }
 
@@ -895,6 +909,7 @@ static int mk_video_local_handler(const struct mk_message *request,
             return -1;
         }
         kernel_gfx_draw_text(payload->x, payload->y, text, (uint8_t)(payload->color & 0xFFu));
+        mk_transfer_release(payload->transfer_id);
         return mk_video_reply_result(reply, 0);
     }
     case MK_MSG_VIDEO_TEXT_INLINE: {
@@ -976,7 +991,11 @@ static int mk_video_local_handler(const struct mk_message *request,
         }
         payload = (const struct mk_video_blit8_request *)request->payload;
         src = (const uint8_t *)mk_transfer_data_read(payload->transfer_id);
-        if (src == 0 || mk_transfer_size(payload->transfer_id) < payload->byte_count) {
+        if (src == 0) {
+            return -1;
+        }
+        if (mk_transfer_size(payload->transfer_id) < payload->byte_count) {
+            mk_transfer_release(payload->transfer_id);
             return -1;
         }
         kernel_gfx_blit8(src,
@@ -985,6 +1004,7 @@ static int mk_video_local_handler(const struct mk_message *request,
                          payload->dst_x,
                          payload->dst_y,
                          payload->scale);
+        mk_transfer_release(payload->transfer_id);
         return mk_video_reply_result(reply, 0);
     }
     case MK_MSG_VIDEO_BLIT8_PRESENT: {
@@ -996,7 +1016,11 @@ static int mk_video_local_handler(const struct mk_message *request,
         }
         payload = (const struct mk_video_blit8_request *)request->payload;
         src = (const uint8_t *)mk_transfer_data_read(payload->transfer_id);
-        if (src == 0 || mk_transfer_size(payload->transfer_id) < payload->byte_count) {
+        if (src == 0) {
+            return -1;
+        }
+        if (mk_transfer_size(payload->transfer_id) < payload->byte_count) {
+            mk_transfer_release(payload->transfer_id);
             return -1;
         }
         kernel_gfx_blit8(src,
@@ -1005,6 +1029,7 @@ static int mk_video_local_handler(const struct mk_message *request,
                          payload->dst_x,
                          payload->dst_y,
                          payload->scale);
+        mk_transfer_release(payload->transfer_id);
         return mk_video_reply_result(reply,
                                      mk_video_submit_present_job(VIDEO_PRESENT_FULL, 0));
     }
@@ -1064,7 +1089,11 @@ static int mk_video_local_handler(const struct mk_message *request,
         }
         payload = (const struct mk_video_blit8_stretch_present_request *)request->payload;
         src = (const uint8_t *)mk_transfer_data_read(payload->transfer_id);
-        if (src == 0 || mk_transfer_size(payload->transfer_id) < payload->byte_count) {
+        if (src == 0) {
+            return -1;
+        }
+        if (mk_transfer_size(payload->transfer_id) < payload->byte_count) {
+            mk_transfer_release(payload->transfer_id);
             return -1;
         }
         kernel_gfx_blit8_stretch(src,
@@ -1074,6 +1103,7 @@ static int mk_video_local_handler(const struct mk_message *request,
                                  payload->dst_y,
                                  payload->dst_width,
                                  payload->dst_height);
+        mk_transfer_release(payload->transfer_id);
         return mk_video_reply_result(reply,
                                      mk_video_submit_present_job(VIDEO_PRESENT_FULL, 0));
     }
@@ -1086,7 +1116,11 @@ static int mk_video_local_handler(const struct mk_message *request,
         }
         payload = (const struct mk_video_blit8_stretch_request *)request->payload;
         src = (const uint8_t *)mk_transfer_data_read(payload->transfer_id);
-        if (src == 0 || mk_transfer_size(payload->transfer_id) < payload->byte_count) {
+        if (src == 0) {
+            return -1;
+        }
+        if (mk_transfer_size(payload->transfer_id) < payload->byte_count) {
+            mk_transfer_release(payload->transfer_id);
             return -1;
         }
         kernel_gfx_blit8_stretch(src,
@@ -1096,6 +1130,7 @@ static int mk_video_local_handler(const struct mk_message *request,
                                  payload->dst_y,
                                  payload->dst_width,
                                  payload->dst_height);
+        mk_transfer_release(payload->transfer_id);
         return mk_video_reply_result(reply, 0);
     }
     case MK_MSG_VIDEO_BLIT8_STRETCH_INLINE: {
@@ -1170,11 +1205,19 @@ static int mk_video_local_handler(const struct mk_message *request,
         }
         payload = (const struct mk_video_palette_request *)request->payload;
         palette = (const uint8_t *)mk_transfer_data_read(payload->transfer_id);
-        if (palette == 0 || payload->byte_count != MK_VIDEO_PALETTE_BYTES ||
-            mk_transfer_size(payload->transfer_id) < payload->byte_count) {
+        if (palette == 0) {
             return -1;
         }
-        return mk_video_reply_result(reply, kernel_video_set_palette(palette));
+        if (payload->byte_count != MK_VIDEO_PALETTE_BYTES ||
+            mk_transfer_size(payload->transfer_id) < payload->byte_count) {
+            mk_transfer_release(payload->transfer_id);
+            return -1;
+        }
+        {
+            int rc = kernel_video_set_palette(palette);
+            mk_transfer_release(payload->transfer_id);
+            return mk_video_reply_result(reply, rc);
+        }
     }
     case MK_MSG_VIDEO_GET_PALETTE: {
         const struct mk_video_palette_request *payload;
@@ -1186,11 +1229,16 @@ static int mk_video_local_handler(const struct mk_message *request,
         }
         payload = (const struct mk_video_palette_request *)request->payload;
         palette = (uint8_t *)mk_transfer_data_write(payload->transfer_id);
-        if (palette == 0 || payload->byte_count != MK_VIDEO_PALETTE_BYTES ||
+        if (palette == 0) {
+            return -1;
+        }
+        if (payload->byte_count != MK_VIDEO_PALETTE_BYTES ||
             mk_transfer_size(payload->transfer_id) < payload->byte_count) {
+            mk_transfer_release(payload->transfer_id);
             return -1;
         }
         rc = kernel_video_get_palette(palette);
+        mk_transfer_release(payload->transfer_id);
         return mk_video_reply_result(reply, rc);
     }
     case MK_MSG_VIDEO_GET_INFO: {
@@ -1533,10 +1581,15 @@ int mk_video_service_blit8_transfer(uint32_t transfer_id, uint32_t byte_count,
     if (mk_video_current_process_is_service_worker() ||
         mk_video_current_prefers_kernel_hot_path()) {
         src = (const uint8_t *)mk_transfer_data_read(transfer_id);
-        if (src == 0 || mk_transfer_size(transfer_id) < byte_count) {
+        if (src == 0) {
+            return -1;
+        }
+        if (mk_transfer_size(transfer_id) < byte_count) {
+            mk_transfer_release(transfer_id);
             return -1;
         }
         kernel_gfx_blit8(src, src_w, src_h, dst_x, dst_y, scale);
+        mk_transfer_release(transfer_id);
         return 0;
     }
     if (mk_video_share_transfer(transfer_id, MK_TRANSFER_PERM_READ) != 0) {
@@ -1576,10 +1629,15 @@ int mk_video_service_blit8_present_transfer(uint32_t transfer_id, uint32_t byte_
     if (mk_video_current_process_is_service_worker() ||
         mk_video_current_prefers_kernel_hot_path()) {
         src = (const uint8_t *)mk_transfer_data_read(transfer_id);
-        if (src == 0 || mk_transfer_size(transfer_id) < byte_count) {
+        if (src == 0) {
+            return -1;
+        }
+        if (mk_transfer_size(transfer_id) < byte_count) {
+            mk_transfer_release(transfer_id);
             return -1;
         }
         kernel_gfx_blit8(src, src_w, src_h, dst_x, dst_y, scale);
+        mk_transfer_release(transfer_id);
         return mk_video_submit_present_job(VIDEO_PRESENT_FULL, 0);
     }
     if (mk_video_share_transfer(transfer_id, MK_TRANSFER_PERM_READ) != 0) {
@@ -1749,10 +1807,15 @@ int mk_video_service_blit8_stretch_transfer(uint32_t transfer_id, uint32_t byte_
     if (mk_video_current_process_is_service_worker() ||
         mk_video_current_prefers_kernel_hot_path()) {
         src = (const uint8_t *)mk_transfer_data_read(transfer_id);
-        if (src == 0 || mk_transfer_size(transfer_id) < byte_count) {
+        if (src == 0) {
+            return -1;
+        }
+        if (mk_transfer_size(transfer_id) < byte_count) {
+            mk_transfer_release(transfer_id);
             return -1;
         }
         kernel_gfx_blit8_stretch(src, src_w, src_h, dst_x, dst_y, dst_w, dst_h);
+        mk_transfer_release(transfer_id);
         return 0;
     }
     if (mk_video_share_transfer(transfer_id, MK_TRANSFER_PERM_READ) != 0) {
@@ -1855,10 +1918,15 @@ int mk_video_service_blit8_stretch_present_transfer(uint32_t transfer_id, uint32
     if (mk_video_current_process_is_service_worker() ||
         mk_video_current_prefers_kernel_hot_path()) {
         src = (const uint8_t *)mk_transfer_data_read(transfer_id);
-        if (src == 0 || mk_transfer_size(transfer_id) < byte_count) {
+        if (src == 0) {
+            return -1;
+        }
+        if (mk_transfer_size(transfer_id) < byte_count) {
+            mk_transfer_release(transfer_id);
             return -1;
         }
         kernel_gfx_blit8_stretch(src, src_w, src_h, dst_x, dst_y, dst_w, dst_h);
+        mk_transfer_release(transfer_id);
         return mk_video_submit_present_job(VIDEO_PRESENT_FULL, 0);
     }
     if (mk_video_share_transfer(transfer_id, MK_TRANSFER_PERM_READ) != 0) {

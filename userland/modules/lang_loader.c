@@ -174,6 +174,33 @@ static int lang_memcmp(const void *a, const void *b, uint32_t size) {
     return 0;
 }
 
+/*
+ * 0.6 (30/10) witness: "header invalid after read" failed at the magic
+ * check with no detail. One line per 16 bytes so the serial overrun rule
+ * (~80 chars) holds: tag + 32 hex chars + 3 spaces.
+ */
+static void lang_hex_dump_dbg(const char *tag, const uint8_t *p) {
+    static const char digits[] = "0123456789abcdef";
+    char line[48];
+    int pos = 0;
+    int i;
+
+    for (i = 0; i < 8 && tag[i] != '\0'; ++i) {
+        line[pos++] = tag[i];
+    }
+    line[pos++] = ' ';
+    for (i = 0; i < 16 && pos < 44; ++i) {
+        line[pos++] = digits[p[i] >> 4];
+        line[pos++] = digits[p[i] & 0x0f];
+        if ((i & 1) == 1) {
+            line[pos++] = ' ';
+        }
+    }
+    line[pos] = '\0';
+    sys_write_debug(line);
+    sys_write_debug("\n");
+}
+
 static void lang_memset(void *dst, int value, uint32_t size) {
     uint8_t *out = (uint8_t *)dst;
 
@@ -1034,6 +1061,29 @@ static int lang_prepare_context(const struct vibe_appfs_entry *entry,
     sys_write_debug("lang: image read ok\n");
     lang_debug_vga(19, "lang: app read ok");
 
+    /*
+     * 0.6 (30/10) witness: re-read just the first sector (the same path the
+     * pre-read header double-read uses, which succeeds) and compare it with
+     * what the bulk read landed. Discriminates the "header invalid after
+     * read" failure: match => decode-side problem; mismatch with landed all
+     * zero => the transfer/copy never landed; mismatch with landed garbage
+     * => the arena was overwritten after the read; mismatch with fresh
+     * garbage => the disk read itself is unstable.
+     */
+    {
+        uint8_t verify_chunk[LANG_SECTOR_SIZE];
+
+        if (lang_storage_read_bytes(entry->lba_start, verify_chunk, 1u) == 0) {
+            if (lang_memcmp(verify_chunk, load_base, 64u) == 0) {
+                sys_write_debug("lang: chunk0 verify match\n");
+            } else {
+                sys_write_debug("lang: chunk0 verify MISMATCH\n");
+                lang_hex_dump_dbg("fresh ", verify_chunk);
+                lang_hex_dump_dbg("landed", load_base);
+            }
+        }
+    }
+
     header = (struct vibe_app_header *)load_base;
     if (lang_decode_app_header(load_base, &header_copy) != 0) {
         sys_write_debug("lang: header invalid after read\n");
@@ -1391,7 +1441,7 @@ int lang_try_run(int argc, char **argv) {
         sys_write_debug("lang: directory load failed\n");
         if (lang_has_runtime_stub(normalized_name)) {
             lang_write_load_error("catalog");
-            return 0;
+            return 1;
         }
         return -1;
     }
@@ -1405,7 +1455,7 @@ int lang_try_run(int argc, char **argv) {
         lang_debug_vga(13, "lang: no entry");
         if (lang_has_runtime_stub(normalized_name)) {
             lang_write_missing_runtime(normalized_name);
-            return 0;
+            return 1;
         }
         return -1;
     }
@@ -1414,14 +1464,14 @@ int lang_try_run(int argc, char **argv) {
 
     if (lang_read_header_copy(entry, &header_copy) != 0) {
         lang_write_load_error(entry->name);
-        return 0;
+        return 1;
     }
     sys_write_debug("lang: header ok\n");
     arena_load_address = header_copy.load_address;
     if (lang_arena_acquire(arena_load_address) != 0) {
         sys_write_debug("lang: arena acquire failed\n");
         lang_write_load_error(entry->name);
-        return 0;
+        return 1;
     }
     sys_write_debug("lang: arena ok\n");
     arena_acquired = 1;
@@ -1429,7 +1479,7 @@ int lang_try_run(int argc, char **argv) {
     if (lang_prepare_context(entry, &header_copy, &header, &g_app_ctx) != 0) {
         sys_write_debug("lang: prepare failed\n");
         lang_write_load_error(entry->name);
-        rc = 0;
+        rc = 1;
         goto done;
     }
     sys_write_debug("lang: prepare ok\n");

@@ -39,7 +39,7 @@
 #ifndef	_ERRNO_H_
 #define	_ERRNO_H_
 
-#include <sys/errno.h>
+#include <compat/posix/errno.h>
 
 __BEGIN_DECLS
 #if __BSD_VISIBLE

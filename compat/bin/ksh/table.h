@@ -183,7 +183,8 @@ extern const char *prompt;
 extern int cur_prompt;		/* PS1 or PS2 */
 extern int current_lineno;	/* LINENO value */
 
-unsigned int	hash(const char *);
+unsigned int	strhash(const char *);
+#define hash(str) strhash(str)
 void		ktinit(struct table *, Area *, int);
 struct tbl *	ktsearch(struct table *, const char *, unsigned int);
 struct tbl *	ktenter(struct table *, const char *, unsigned int);

@@ -121,6 +121,26 @@ typedef struct {
     Bool send_event;
     Display *display;
     Window window;
+    Window root;
+    Window subwindow;
+    Time time;
+    int x;
+    int y;
+    int x_root;
+    int y_root;
+    int mode;
+    int detail;
+    Bool same_screen;
+    Bool focus;
+    unsigned int state;
+} XCrossingEvent;
+
+typedef struct {
+    int type;
+    unsigned long serial;
+    Bool send_event;
+    Display *display;
+    Window window;
     Atom message_type;
     int format;
     union {
@@ -130,6 +150,46 @@ typedef struct {
     } data;
 } XClientMessageEvent;
 
+typedef struct _XExtData {
+    int number;
+    struct _XExtData *next;
+    int (*free_private)(struct _XExtData *);
+    void *private_data;
+} XExtData;
+
+typedef struct {
+    unsigned long name;
+    unsigned long card32;
+} XFontProp;
+
+typedef struct {
+    short lbearing;
+    short rbearing;
+    short width;
+    short ascent;
+    short descent;
+    unsigned short attributes;
+} XCharStruct;
+
+typedef struct {
+    XExtData *ext_data;
+    Font fid;
+    unsigned int direction;
+    unsigned int min_char_or_byte2;
+    unsigned int max_char_or_byte2;
+    unsigned int min_byte1;
+    unsigned int max_byte1;
+    Bool all_chars_exist;
+    unsigned int default_char;
+    int n_properties;
+    XFontProp *properties;
+    XCharStruct min_bounds;
+    XCharStruct max_bounds;
+    XCharStruct *per_char;
+    int ascent;
+    int descent;
+} XFontStruct;
+
 typedef union _XEvent {
     int type;
     XAnyEvent xany;
@@ -138,6 +198,7 @@ typedef union _XEvent {
     XMotionEvent xmotion;
     XExposeEvent xexpose;
     XFocusChangeEvent xfocus;
+    XCrossingEvent xcrossing;
     XClientMessageEvent xclient;
     long pad[24];
 } XEvent;
@@ -251,7 +312,49 @@ int XSetWMProtocols(Display *display, Window window, Atom *protocols,
 int XClearWindow(Display *display, Window window);
 void XFree(void *data);
 
+int XDrawString(Display *display, Drawable drawable, GC gc,
+                int x, int y, const char *string, int length);
+int XTextWidth(XFontStruct *font_struct, const char *string, int count);
+int XTextExtents(XFontStruct *font_struct, const char *string, int count,
+                 int *direction_return, int *font_ascent_return,
+                 int *font_descent_return, XCharStruct *overall_return);
+XFontStruct *XLoadQueryFont(Display *display, const char *name);
+int XFreeFont(Display *display, XFontStruct *font_struct);
+int XFreeFontInfo(char **names, XFontStruct *info, int actual_count);
+int XGetGeometry(Display *display, Drawable drawable, Window *root_return,
+                 int *x_return, int *y_return,
+                 unsigned int *width_return, unsigned int *height_return,
+                 unsigned int *border_width_return,
+                 unsigned int *depth_return);
+int XAllocColor(Display *display, Colormap colormap, XColor *color);
+int XParseColor(Display *display, Colormap colormap, const char *spec,
+                XColor *color);
+int XCheckTypedEvent(Display *display, int type, XEvent *event_return);
+int XCheckMaskEvent(Display *display, long mask, XEvent *event_return);
+
 #define ConnectionNumber(display) XConnectionNumber(display)
 #define DefaultRootWindow(display) RootWindow((display), DefaultScreen((display)))
+
+#define DisplayString(display) ""
+
+#define NotifyNormal          0
+#define NotifyGrab            1
+#define NotifyUngrab          2
+#define NotifyWhileGrabbed    3
+#define NotifyHint            1
+#define NotifyAncestor        0
+#define NotifyVirtual         1
+#define NotifyInferior        2
+#define NotifyNonlinear       3
+#define NotifyNonlinearVirtual 4
+#define NotifyPointer         5
+#define NotifyPointerRoot     6
+#define NotifyDetailNone      7
+
+#define IsUnmapped 0
+#define IsUnviewable 1
+#define IsViewable 2
+
+#define AllPlanes (~0UL)
 
 #endif

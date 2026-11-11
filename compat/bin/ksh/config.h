@@ -11,15 +11,12 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
-/* Strict POSIX behaviour? */
-/* #undef POSIXLY_CORRECT */
+#define _CS_PATH 1
 
-/* Specify default $ENV? */
-/* #undef DEFAULT_ENV */
-
-/*
- * End of configuration stuff for PD ksh.
- */
+#define EMACS
+#ifndef SMALL
+#define SMALL
+#endif
 
 #if !defined(EMACS) && !defined(VI)
 # error "Define either EMACS or VI."

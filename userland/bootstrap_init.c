@@ -253,27 +253,96 @@ static int bootstrap_run_startup_apps(uint32_t boot_flags) {
     return -1;
 }
 
+/*
+ * Init storage smoke test. Historically this read the persist scratch sector
+ * twice and compared — a read-only consistency check that never exercised the
+ * ATA WRITE path, which is precisely the risky path on real hardware (write
+ * FIFO / DRQ handshake / write-cache flush). It now validates the full write
+ * round-trip end to end: read the original, write a known pattern, read it
+ * back and compare, then RESTORE the original and verify the restore.
+ *
+ * Non-destructive by construction: it targets the LAST sector of the kernel
+ * persist window, which no live path ever writes (kernel_storage_save /
+ * sys_storage_save has zero callers; the fs host only reads the persist range
+ * into a boot scratch buffer and never saves it back). Even so the original
+ * bytes are always restored, so the on-disk image is byte-identical after the
+ * test whether or not it passes — the universal rule (a kernel self-test must
+ * not cost the userland its data) holds even if the write half fails.
+ */
+#define BOOTSTRAP_STORAGE_SMOKE_PATTERN_BYTE 0x5Au
+
 static void bootstrap_storage_smoke_test(void) {
-    uint8_t verify[BOOTSTRAP_STORAGE_SMOKE_SIZE];
-    uint8_t verify_again[BOOTSTRAP_STORAGE_SMOKE_SIZE];
+    uint8_t original[BOOTSTRAP_STORAGE_SMOKE_SIZE];
+    uint8_t written[BOOTSTRAP_STORAGE_SMOKE_SIZE];
+    uint8_t pattern[BOOTSTRAP_STORAGE_SMOKE_SIZE];
+    uint8_t restored[BOOTSTRAP_STORAGE_SMOKE_SIZE];
+    int mismatch = 0;
     extern void kernel_debug_puts(const char *);
 
     kernel_debug_puts("init: storage smoke begin\n");
-    if (sys_storage_read_sectors(BOOTSTRAP_STORAGE_SMOKE_SECTOR, verify, 1u) != 0) {
+
+    /* 1. Capture the original sector so we can restore it unconditionally. */
+    if (sys_storage_read_sectors(BOOTSTRAP_STORAGE_SMOKE_SECTOR, original, 1u) != 0) {
         kernel_debug_puts("init: storage smoke read failed\n");
         return;
     }
-    if (sys_storage_read_sectors(BOOTSTRAP_STORAGE_SMOKE_SECTOR, verify_again, 1u) != 0) {
+
+    /* 2. Read-once-vs-read-twice consistency (the original check, kept). */
+    if (sys_storage_read_sectors(BOOTSTRAP_STORAGE_SMOKE_SECTOR, written, 1u) != 0) {
         kernel_debug_puts("init: storage smoke verify read failed\n");
         return;
     }
     for (uint32_t i = 0; i < BOOTSTRAP_STORAGE_SMOKE_SIZE; ++i) {
-        if (verify[i] != verify_again[i]) {
-            kernel_debug_puts("init: storage smoke verify mismatch\n");
+        if (original[i] != written[i]) {
+            kernel_debug_puts("init: storage smoke read unstable\n");
             return;
         }
     }
-    kernel_debug_puts("init: storage smoke ok\n");
+
+    /* 3. Exercise the WRITE path: stamp a known pattern, then read it back. */
+    for (uint32_t i = 0; i < BOOTSTRAP_STORAGE_SMOKE_SIZE; ++i) {
+        pattern[i] = (uint8_t)(i ^ BOOTSTRAP_STORAGE_SMOKE_PATTERN_BYTE);
+    }
+    if (sys_storage_write_sectors(BOOTSTRAP_STORAGE_SMOKE_SECTOR, pattern, 1u) != 0) {
+        kernel_debug_puts("init: storage smoke write failed\n");
+        return;
+    }
+    if (sys_storage_read_sectors(BOOTSTRAP_STORAGE_SMOKE_SECTOR, written, 1u) != 0) {
+        kernel_debug_puts("init: storage smoke writeback read failed\n");
+        (void)sys_storage_write_sectors(BOOTSTRAP_STORAGE_SMOKE_SECTOR, original, 1u);
+        return;
+    }
+    for (uint32_t i = 0; i < BOOTSTRAP_STORAGE_SMOKE_SIZE; ++i) {
+        if (written[i] != pattern[i]) {
+            mismatch = 1;
+        }
+    }
+    if (mismatch) {
+        kernel_debug_puts("init: storage smoke write mismatch\n");
+    }
+
+    /* 4. Restore the original and confirm the restore round-trips too. */
+    if (sys_storage_write_sectors(BOOTSTRAP_STORAGE_SMOKE_SECTOR, original, 1u) != 0) {
+        kernel_debug_puts("init: storage smoke restore write failed\n");
+        return;
+    }
+    if (sys_storage_read_sectors(BOOTSTRAP_STORAGE_SMOKE_SECTOR, restored, 1u) != 0) {
+        kernel_debug_puts("init: storage smoke restore read failed\n");
+        return;
+    }
+    for (uint32_t i = 0; i < BOOTSTRAP_STORAGE_SMOKE_SIZE; ++i) {
+        if (restored[i] != original[i]) {
+            kernel_debug_puts("init: storage smoke restore mismatch\n");
+            return;
+        }
+    }
+
+    if (mismatch) {
+        /* Disk is restored/consistent, but the write round-trip failed. */
+        kernel_debug_puts("init: storage smoke WRITE PATH BAD\n");
+        return;
+    }
+    kernel_debug_puts("init: storage smoke ok (read+write+restore)\n");
 }
 
 static void bootstrap_prime_kernel_service_stack(void) {

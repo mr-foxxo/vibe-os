@@ -36,6 +36,18 @@ int isupper(int c) {
 int islower(int c) {
     return (c >= 'a' && c <= 'z');
 }
+int iscntrl(int c) {
+    return (c < 32 || c == 127);
+}
+int isgraph(int c) {
+    return (c >= 33 && c <= 126);
+}
+int ispunct(int c) {
+    return isgraph(c) && !isalnum(c);
+}
+int isxdigit(int c) {
+    return isdigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
 
 int toupper(int c) {
     if (islower(c)) {

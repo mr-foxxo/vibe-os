@@ -106,11 +106,34 @@ load_active_vbr:
     xor ax, ax
     mov [dap.lba_high], ax
     mov [dap.lba_high + 2], ax
+    ; Real-hardware robustness (COMPLETION_ACTION_PLAN P0): bounded
+    ; retry with media reset — the first read after power-on returns
+    ; transient CF on real drives (invisible under QEMU). si is free
+    ; here (dap already filled); bx is the attempt counter.
+    mov bx, 3
+.retry:
     mov si, dap
     mov dl, [boot_drive]
     mov ah, 0x42
     int 0x13
-    jc .fail
+    jnc .read_ok
+
+    push bx
+    mov dl, [boot_drive]
+    xor ah, ah
+    int 0x13
+    pop bx
+    dec bx
+    jnz .retry
+    stc
+    ret
+
+.read_ok:
+    ; The media reset above may clobber es; re-establish it before the
+    ; rep movsw copy (ds/es were 0 at entry).
+    xor ax, ax
+    mov ds, ax
+    mov es, ax
     cld
     mov si, 0x0600
     mov di, 0x7C00

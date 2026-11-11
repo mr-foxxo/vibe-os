@@ -56,6 +56,9 @@ struct mk_service_record {
     uint32_t retry_scheduled;
     uint32_t retry_exhausted;
     uint32_t subscriptions_ready;
+    uint32_t last_error;
+    uint32_t start_tick;
+    uint32_t pending_request_count;
     struct mk_service_event_subscription subscribers[MK_SERVICE_EVENT_SUBSCRIBERS];
 };
 
@@ -101,5 +104,6 @@ int mk_service_event_receive(uint32_t type,
 void mk_service_fill_task_snapshot(struct task_snapshot_entry *entry);
 const struct mk_service_record *mk_service_find_by_type(uint32_t type);
 const struct mk_service_record *mk_service_find_by_name(const char *name);
+int mk_service_query_health(uint32_t type, struct mk_service_health_stats *stats);
 
 #endif

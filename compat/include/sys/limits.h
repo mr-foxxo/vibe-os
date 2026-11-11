@@ -1,2 +1,2 @@
-#include_next <limits.h>
+#include <sys/cdefs.h>
 #include <machine/limits.h>

@@ -514,9 +514,17 @@ static void taskmgr_refresh(struct taskmgr_state *tm, uint32_t ticks) {
         return;
     }
 
-    tm->task_count = sys_task_snapshot(&tm->summary, tm->tasks, TASK_SNAPSHOT_MAX);
-    if (tm->task_count < 0) {
+    /* sys_task_snapshot returns a status (0=ok); the count comes from the
+     * summary itself (03/11 status-channel fix, see kernel/syscall.c). */
+    if (sys_task_snapshot(&tm->summary, tm->tasks, TASK_SNAPSHOT_MAX) != 0) {
         tm->task_count = 0;
+    } else {
+        uint32_t n = tm->summary.total_tasks;
+
+        if (n > TASK_SNAPSHOT_MAX) {
+            n = TASK_SNAPSHOT_MAX;
+        }
+        tm->task_count = (int)n;
     }
     if (tm->selected_pid != 0u) {
         int found = 0;

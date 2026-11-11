@@ -1,4 +1,4 @@
-#include <curl/curl.h>
+#include "../../../../headers/curl/curl.h"  /* repo stub: must win over host libcurl headers */
 #include <stdarg.h>
 
 struct VibeCurl {

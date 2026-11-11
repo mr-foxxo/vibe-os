@@ -119,6 +119,28 @@ static int doom_try_resolve_wad_candidate(const char *path, const char **resolve
             }
             return node;
         }
+        {
+            const char *name = doom_path_basename(path);
+            int i;
+            for (i = 0; i < DOOM_IWAD_ALIAS_COUNT; ++i) {
+                char alt[128];
+                int pos = 0;
+                const char *src = g_doom_iwad_aliases[i];
+                alt[pos++] = '/';
+                while (*src && pos < (int)sizeof(alt) - 1) {
+                    alt[pos++] = *src++;
+                }
+                alt[pos] = '\0';
+                node = doom_try_resolve_path(alt);
+                if (node >= 0) {
+                    if (resolved_path_out) {
+                        *resolved_path_out = DOOM_IWAD_PATH;
+                    }
+                    return node;
+                }
+            }
+            (void)name;
+        }
     }
     return -1;
 }

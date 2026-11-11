@@ -91,14 +91,27 @@ class QemuSession:
         self.serial_log = workspace / "s.log"
         self.monitor_socket = workspace / "m.sock"
         self.qmp_socket = workspace / "qmp.sock"
+        self.qemu_binary = qemu_binary
+        self.image_path = image_path
+        self.memory_mb = memory_mb
+        self._spawn()
+        self.mouse_x = 0
+        self.mouse_y = 0
+        self.mouse_position_known = False
+        self.qmp_client: Optional[socket.socket] = None
+        self.qmp_buffer = ""
+        self._wait_for_monitor()
+        self._wait_for_qmp()
+
+    def _spawn(self) -> None:
         self.proc = subprocess.Popen(
             [
-                qemu_binary,
+                self.qemu_binary,
                 *QEMU_VALIDATION_COMMON_OPTS,
                 "-m",
-                str(memory_mb),
+                str(self.memory_mb),
                 "-drive",
-                f"format=raw,file={image_path}",
+                f"format=raw,file={self.image_path}",
                 "-netdev",
                 "user,id=net0",
                 "-device",
@@ -119,10 +132,23 @@ class QemuSession:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+
+    def restart(self) -> None:
+        """Cold-restart: -no-reboot means HMP system_reset would EXIT the
+        process, and the stage2 boot menu (the only place the rescue
+        selection can be made) needs a fresh guest. Relaunches QEMU, resets
+        the host-side mouse model, and truncates the serial log so marker
+        checks only observe the new boot."""
+        self.close()
+        try:
+            self.serial_log.unlink()
+        except FileNotFoundError:
+            pass
+        self._spawn()
         self.mouse_x = 0
         self.mouse_y = 0
         self.mouse_position_known = False
-        self.qmp_client: Optional[socket.socket] = None
+        self.qmp_client = None
         self.qmp_buffer = ""
         self._wait_for_monitor()
         self._wait_for_qmp()
@@ -936,22 +962,32 @@ def run_terminal_command_expect(session: QemuSession,
                        start_offset=start_offset)
 
 
-def scenario_boot_rescue_shell(session: QemuSession) -> None:
-    if log_contains(session, "boot mode: rescue shell") and log_contains(session, SHELL_READY_MARKER):
-        return
-
-    def send_rescue_selection() -> None:
-        session.send_shortcut("s", pause=0.12)
-        session.send_shortcut("s", pause=0.12)
-        session.send_shortcut("ret", pause=0.2)
-
-    for delay in (1.0, 0.8, 0.8):
-        time.sleep(delay)
-        send_rescue_selection()
-        if log_contains(session, "boot mode: rescue shell") or \
-           log_contains(session, "init: rescue shell requested, skipping desktop launch") or \
-           log_contains(session, "host: shell start"):
+def scenario_boot_rescue_shell(session: QemuSession, attempts: int = 4, window_s: float = 25.0) -> None:
+    """Closed-loop rescue selection (see validate_network_surface.py): pulse
+    s,s,<ret> until the kernel confirms `boot mode: rescue shell`; cold
+    restart on a wrong-mode confirmation; never blind-timing out."""
+    for attempt in range(attempts):
+        if log_contains(session, "boot mode: rescue shell") and log_contains(session, SHELL_READY_MARKER):
             return
+        deadline = time.time() + window_s
+        while time.time() < deadline:
+            session.send_shortcut("s", pause=0.12)
+            session.send_shortcut("s", pause=0.12)
+            session.send_shortcut("ret", pause=0.25)
+            if log_contains(session, "boot mode: rescue shell"):
+                break
+            if log_contains(session, "boot mode: safe mode") or \
+               log_contains(session, "desktop.app: launch startx") or \
+               log_contains(session, "host: argv startx"):
+                break
+            time.sleep(1.0)
+        if log_contains(session, "boot mode: rescue shell"):
+            session.wait_for_all([SHELL_READY_MARKER], timeout=240.0)
+            return
+        session.restart()
+    raise RuntimeError(
+        "Timed out selecting rescue shell: 'boot mode: rescue shell' never "
+        f"appeared after {attempts} menu attempts (with cold restarts)")
 
 
 def scenario_startx(session: QemuSession) -> None:

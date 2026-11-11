@@ -382,35 +382,35 @@ E cada app pesado deve expor:
 
 ### Fase 1: Contrato global
 
-- [ ] Criar `mk_memory_status`
-- [ ] Criar `mk_memory_budget`
-- [ ] Expor syscall de status/orcamento
-- [ ] Definir `pressure_level`
+- [X] Criar `mk_memory_status`
+- [X] Criar `mk_memory_budget`
+- [X] Expor syscall de status/orcamento
+- [X] Definir `pressure_level`
 
 ### Fase 2: Loader e runtime
 
-- [ ] Trocar validacoes cegas por `lang_app_arena_size()` por classe
-- [ ] Separar stack minima, stack alvo e heap basal
-- [ ] Registrar budget inicial por app no launch
+- [X] Trocar validacoes cegas por `lang_app_arena_size()` por classe
+- [X] Separar stack minima, stack alvo e heap basal
+- [X] Registrar budget inicial por app no launch
 
 ### Fase 3: Desktop
 
-- [ ] Aplicar budget dinamico a caches de wallpaper, icones e thumbnails
-- [ ] Parar de reler/parsing de estado quando cache quente couber
-- [ ] Implementar reclaim incremental quando app foreground pedir espaco
+- [X] Aplicar budget dinamico a caches de wallpaper, icones e thumbnails
+- [X] Parar de reler/parsing de estado quando cache quente couber
+- [X] Implementar reclaim incremental quando app foreground pedir espaco
 
 ### Fase 4: Craft e apps streaming
 
-- [ ] Budget de chunk hot/warm/cold
-- [ ] Cache de mesh e buffers temporarios por pressao
-- [ ] Prefetch agressivo quando houver RAM
-- [ ] Shrink rapido quando houver pressao
+- [X] Budget de chunk hot/warm/cold
+- [X] Cache de mesh e buffers temporarios por pressao
+- [X] Prefetch agressivo quando houver RAM
+- [X] Shrink rapido quando houver pressao
 
 ### Fase 5: Helpers e servicos
 
-- [ ] Teto duro pequeno para helpers
-- [ ] Sem crescimento oportunista por default
-- [ ] Buffer sizing guiado por latencia real
+- [X] Teto duro pequeno para helpers
+- [X] Sem crescimento oportunista por default
+- [X] Buffer sizing guiado por latencia real
 
 ## Criterios de Sucesso
 

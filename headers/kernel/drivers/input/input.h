@@ -13,6 +13,7 @@ void kernel_input_event_enqueue_mouse(const struct mouse_state *state);
 int kernel_input_key_event_has_data(void);
 int kernel_input_key_event_dequeue(int *key);
 int kernel_input_key_event_wait(int *key);
+int kernel_input_key_event_wait_timeout(int *key, uint32_t timeout_ticks);
 void kernel_input_key_event_enqueue(int key);
 int kernel_input_mouse_event_has_data(void);
 int kernel_input_mouse_event_dequeue(struct mouse_state *state);

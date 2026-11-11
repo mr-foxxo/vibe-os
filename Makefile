@@ -85,18 +85,29 @@ ifeq ($(strip $(QEMU)),)
 QEMU := qemu-system-i386
 endif
 QEMU_MEMORY_MB ?= 3072
+# per-scenario timeout for QEMU validation matrices; slow/TCG-only hosts can raise it:
+# Raised 20->60 (2026-10-19, measured): scenarios stop EARLY once all markers
+# are seen, so the cap only bites broken boots. On this 2-core TCG host the
+# fixed cost is firmware-side, not kernel: SeaBIOS usb-storage probe burns
+# ~11 s before the first serial byte (USB markers land ~29-31 s), and
+# ahci-q35 storage smoke reaches ~30 s under host contention. Both boots
+# completed every marker; the 20 s cap was reporting firmware speed as a boot
+# failure. usb-bios-boot also carries an explicit per-scenario budget in
+# tools/validate_phase6.py documenting the BIOS constant.
+PHASE6_TIMEOUT ?= 60
 QEMU_SERIAL_LOG ?= build/qemu-serial.log
 QEMU_AUDIO_CAPTURE_WAV ?= build/qemu-audio.wav
 QEMU_IMAGE_OPTS ?= format=raw,file=$(IMAGE),snapshot=on
 QEMU_NET_OPTS ?= -netdev user,id=net0 -device virtio-net-pci,netdev=net0
 QEMU_RUN_MACHINE ?= pc
 QEMU_RUN_CPU ?= core2duo
-QEMU_RUN_SMP ?= 2,sockets=1,cores=2,threads=1,maxcpus=2
+QEMU_RUN_SMP ?= 1,sockets=1,cores=1,threads=1,maxcpus=1
 QEMU_RUN_VGA ?= std
 QEMU_RUN_GPU_OPTS ?=
 QEMU_RUN_VIDEO_OPTS ?= -vga $(QEMU_RUN_VGA) $(QEMU_RUN_GPU_OPTS)
 QEMU_RUN_RTC_OPTS ?= -rtc base=localtime
 QEMU_RUN_USB_OPTS ?= -usb
+QEMU_SMP ?= 1
 QEMU_RUN_COMMON_OPTS ?= -machine $(QEMU_RUN_MACHINE) -cpu $(QEMU_RUN_CPU) -smp $(QEMU_RUN_SMP) $(QEMU_RUN_VIDEO_OPTS) $(QEMU_RUN_RTC_OPTS) $(QEMU_RUN_USB_OPTS)
 QEMU_AUDIO_DEVICE ?= AC97
 QEMU_AUDIO_LIVE_CONTROLLER ?= intel-hda
@@ -556,10 +567,18 @@ BOOT_SMOKE_PHASE6_REPORT := $(BUILD_DIR)/phase6-validation-boot-smoke.md
 BOOTLOADER_BG_SMOKE_BIN := $(BUILD_DIR)/bootloader-bg.smoke.bin
 WALLPAPER_RUNTIME_SMOKE_PNG := $(BUILD_DIR)/wallpaper-runtime.smoke.png
 
+# Include BSD USB build rules
+-include kernel/drivers/usb/Build.usb.mk
+
+
+# Build.ksh.mk must be included early for KSH_LIB variable
+-include compat/bin/ksh/Build.ksh.mk
+
 # Kernel sources - kernel only, no stage2
-KERNEL_SRCS := $(shell find kernel -name '*.c' ! -name '* *')
+KERNEL_SRCS := $(shell find kernel -name '*.c' ! -name '* *' ! -path 'kernel/drivers/usb/bsd_usb_impl.c' ! -path 'kernel/drivers/usb/bsd_usb_pci.c')
 KEYMAP_SRCS := $(shell find kernel/drivers/input/keymaps -name '*.c' ! -name '* *')
 KERNEL_OBJS := $(addprefix $(BUILD_DIR)/,$(patsubst %.c,%.o,$(KERNEL_SRCS)))
+KERNEL_OBJS += $(BSD_USB_OBJS)
 KEYMAP_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(KEYMAP_SRCS))
 
 KERNEL_ASM_SRCS := $(shell find kernel_asm -name '*.asm' ! -name '* *')
@@ -578,6 +597,7 @@ USERLAND_SRCS := \
 	$(USERLAND_DIR)/modules/lang_loader.c \
 	$(USERLAND_DIR)/modules/utils.c \
 	$(USERLAND_DIR)/modules/syscalls.c \
+	$(USERLAND_DIR)/modules/ssp.c \
 	$(USERLAND_DIR)/modules/ui.c \
 	$(USERLAND_DIR)/modules/dirty_rects.c \
 	$(USERLAND_DIR)/modules/ui_clip.c \
@@ -833,14 +853,72 @@ USERLAND_MAIN_BIN := $(BUILD_DIR)/userland-main.bin
 BOOTLOADER_BG_BIN := $(BUILD_DIR)/bootloader-bg.bin
 IMAGE := $(BUILD_DIR)/boot.img
 
-CFLAGS := -std=gnu17 -m32 $(CPU_ARCH_CFLAGS) -Os -ffreestanding -fno-pic -fno-pie -fno-stack-protector -fno-builtin -fcf-protection=none -nostdlib -Wall -Wextra -Werror -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -I. -idirafter headers -Iuserland -Ilang/include -Ilang/vendor/quickjs-ng -Ilang/vendor/mruby/include -Ilang/vendor/micropython
+# P4 classe #5 (adendo 31 probe): kernel objects now carry GCC stack
+# protection. With -fno-pic -fno-pie, -mstack-protector-guard=global emits a
+# DIRECT load of __stack_chk_guard (no %gs TLS, no GOT) — flat-ring0 safe.
+# Symbol impl: kernel/stackguard.c; a guard hit panics with the offender's
+# return address (nm-resolvable). DOOM/vendored CFLAGS keep -fno-stack-protector.
+CFLAGS := -std=gnu17 -m32 $(CPU_ARCH_CFLAGS) -Os -ffreestanding -fno-pic -fno-pie -fstack-protector -mstack-protector-guard=global -fno-builtin -fcf-protection=none -nostdlib -Wall -Wextra -Werror -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -I. -idirafter headers -Iuserland -Ilang/include -Ilang/vendor/quickjs-ng -Ilang/vendor/mruby/include -Ilang/vendor/micropython
 CFLAGS += -I$(APP_CATALOG_GENERATED_DIR)
 CFLAGS += -MMD -MP
 LUA_CFLAGS := -Iuserland/lua/include -Iuserland/lua/vendor/lua-5.4.6/src
-INTEL_I915_EXPERIMENTAL_COMMIT ?= 0
+# i915 modeset is now enabled by default (was experimental)
+# Experimental hardware paths that are NOT safe for the default boot image
+# (see kernel/drivers/network/wifi_data_plane.c header comment). The wifi
+# data plane is off by default precisely because the production artifact must
+# never poke an 8086:08B1 BAR it has never seen; developers enable it
+# explicitly with make WIFI_DATA_PLANE_EXPERIMENTAL=1.
+WIFI_DATA_PLANE_EXPERIMENTAL ?= 0
+CFLAGS += -DWIFI_DATA_PLANE_EXPERIMENTAL=$(WIFI_DATA_PLANE_EXPERIMENTAL)
+# A -D alone does not invalidate existing .o files (make sees no dependency,
+# and -idirafter headers never reach the .d files - same hazard the
+# BOOT_TELEMETRY header solved). The stamp carries the mode in its NAME:
+# flipping the flag changes which stamp exists, so the dependent object is
+# older than its prerequisite and rebuilds.
+WIFI_DP_STAMP := $(BUILD_DIR)/.wifidp_$(WIFI_DATA_PLANE_EXPERIMENTAL)
+$(WIFI_DP_STAMP):
+	@mkdir -p $(BUILD_DIR)
+	@rm -f $(BUILD_DIR)/.wifidp_*
+	@touch $@
+$(BUILD_DIR)/kernel/drivers/network/wifi_data_plane.o: $(WIFI_DP_STAMP)
+
+INTEL_I915_EXPERIMENTAL_COMMIT ?= 1
 CFLAGS += -DINTEL_I915_EXPERIMENTAL_COMMIT=$(INTEL_I915_EXPERIMENTAL_COMMIT)
 VIDEO_DRM_TEST_FORCE_HANDOFF_FAIL ?= 0
 CFLAGS += -DVIDEO_DRM_TEST_FORCE_HANDOFF_FAIL=$(VIDEO_DRM_TEST_FORCE_HANDOFF_FAIL)
+# Boot telemetry knob (closure plan 0.3): quiet keeps every kernel witness
+# budget at its historical value (scale 1); verbose multiplies all witness
+# budgets by 8 for long-field-boot diagnosis (make BOOT_TELEMETRY=verbose).
+# The mode reaches the kernel through a GENERATED HEADER rather than a -D:
+# -D does not invalidate the existing .o files (make sees no dependency),
+# which silently kept the old mode in the image on the first trial. The
+# header is regenerated (compare-and-swap, so an unchanged mode does not
+# touch mtime) on every make invocation, like the app catalog above.
+BOOT_TELEMETRY ?= quiet
+ifeq ($(filter quiet verbose,$(BOOT_TELEMETRY)),)
+$(error BOOT_TELEMETRY must be quiet or verbose, got: $(BOOT_TELEMETRY))
+endif
+BOOT_TELEMETRY_MACRO := $(if $(filter verbose,$(BOOT_TELEMETRY)),VIBE_BOOT_TELEMETRY_VERBOSE,VIBE_BOOT_TELEMETRY_QUIET)
+
+pound := \#
+BOOT_TELEMETRY_HEADER := $(BUILD_DIR)/generated/boot_telemetry.h
+BOOT_TELEMETRY_GEN := $(shell mkdir -p $(dir $(BOOT_TELEMETRY_HEADER)); \
+        printf '$(pound)ifndef BOOT_TELEMETRY_H\n$(pound)define BOOT_TELEMETRY_H\n$(pound)define $(BOOT_TELEMETRY_MACRO) 1\n$(pound)endif\n' > $(BOOT_TELEMETRY_HEADER).tmp; \
+        if [ -f $(BOOT_TELEMETRY_HEADER) ] && cmp -s $(BOOT_TELEMETRY_HEADER).tmp $(BOOT_TELEMETRY_HEADER); then \
+          rm -f $(BOOT_TELEMETRY_HEADER).tmp; \
+        else \
+          mv $(BOOT_TELEMETRY_HEADER).tmp $(BOOT_TELEMETRY_HEADER); \
+        fi; echo done)
+# Header dependency is NOT automatic here: `headers/` is passed as
+# -idirafter, so -MMD classifies those headers as system and omits them
+# from the .d files (which is why a mode flip left stale objects until
+# this explicit edge existed). The kernel witnesses are compiled from
+# kernel/ only, so one blanket edge covers them all.
+# The $(shell ...) above regenerates/compare-swaps the header at parse
+# time, so the file always exists before any rule runs; the edge is purely
+# for mtime-driven rebuilds when the mode flips.
+$(KERNEL_OBJS): $(BOOT_TELEMETRY_HEADER)
+
 KERNEL_CFLAGS := $(CFLAGS) -D__VIBE_KERNEL__
 LDFLAGS_KERNEL := -m elf_i386 -T $(LINKER_DIR)/kernel.ld -nostdlib -N --allow-multiple-definition
 LDFLAGS_USERLAND := -m elf_i386 -T $(LINKER_DIR)/userland.ld -nostdlib -N
@@ -997,6 +1075,8 @@ DESKTOP_RUNTIME_BASE_SRCS := \
 	$(USERLAND_DIR)/modules/dirty_rects.c \
 	$(USERLAND_DIR)/modules/ui_clip.c \
 	$(USERLAND_DIR)/modules/ui_cursor.c \
+	$(USERLAND_DIR)/modules/microui.c \
+	$(USERLAND_DIR)/modules/mu_renderer.c \
 	$(USERLAND_DIR)/applications/desktop_math_compat.c \
 	$(USERLAND_DIR)/applications/desktop.c \
 	$(USERLAND_DIR)/applications/terminal.c \
@@ -1329,7 +1409,9 @@ $(BUILD_DIR)/userland/applications/games/craft:
 	@true
 $(BUILD_DIR)/userland/applications/games/DOOM:
 	@true
-$(BUILD_DIR)/kernel/drivers/video/video.o: KERNEL_CFLAGS += -msse2
+# NOTE: video.o must stay at the i586 baseline. The only SSE2 code is
+# kernel_video_copy_row_movntdq (per-function target attribute); a whole-TU
+# -msse2 made GCC emit CMOVcc into boot-path functions and broke Pentium.
 
 $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
@@ -1492,7 +1574,12 @@ $(LUA_APP_BUILD_DIR):
 
 $(LUA_APP_BUILD_DIR)/%.o: %.c | $(BUILD_DIR) $(LUA_APP_BUILD_DIR)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(LUA_CFLAGS) -DVIBE_USERLAND_APP -c $< -o $@
+	# Vendored Lua VM + its shim link WITHOUT lang/sdk/app_runtime.c, so the
+	# shared-CFLAGS stack protector would reference symbols this binary has
+	# no provider for (same reasoning as DOOM_CFLAGS keeping
+	# -fno-stack-protector): the SSP probe targets our kernel and SDK, not
+	# the vendored interpreter.
+	$(CC) $(CFLAGS) -fno-stack-protector $(LUA_CFLAGS) -DVIBE_USERLAND_APP -c $< -o $@
 
 $(SECTORC_APP_BUILD_DIR)/app_entry.o: lang/sdk/app_entry.c | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
@@ -1513,7 +1600,7 @@ $(AP_TRAMPOLINE_OBJ): $(AP_TRAMPOLINE_BIN) | $(BUILD_DIR)
 	$(OBJCOPY) -I binary -O elf32-i386 -B i386 $< $@
 
 $(KERNEL_ELF): $(KERNEL_OBJS) $(KERNEL_ASM_OBJS) $(AP_TRAMPOLINE_OBJ) $(KERNEL_USERLAND_OBJS) $(LINKER_DIR)/kernel.ld $(COMPAT_LIB)
-	$(LD) $(LDFLAGS_KERNEL) $(KERNEL_OBJS) $(KERNEL_ASM_OBJS) $(AP_TRAMPOLINE_OBJ) $(KERNEL_USERLAND_OBJS) $(COMPAT_LIB) -o $@
+	$(LD) $(LDFLAGS_KERNEL) $(KERNEL_OBJS) $(KERNEL_ASM_OBJS) $(AP_TRAMPOLINE_OBJ) $(KERNEL_USERLAND_OBJS)  $(COMPAT_LIB) -o $@
 
 $(KERNEL_BIN): $(KERNEL_ELF)
 	$(OBJCOPY) -O binary $< $@
@@ -1524,7 +1611,7 @@ $(KERNEL_BIN): $(KERNEL_ELF)
 	fi
 
 $(USERLAND_MAIN_ELF): $(USERLAND_OBJS) $(LINKER_DIR)/userland.ld $(COMPAT_LIB)
-	$(LD) $(LDFLAGS_USERLAND) $(USERLAND_OBJS) $(COMPAT_LIB) -o $@
+	$(LD) $(LDFLAGS_USERLAND) $(USERLAND_OBJS)  $(COMPAT_LIB) -o $@
 
 $(USERLAND_MAIN_BIN): $(USERLAND_MAIN_ELF)
 	$(OBJCOPY) -O binary $< $@
@@ -1629,7 +1716,7 @@ $(JAVAC_APP_BIN): $(JAVAC_APP_ELF)
 	rm -f $<.keep
 
 $(LUA_APP_ELF): $(LUA_APP_OBJS) $(LINKER_DIR)/app.ld $(COMPAT_LIB)
-	$(LD) $(LDFLAGS_APP) $(LUA_APP_OBJS) $(COMPAT_LIB) -o $@ $(LIBGCC_A)
+	$(LD) $(LDFLAGS_APP) $(LUA_APP_OBJS)  $(COMPAT_LIB) -o $@ $(LIBGCC_A)
 
 $(LUA_APP_BIN): $(LUA_APP_ELF)
 	cp $< $<.keep
@@ -1650,8 +1737,8 @@ $(BUILD_DIR)/lang/$(1)_app_entry.o: lang/sdk/app_entry.c | $(BUILD_DIR)
 	@mkdir -p $$(dir $$@)
 	$$(CC) $$(CFLAGS) -DVIBE_APP_BUILD_NAME=\"$(1)\" -DVIBE_APP_BUILD_HEAP_SIZE=$$(or $$(DESKTOP_LAUNCHER_HEAP_$(1)),$$(DESKTOP_LAUNCHER_HEAP_DEFAULT)) -c $$< -o $$@
 
-$(BUILD_DIR)/lang/$(1).elf: $$(DESKTOP_APP_MAIN_OBJ) $$(DESKTOP_APP_RUNTIME_OBJ) $$(DESKTOP_RUNTIME_OBJS) $(BUILD_DIR)/lang/$(1)_app_entry.o $$(LINKER_DIR)/app_desktop.ld $$(COMPAT_LIB)
-	$$(LD) -m elf_i386 -T $$(LINKER_DIR)/app_desktop.ld -nostdlib -N $$(DESKTOP_APP_MAIN_OBJ) $$(DESKTOP_APP_RUNTIME_OBJ) $$(DESKTOP_RUNTIME_OBJS) $(BUILD_DIR)/lang/$(1)_app_entry.o $$(COMPAT_LIB) -o $$@ $$(LIBGCC_A)
+$(BUILD_DIR)/lang/$(1).elf: $$(DESKTOP_APP_MAIN_OBJ) $$(DESKTOP_APP_RUNTIME_OBJ) $$(DESKTOP_RUNTIME_OBJS) $(BUILD_DIR)/lang/$(1)_app_entry.o $$(LINKER_DIR)/app_desktop.ld $ $(COMPAT_LIB)
+	$$(LD) -m elf_i386 -T $$(LINKER_DIR)/app_desktop.ld -nostdlib -N --allow-multiple-definition $$(DESKTOP_APP_MAIN_OBJ) $$(DESKTOP_APP_RUNTIME_OBJ) $$(DESKTOP_RUNTIME_OBJS) $(BUILD_DIR)/lang/$(1)_app_entry.o $ $(COMPAT_LIB) -o $$@ $$(LIBGCC_A)
 
 $(BUILD_DIR)/lang/$(1).app: $(BUILD_DIR)/lang/$(1).elf
 	cp $$< $$<.keep
@@ -1663,7 +1750,7 @@ endef
 $(foreach app,$(DESKTOP_LAUNCHER_APPS),$(eval $(call DESKTOP_LAUNCHER_RULES,$(app))))
 
 $(SECTORC_APP_ELF): $(SECTORC_APP_OBJS) $(LINKER_DIR)/app.ld $(COMPAT_LIB)
-	$(LD) $(LDFLAGS_APP) $(SECTORC_APP_OBJS) $(COMPAT_LIB) -o $@ $(LIBGCC_A)
+	$(LD) $(LDFLAGS_APP) $(SECTORC_APP_OBJS)  $(COMPAT_LIB) -o $@ $(LIBGCC_A)
 
 $(SECTORC_APP_BIN): $(SECTORC_APP_ELF)
 	cp $< $<.keep
@@ -1684,7 +1771,7 @@ $(USERLAND_BOOT_APP_BUILD_DIR)/%.o: %.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -DVIBE_USERLAND_APP -c $< -o $@
 
 $(USERLAND_BOOT_APP_ELF): $(USERLAND_BOOT_APP_OBJS) $(LINKER_DIR)/app_boot.ld $(COMPAT_LIB)
-	$(LD) -m elf_i386 -T $(LINKER_DIR)/app_boot.ld -nostdlib -N $(USERLAND_BOOT_APP_OBJS) $(COMPAT_LIB) -o $@ $(LIBGCC_A)
+	$(LD) -m elf_i386 -T $(LINKER_DIR)/app_boot.ld -nostdlib -N $(USERLAND_BOOT_APP_OBJS)  $(COMPAT_LIB) -o $@ $(LIBGCC_A)
 
 $(USERLAND_BOOT_APP_BIN): $(USERLAND_BOOT_APP_ELF)
 	cp $< $<.keep
@@ -1694,7 +1781,13 @@ $(USERLAND_BOOT_APP_BIN): $(USERLAND_BOOT_APP_ELF)
 
 # Ported GNU apps (echo, cat, wc, head, tail, grep, etc)
 # Build once via stamp to avoid parallel duplicate sub-make executions.
-$(PORTED_APPS_STAMP): $(COMPAT_LIB) Build.ported.mk lang/sdk/app_entry.c lang/sdk/app_runtime.c lang/include/vibe_app.h tools/patch_app_header.py
+# The stamp must depend on the app sources AND on the shared ported headers:
+# without them, editing applications/ported/<tool>/*.c left a stale .app in
+# the image (found when dig/host gained a real DNS client and the artifact was
+# not rebuilt). Wildcards keep the list correct as ports are added.
+PORTED_APP_SRCS := $(wildcard applications/ported/*/*.c) $(wildcard applications/ported/include/*.h)
+
+$(PORTED_APPS_STAMP): $(PORTED_APP_SRCS) $(COMPAT_LIB) Build.ported.mk lang/sdk/app_entry.c lang/sdk/app_runtime.c lang/include/vibe_app.h tools/patch_app_header.py
 	@mkdir -p $(dir $@)
 	$(MAKE) -j1 -f Build.ported.mk \
 		CC="$(CC)" LD="$(LD)" OBJCOPY="$(OBJCOPY)" NM="$(NM)" AR="$(AR)" RANLIB="$(RANLIB)" \
@@ -2105,7 +2198,7 @@ run-headless-virtio-net-debug: $(IMAGE)
 	fi
 
 validate-phase6: $(IMAGE)
-	$(PYTHON) tools/validate_phase6.py --image $(IMAGE) --report $(PHASE6_REPORT) --qemu $(QEMU) --memory-mb $(QEMU_MEMORY_MB)
+	$(PYTHON) tools/validate_phase6.py --image $(IMAGE) --report $(PHASE6_REPORT) --qemu $(QEMU) --memory-mb $(QEMU_MEMORY_MB) --timeout $(PHASE6_TIMEOUT)
 
 validate-smp: $(IMAGE)
 	$(PYTHON) tools/validate_smp.py --image $(IMAGE) --report $(SMP_REPORT) --qemu $(QEMU) --memory-mb $(QEMU_MEMORY_MB)
@@ -2135,7 +2228,18 @@ run-headless-boot-smoke-debug: boot-smoke-image
 	fi
 
 validate-phase6-boot-smoke: boot-smoke-image
-	$(PYTHON) tools/validate_phase6.py --image $(BOOT_SMOKE_IMAGE) --report $(BOOT_SMOKE_PHASE6_REPORT) --qemu $(QEMU) --memory-mb $(QEMU_MEMORY_MB)
+	$(PYTHON) tools/validate_phase6.py --image $(BOOT_SMOKE_IMAGE) --report $(BOOT_SMOKE_PHASE6_REPORT) --qemu $(QEMU) --memory-mb $(QEMU_MEMORY_MB) --timeout $(PHASE6_TIMEOUT)
+
+# Cross-boot filesystem persistence gate (COMPLETION_ACTION_PLAN P2). Boots
+# the SAME image twice WITHOUT snapshot and checks that boot 2 reads back the
+# image boot 1 wrote ("fs: persistent image valid", no rebuild). Every other
+# QEMU target uses snapshot=on, which discards writes, so this is the only
+# automated proof of the disk write path + durability. QEMU is the necessary
+# gate; real-media durability still needs physical hardware (P0).
+STORAGE_PERSIST_REPORT ?= $(BUILD_DIR)/storage-persist-validation.md
+STORAGE_PERSIST_TIMEOUT ?= 130
+validate-storage-persist: $(IMAGE)
+	$(PYTHON) tools/validate_storage_persist.py --image $(IMAGE) --report $(STORAGE_PERSIST_REPORT) --qemu $(QEMU) --memory-mb $(QEMU_MEMORY_MB) --timeout $(STORAGE_PERSIST_TIMEOUT)
 
 validate-modular-apps: $(IMAGE)
 	$(PYTHON) tools/validate_modular_apps.py --image $(IMAGE) --report $(MODULAR_APPS_REPORT) --qemu $(QEMU) --memory-mb $(QEMU_MEMORY_MB)
@@ -2153,6 +2257,9 @@ validate-phase-c: $(IMAGE)
 
 validate-network-surface: $(IMAGE)
 	$(PYTHON) tools/validate_network_surface.py --image $(IMAGE) --report build/network-surface-validation.md --qemu $(QEMU) --memory-mb $(QEMU_MEMORY_MB)
+
+validate-network-datapath: $(IMAGE)
+	$(PYTHON) tools/validate_network_datapath.py --image $(IMAGE) --report build/network-datapath-validation$(if $(NIC),-$(NIC)).md --qemu $(QEMU) --memory-mb $(QEMU_MEMORY_MB) $(if $(NIC),--nic $(NIC))
 
 validate-network-terminal-surface: $(IMAGE)
 	$(PYTHON) tools/validate_modular_apps.py --image $(IMAGE) --report build/network-terminal-validation.md --qemu $(QEMU) --memory-mb $(QEMU_MEMORY_MB) \
@@ -2204,6 +2311,9 @@ validate-audio-hda-playback: $(IMAGE)
 validate-audio-hda-startup: $(IMAGE)
 	$(PYTHON) tools/validate_audio_stack.py --image $(IMAGE) --report build/audio-hda-startup-validation.md --qemu $(QEMU) --memory-mb $(QEMU_MEMORY_MB) --audio-device intel-hda --audio-device hda-duplex --expect-backend compat-azalia --skip-capture --require-boot-startup-sound --require-desktop-startup-sound
 
+validate-audio-hda-capture: $(IMAGE)
+	$(PYTHON) tools/validate_audio_stack.py --image $(IMAGE) --report build/audio-hda-capture-validation.md --qemu $(QEMU) --memory-mb $(QEMU_MEMORY_MB) --audio-device intel-hda --audio-device hda-duplex --expect-backend compat-azalia --skip-capture --require-capture-smoke
+
 validate-audio-pcspkr-startup: $(IMAGE)
 	$(PYTHON) tools/validate_audio_stack.py --image $(IMAGE) --report build/audio-pcspkr-startup-validation.md --qemu $(QEMU) --memory-mb $(QEMU_MEMORY_MB) --machine 'pc,pcspk-audiodev=snd0' --no-default-audio-device --qemu-arg=-audiodev --qemu-arg=wav,id=snd0,path=build/audio-pcspkr-startup.wav --expect-backend pcspkr --skip-capture --require-boot-startup-sound --require-desktop-startup-sound
 
@@ -2214,6 +2324,7 @@ validate-audio-matrix: $(IMAGE)
 	$(MAKE) validate-audio-hda-smoke
 	$(MAKE) validate-audio-hda-playback
 	$(MAKE) validate-audio-hda-startup
+	$(MAKE) validate-audio-hda-capture
 	$(MAKE) validate-audio-pcspkr-startup
 
 validate-gpu-backends: $(IMAGE)
@@ -2400,9 +2511,55 @@ full: clean all
 img: $(IMAGE)
 	@echo "Imagem pronta: $(IMAGE)"
 
+run-imb: all
+	$(MAKE) run
+	$(MAKE) imb
+
 imb: $(IMAGE)
 	@echo "Copiando imagem para build/vibe-os-usb.img"
 	@cp $(IMAGE) build/vibe-os-usb.img
 	@echo "Imagem para hardware real pronta: build/vibe-os-usb.img"
 
+# Host-side unit tests for the freestanding app runtime. These compile
+# lang/sdk/app_runtime.c against a fake host vtable and run on the build
+# host - no QEMU, no kernel, seconds to run.
+HOST_TEST_CFLAGS := -m32 -ffreestanding -fno-builtin -I. -Ilang/include
+
+test-fdopen:
+	@mkdir -p $(BUILD_DIR)
+	$(CC) $(HOST_TEST_CFLAGS) tests/host_test_fdopen.c lang/sdk/app_runtime.c -o $(BUILD_DIR)/host_test_fdopen
+	$(BUILD_DIR)/host_test_fdopen
+
+test-dns:
+	@mkdir -p $(BUILD_DIR)
+	$(CC) $(HOST_TEST_CFLAGS) -Icompat/include -Iapplications/ported/include -Iheaders tests/host_test_dns.c lang/sdk/app_runtime.c -o $(BUILD_DIR)/host_test_dns
+	$(BUILD_DIR)/host_test_dns
+
+test-host: test-fdopen test-dns
+	@echo "host unit tests passed"
+
+.PHONY: test-host
+
+# Links2 Web Browser port
+LINKS2_APP_BIN := build/links2/links2.app
+LINKS2_STAMP := build/links2.stamp
+
+$(LINKS2_STAMP): $(COMPAT_LIB) Build.links2.mk lang/sdk/app_entry.c lang/sdk/app_runtime.c lang/include/vibe_app.h tools/patch_app_header.py \
+	userland/applications/network/links2/config-vibeos.h \
+	userland/applications/network/links2/vibeos.c userland/applications/network/links2/vibeos.h
+	@mkdir -p $(dir $@)
+	$(MAKE) -j1 -f Build.links2.mk \
+		CC="$(CC)" LD="$(LD)" OBJCOPY="$(OBJCOPY)" NM="$(NM)" AR="$(AR)" RANLIB="$(RANLIB)" \
+		ported-links2
+	@touch $@
+
+$(LINKS2_APP_BIN): $(LINKS2_STAMP)
+
+ported-links2: $(LINKS2_APP_BIN)
+
+ported-links2-clean:
+	rm -f $(LINKS2_STAMP)
+	$(MAKE) -f Build.links2.mk ported-links2-clean
+
 -include $(shell test -d $(BUILD_DIR) && find $(BUILD_DIR) -name '*.d' ! -name '* *' -print)
+

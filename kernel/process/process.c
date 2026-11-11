@@ -36,7 +36,31 @@ static uint32_t process_normalize_stack_size(uint32_t stack_size) {
     return (stack_size + 15u) & ~15u;
 }
 
-static int g_next_pid = 1;
+int g_next_pid = 1;
+
+/*
+ * SMP-safe pid allocation. Plain g_next_pid++ is a non-atomic RMW: two CPUs
+ * creating tasks concurrently could claim the same pid, and the whole
+ * pid-keyed infrastructure (ipc queues via owner_pid, launch records,
+ * scheduler_find_task_by_pid) would then bind to the wrong task.
+ * lock xaddl is i486+; the kernel is built i586.
+ */
+int process_alloc_pid(void) {
+    /*
+     * Fetch-and-add 1: the register MUST enter with the increment value.
+     * The previous form declared it output-only ("=&r"), so xaddl added
+     * whatever stale value the register happened to hold to g_next_pid
+     * (observed under SMP: pids advanced by 1628 per task, then by heap
+     * addresses — the root cause of the "phantom task node" corruption,
+     * where a node's pid equaled its own block address).
+     */
+    int pid = 1;
+    __asm__ volatile("lock xaddl %0, %1"
+                     : "+r"(pid), "+m"(g_next_pid)
+                     :
+                     : "memory", "cc");
+    return pid;
+}
 
 static int process_entry_in_range(uintptr_t entry, uintptr_t base, uint32_t size) {
     return entry >= base && entry < (base + (uintptr_t)size);
@@ -72,6 +96,7 @@ uintptr_t process_user_stack_top_for_entry(uintptr_t entry) {
     }
     return 0u;
 }
+
 
 static uint32_t process_default_task_class_for(enum process_kind kind,
                                                uint32_t service_type,
@@ -312,8 +337,11 @@ process_t *process_create_with_stack(void (*entry)(void),
     }
     memset(p, 0, sizeof(*p));
 
-    p->pid = g_next_pid++;
+    p->pid = process_alloc_pid();
+    p->pgid = p->pid;
+    p->sid = p->pid;
     p->current_cpu = -1;
+    { int i; for (i = 0; i < RLIMIT_NLIMITS; ++i) { p->rlimits[i].rlim_cur = -1; p->rlimits[i].rlim_max = -1; } }
     p->preferred_cpu = -1;
     p->last_cpu = -1;
     p->state = PROCESS_READY;
@@ -357,6 +385,18 @@ process_t *process_create_with_stack(void (*entry)(void),
         kernel_free(p);
         return NULL;
     }
+    /*
+     * Stack watermark fill (COMPLETION_ACTION_PLAN P4). The refined SMP
+     * signature (a live task block whose canary is trashed FIRST, then its
+     * payload/header filled with return-address-shaped values, with NO
+     * heap-API guard firing) is exactly what a kernel-stack exhaustion
+     * looks like: the stack block is allocated immediately AFTER the
+     * process_t block, and stacks grow down, so an overflow walks the
+     * process_t canary -> payload -> header. Fill the stack with a pattern
+     * before the initial frame is placed so the deepest used byte can be
+     * measured later. Must happen BEFORE process_setup_initial_context.
+     */
+    memset(p->stack, 0xA5, normalized_stack_size);
 
     process_setup_initial_context(p,
                                   (uintptr_t)entry,
@@ -398,6 +438,21 @@ void process_set_abi_metadata(process_t *proc,
 
 void process_destroy(process_t *proc) {
     if (!proc) {
+        return;
+    }
+    /*
+     * Refuse to free a task still reachable from the scheduler list.
+     * g_head is written exactly once by scheduler_add_task, so a
+     * linked-then-freed block is precisely how the head ends up dangling
+     * at a recycled allocation (real-time smp2 BAD-HEAD signature,
+     * COMPLETION_ACTION_PLAN P4 / KNOWN_BUGS classe #5). A leak with a
+     * named caller diagnostic beats silent corruption of all dispatch.
+     */
+    if (scheduler_task_is_linked(proc)) {
+        kernel_debug_printf("process-destroy: STILL-LINKED pid=%d node=0x%x caller=0x%x (free refused)\n",
+                            proc->pid,
+                            (unsigned int)(uintptr_t)proc,
+                            (unsigned int)(uintptr_t)__builtin_return_address(0));
         return;
     }
     if (proc->stack) {

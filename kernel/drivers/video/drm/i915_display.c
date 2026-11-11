@@ -21,5 +21,8 @@ int kernel_drm_i915_snapshot_display(const struct kernel_drm_candidate *candidat
     snapshot_out->fuse_strap = kernel_drm_i915_mmio_read32(candidate, INTEL_I915_MMIO_FUSE_STRAP);
     snapshot_out->disp_arb_ctl2 = kernel_drm_i915_mmio_read32(candidate, INTEL_I915_MMIO_DISP_ARB_CTL2);
     snapshot_out->skl_dfsm = kernel_drm_i915_mmio_read32(candidate, INTEL_I915_MMIO_SKL_DFSM);
+    snapshot_out->dpll_a = kernel_drm_i915_mmio_read32(candidate, INTEL_I915_MMIO_DPLL_A);
+    snapshot_out->pipeconf_a = kernel_drm_i915_mmio_read32(candidate, INTEL_I915_MMIO_PIPECONF_A);
+    snapshot_out->transconf_a = kernel_drm_i915_mmio_read32(candidate, INTEL_I915_MMIO_TRANS_CONF_A);
     return 0;
 }

@@ -34,6 +34,10 @@ int abs(int j);
 long labs(long j);
 long long llabs(long long j);
 
+typedef struct { int quot, rem; } div_t;
+typedef struct { long quot, rem; } ldiv_t;
+typedef struct { long long quot, rem; } lldiv_t;
+
 /* Sorting */
 void qsort(void *base, size_t nmemb, size_t size, 
            int (*compar)(const void *, const void *));

@@ -43,7 +43,12 @@ static inline uint32_t network_queue_next_idx(uint32_t idx) {
 
 static void network_queue_raise_ready_callback(struct network_queue_socket *socket) {
     if (g_ready_event_callback && socket) {
-        g_ready_event_callback(socket->handle, socket->readiness_flags);
+        /* All fields captured under the caller-held lock; the callback must
+         * never re-enter a locking network_queue API (see header comment). */
+        g_ready_event_callback(socket->handle,
+                               socket->readiness_flags,
+                               socket->rx_queue_depth,
+                               socket->tx_queue_depth);
     }
 }
 

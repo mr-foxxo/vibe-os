@@ -12,8 +12,14 @@
 #define GRAPHICS_MAX_HEIGHT 1080u
 #define AVIVO_D1CRTC_H_TOTAL 0x6000u
 #define AVIVO_D1CRTC_H_BLANK_START_END 0x6004u
+#define AVIVO_D1CRTC_H_SYNC_A 0x6008u
+#define AVIVO_D1CRTC_V_TOTAL 0x6020u
+#define AVIVO_D1CRTC_V_BLANK_START_END 0x6024u
+#define AVIVO_D1CRTC_V_SYNC_A 0x6028u
 #define AVIVO_D1CRTC_CONTROL 0x6080u
 #define AVIVO_D1CRTC_BLANK_CONTROL 0x6084u
+#define AVIVO_D1CRTC_STATUS 0x609Cu
+#define AVIVO_D1CRTC_UPDATE_LOCK 0x60E8u
 #define AVIVO_D1GRPH_ENABLE 0x6100u
 #define AVIVO_D1GRPH_PRIMARY_SURFACE_ADDRESS 0x6110u
 #define AVIVO_D1GRPH_SECONDARY_SURFACE_ADDRESS 0x6118u
@@ -31,19 +37,47 @@
 #define AVIVO_D1MODE_VIEWPORT_SIZE 0x6584u
 #define AVIVO_D1MODE_MASTER_UPDATE_LOCK 0x60E0u
 #define AVIVO_D1MODE_MASTER_UPDATE_MODE 0x60E4u
-#define AVIVO_D1CRTC_UPDATE_LOCK 0x60E8u
 #define AVIVO_D1GRPH_CONTROL 0x6104u
 #define AVIVO_D1GRPH_CONTROL_DEPTH_8BPP (0u << 0)
 #define AVIVO_D1GRPH_CONTROL_8BPP_INDEXED (0u << 8)
 #define AVIVO_D2CRTC_H_TOTAL 0x6800u
 #define AVIVO_D2CRTC_H_BLANK_START_END 0x6804u
+#define AVIVO_D2CRTC_H_SYNC_A 0x6808u
+#define AVIVO_D2CRTC_V_TOTAL 0x6820u
+#define AVIVO_D2CRTC_V_BLANK_START_END 0x6824u
+#define AVIVO_D2CRTC_V_SYNC_A 0x6828u
 #define AVIVO_D2CRTC_CONTROL 0x6880u
 #define AVIVO_D2CRTC_BLANK_CONTROL 0x6884u
+#define AVIVO_D2CRTC_STATUS 0x689Cu
 #define AVIVO_D2GRPH_ENABLE 0x6900u
 #define AVIVO_D2GRPH_PRIMARY_SURFACE_ADDRESS 0x6910u
 #define AVIVO_D2MODE_VLINE_STATUS 0x6D3Cu
 #define AVIVO_D2MODE_VIEWPORT_START 0x6D80u
 #define AVIVO_D2MODE_VIEWPORT_SIZE 0x6D84u
+#define AVIVO_CRTC_EN (1u << 0)
+#define AVIVO_CRTC_DISP_READ_REQUEST_DISABLE (1u << 24)
+#define AVIVO_D1CRTC_V_BLANK (1u << 0)
+#define AVIVO_PCLK_CRTC1_CNTL 0x480u
+#define AVIVO_PCLK_CRTC2_CNTL 0x484u
+
+#define RADEON_P1PLL_REF_DIV 0x44Cu
+#define RADEON_P1PLL_FB_DIV 0x450u
+#define RADEON_P2PLL_REF_DIV 0x48Cu
+#define RADEON_P2PLL_FB_DIV 0x490u
+#define RADEON_P1PLL_REF_DIV_MASK 0x000003FFu
+#define RADEON_P2PLL_REF_DIV_MASK 0x000003FFu
+#define RADEON_P1PLL_FB_DIV_MASK 0x000007FFu
+#define RADEON_P1PLL_POST_DIV_MASK 0x00070000u
+#define RADEON_P1PLL_POST_DIV_SHIFT 16
+#define RADEON_P2PLL_FB_DIV_MASK 0x000007FFu
+#define RADEON_P2PLL_POST_DIV_MASK 0x00070000u
+#define RADEON_P2PLL_POST_DIV_SHIFT 16
+
+static int g_radeon_modeset_enabled = 1;
+
+void kernel_drm_radeon_enable_modeset(void) {
+    g_radeon_modeset_enabled = 1;
+}
 
 struct kernel_drm_radeon_probe_info {
     uint16_t command;
@@ -113,6 +147,13 @@ struct kernel_drm_radeon_mode_plan {
     uint32_t pitch;
     uint32_t frame_bytes;
     uint8_t bpp;
+    uint32_t h_total;
+    uint32_t h_blank_start_end;
+    uint32_t h_sync_a;
+    uint32_t v_total;
+    uint32_t v_blank_start_end;
+    uint32_t v_sync_a;
+    uint32_t pixel_clock;
 };
 
 struct kernel_drm_radeon_d1_stage_snapshot {
@@ -121,6 +162,10 @@ struct kernel_drm_radeon_d1_stage_snapshot {
     uint32_t crtc_update_lock;
     uint32_t crtc_h_total;
     uint32_t crtc_h_blank_start_end;
+    uint32_t crtc_h_sync_a;
+    uint32_t crtc_v_total;
+    uint32_t crtc_v_blank_start_end;
+    uint32_t crtc_v_sync_a;
     uint32_t crtc_control;
     uint32_t crtc_blank_control;
     uint32_t grph_update;
@@ -262,7 +307,52 @@ static int kernel_drm_radeon_is_modeset_candidate(uint16_t device_id) {
     return 0;
 }
 
+static uint32_t kernel_drm_radeon_mmio_read32(const struct kernel_drm_candidate *candidate,
+                                              uint32_t reg);
+static void kernel_drm_radeon_mmio_write32(const struct kernel_drm_candidate *candidate,
+                                           uint32_t reg, uint32_t value);
+
 static void kernel_drm_radeon_prepare_for_bios_modeset(void) {
+    const struct kernel_drm_radeon_stage_result *stage;
+    const struct kernel_drm_candidate *cand;
+    struct kernel_drm_candidate local_cand;
+    struct kernel_drm_radeon_d1_stage_snapshot snap;
+    unsigned int timeout;
+
+    if (!g_kernel_drm_radeon_last_commit_valid) {
+        return;
+    }
+
+    stage = &g_kernel_drm_radeon_last_commit_stage;
+    cand = &g_kernel_drm_radeon_last_commit_candidate;
+    local_cand = *cand;
+    snap = stage->before;
+
+    kernel_drm_radeon_mmio_write32(&local_cand, AVIVO_D1GRPH_ENABLE, 0u);
+    kernel_drm_radeon_mmio_write32(&local_cand, AVIVO_D2GRPH_ENABLE, 0u);
+
+    timeout = 1000000u;
+    while (timeout > 0u) {
+        if ((kernel_drm_radeon_mmio_read32(&local_cand, AVIVO_D1CRTC_STATUS) & AVIVO_D1CRTC_V_BLANK) != 0u) {
+            break;
+        }
+        --timeout;
+    }
+
+    timeout = 1000000u;
+    while (timeout > 0u) {
+        if ((kernel_drm_radeon_mmio_read32(&local_cand, AVIVO_D2CRTC_STATUS) & AVIVO_D1CRTC_V_BLANK) != 0u) {
+            break;
+        }
+        --timeout;
+    }
+
+    kernel_drm_radeon_mmio_write32(&local_cand, AVIVO_D1CRTC_CONTROL,
+                                   snap.crtc_control & ~AVIVO_CRTC_EN);
+    kernel_drm_radeon_mmio_write32(&local_cand, AVIVO_D2CRTC_CONTROL, 0u);
+
+    kernel_drm_radeon_mmio_write32(&local_cand, AVIVO_D1CRTC_BLANK_CONTROL, 1u);
+    kernel_drm_radeon_mmio_write32(&local_cand, AVIVO_D2CRTC_BLANK_CONTROL, 1u);
 }
 
 static int kernel_drm_radeon_is_r6xx_asic(uint16_t device_id) {
@@ -464,8 +554,8 @@ static void kernel_drm_radeon_analyze_r6xx_display(
     }
 
     analysis_out->live_registers = kernel_drm_radeon_count_live_registers(regs,
-                                                                          sizeof(regs) /
-                                                                              sizeof(regs[0]));
+                                                                           sizeof(regs) /
+                                                                               sizeof(regs[0]));
     analysis_out->display_block_responding = analysis_out->live_registers != 0u;
     analysis_out->crtc0_programmed =
         snapshot->d1_crtc_h_total != 0u ||
@@ -519,11 +609,62 @@ static int kernel_drm_radeon_mode_supported(uint32_t width, uint32_t height) {
     return 0;
 }
 
+struct kernel_drm_radeon_vesa_timing {
+    uint32_t width;
+    uint32_t height;
+    uint32_t h_front_porch;
+    uint32_t h_sync_width;
+    uint32_t h_total;
+    uint32_t v_front_porch;
+    uint32_t v_sync_width;
+    uint32_t v_total;
+    uint32_t pixel_clock;
+};
+
+static const struct kernel_drm_radeon_vesa_timing g_kernel_drm_radeon_vesa_timings[] = {
+    {640, 480, 16, 96, 800, 10, 2, 525, 25175},
+    {800, 600, 40, 128, 1056, 1, 4, 628, 40000},
+    {1024, 768, 24, 136, 1344, 3, 6, 806, 65000},
+    {1360, 768, 64, 112, 1728, 3, 6, 812, 85500},
+    {1366, 768, 70, 143, 1792, 3, 6, 812, 87250},
+    {1920, 1080, 88, 44, 2200, 4, 5, 1125, 148500},
+};
+
+static int kernel_drm_radeon_lookup_timing(uint32_t width, uint32_t height,
+                                           struct kernel_drm_radeon_vesa_timing *timing_out) {
+    size_t i;
+
+    if (timing_out == 0) {
+        return -1;
+    }
+
+    for (i = 0u; i < (sizeof(g_kernel_drm_radeon_vesa_timings) /
+                      sizeof(g_kernel_drm_radeon_vesa_timings[0])); ++i) {
+        if (g_kernel_drm_radeon_vesa_timings[i].width == width &&
+            g_kernel_drm_radeon_vesa_timings[i].height == height) {
+            *timing_out = g_kernel_drm_radeon_vesa_timings[i];
+            return 0;
+        }
+    }
+    return -1;
+}
+
 static int kernel_drm_radeon_build_mode_plan(uint32_t width,
                                              uint32_t height,
                                              struct kernel_drm_radeon_mode_plan *plan_out) {
     uint32_t pitch;
     uint32_t frame_bytes;
+    struct kernel_drm_radeon_vesa_timing timing;
+    uint32_t hactive;
+    uint32_t hblank_start;
+    uint32_t hblank_end;
+    uint32_t hsync_start;
+    uint32_t hsync_end;
+    uint32_t vactive;
+    uint32_t vblank_start;
+    uint32_t vblank_end;
+    uint32_t vsync_start;
+    uint32_t vsync_end;
 
     if (plan_out == 0) {
         return -1;
@@ -535,6 +676,10 @@ static int kernel_drm_radeon_build_mode_plan(uint32_t width,
         return -1;
     }
     if (!kernel_drm_radeon_mode_supported(width, height)) {
+        return -1;
+    }
+
+    if (kernel_drm_radeon_lookup_timing(width, height, &timing) != 0) {
         return -1;
     }
 
@@ -550,11 +695,30 @@ static int kernel_drm_radeon_build_mode_plan(uint32_t width,
         return -1;
     }
 
+    hactive = width;
+    hblank_start = hactive;
+    hblank_end = timing.h_total - 1u;
+    hsync_start = hactive + timing.h_front_porch;
+    hsync_end = hsync_start + timing.h_sync_width;
+
+    vactive = height;
+    vblank_start = vactive;
+    vblank_end = timing.v_total - 1u;
+    vsync_start = vactive + timing.v_front_porch;
+    vsync_end = vsync_start + timing.v_sync_width;
+
     plan_out->width = width;
     plan_out->height = height;
     plan_out->pitch = pitch;
     plan_out->frame_bytes = frame_bytes;
     plan_out->bpp = GRAPHICS_BPP;
+    plan_out->h_total = timing.h_total - 1u;
+    plan_out->h_blank_start_end = (hblank_end << 16u) | hblank_start;
+    plan_out->h_sync_a = (hsync_end << 16u) | hsync_start;
+    plan_out->v_total = timing.v_total - 1u;
+    plan_out->v_blank_start_end = (vblank_end << 16u) | vblank_start;
+    plan_out->v_sync_a = (vsync_end << 16u) | vsync_start;
+    plan_out->pixel_clock = timing.pixel_clock;
     return 0;
 }
 
@@ -621,9 +785,9 @@ static int kernel_drm_radeon_snapshot_boot_mode(struct bootinfo_vesa *vesa_out,
 }
 
 static int kernel_drm_radeon_boot_mode_matches(const struct bootinfo_vesa *expected_vesa,
-                                               uint32_t expected_flags,
-                                               const struct bootinfo_vesa *actual_vesa,
-                                               uint32_t actual_flags) {
+                                                uint32_t expected_flags,
+                                                const struct bootinfo_vesa *actual_vesa,
+                                                uint32_t actual_flags) {
     if (expected_vesa == 0 || actual_vesa == 0) {
         return 0;
     }
@@ -876,6 +1040,120 @@ static int kernel_drm_radeon_preflight_r6xx(
     return 0;
 }
 
+static int kernel_drm_radeon_compute_pll(uint32_t pixel_clock,
+                                         uint32_t *ref_div_out,
+                                         uint32_t *fb_div_out,
+                                         uint32_t *post_div_out) {
+    uint32_t ref_clock;
+    uint32_t best_fb_div;
+    uint32_t best_post_div;
+    uint32_t best_ref_div;
+    uint32_t best_error;
+    uint32_t ref_div;
+    uint32_t fb_div;
+    uint32_t post_div;
+    uint32_t vco;
+    uint32_t error;
+    int found;
+
+    if (ref_div_out == 0 || fb_div_out == 0 || post_div_out == 0) {
+        return -1;
+    }
+
+    ref_clock = 27000u;
+    best_fb_div = 1u;
+    best_post_div = 1u;
+    best_ref_div = 1u;
+    best_error = 0xFFFFFFFFu;
+    found = 0;
+
+    for (ref_div = 1u; ref_div <= 0x3FFu; ++ref_div) {
+        for (post_div = 1u; post_div <= 7u; ++post_div) {
+            for (fb_div = 1u; fb_div <= 0x7FFu; ++fb_div) {
+                vco = (ref_clock / ref_div) * fb_div;
+                if (vco < 500000u || vco > 1000000u) {
+                    continue;
+                }
+                if (vco / post_div < pixel_clock) {
+                    continue;
+                }
+                error = vco / post_div - pixel_clock;
+                if (error < best_error) {
+                    best_error = error;
+                    best_fb_div = fb_div;
+                    best_post_div = post_div;
+                    best_ref_div = ref_div;
+                    found = 1;
+                    if (error == 0u) {
+                        goto done;
+                    }
+                }
+            }
+        }
+    }
+
+done:
+    if (!found) {
+        return -1;
+    }
+
+    *ref_div_out = best_ref_div;
+    *fb_div_out = best_fb_div;
+    *post_div_out = best_post_div;
+    return 0;
+}
+
+static void kernel_drm_radeon_program_d1_pll(const struct kernel_drm_candidate *candidate,
+                                             const struct kernel_drm_radeon_mode_plan *plan) {
+    uint32_t ref_div;
+    uint32_t fb_div;
+    uint32_t post_div;
+    uint32_t pll_fb_val;
+
+    if (candidate == 0 || plan == 0) {
+        return;
+    }
+
+    if (kernel_drm_radeon_compute_pll(plan->pixel_clock, &ref_div, &fb_div, &post_div) != 0) {
+        kernel_debug_printf("radeon: D1 PLL compute failed for pixel_clock=%u\n",
+                            plan->pixel_clock);
+        return;
+    }
+
+    kernel_drm_radeon_mmio_write32(candidate, RADEON_P1PLL_REF_DIV,
+                                   ref_div & RADEON_P1PLL_REF_DIV_MASK);
+    pll_fb_val = (fb_div & RADEON_P1PLL_FB_DIV_MASK) |
+                 ((post_div << RADEON_P1PLL_POST_DIV_SHIFT) & RADEON_P1PLL_POST_DIV_MASK);
+    kernel_drm_radeon_mmio_write32(candidate, RADEON_P1PLL_FB_DIV, pll_fb_val);
+    kernel_drm_radeon_mmio_write32(candidate, AVIVO_PCLK_CRTC1_CNTL, 1u);
+}
+
+__attribute__((unused))
+static void kernel_drm_radeon_program_d2_pll(const struct kernel_drm_candidate *candidate,
+                                             const struct kernel_drm_radeon_mode_plan *plan) {
+    uint32_t ref_div;
+    uint32_t fb_div;
+    uint32_t post_div;
+    uint32_t pll_fb_val;
+
+    if (candidate == 0 || plan == 0) {
+        return;
+    }
+
+    if (kernel_drm_radeon_compute_pll(plan->pixel_clock, &ref_div, &fb_div, &post_div) != 0) {
+        kernel_debug_printf("radeon: D2 PLL compute failed for pixel_clock=%u\n",
+                            plan->pixel_clock);
+        return;
+    }
+
+    kernel_drm_radeon_mmio_write32(candidate, RADEON_P2PLL_REF_DIV,
+                                   ref_div & RADEON_P2PLL_REF_DIV_MASK);
+    pll_fb_val = (fb_div & RADEON_P2PLL_FB_DIV_MASK) |
+                 ((post_div << RADEON_P2PLL_POST_DIV_SHIFT) & RADEON_P2PLL_POST_DIV_MASK);
+    kernel_drm_radeon_mmio_write32(candidate, RADEON_P2PLL_FB_DIV, pll_fb_val);
+    kernel_drm_radeon_mmio_write32(candidate, AVIVO_PCLK_CRTC2_CNTL, 1u);
+}
+
 static int kernel_drm_radeon_snapshot_d1_stage(
     const struct kernel_drm_candidate *candidate,
     struct kernel_drm_radeon_d1_stage_snapshot *snapshot_out) {
@@ -896,6 +1174,14 @@ static int kernel_drm_radeon_snapshot_d1_stage(
         kernel_drm_radeon_mmio_read32(candidate, AVIVO_D1CRTC_H_TOTAL);
     snapshot_out->crtc_h_blank_start_end =
         kernel_drm_radeon_mmio_read32(candidate, AVIVO_D1CRTC_H_BLANK_START_END);
+    snapshot_out->crtc_h_sync_a =
+        kernel_drm_radeon_mmio_read32(candidate, AVIVO_D1CRTC_H_SYNC_A);
+    snapshot_out->crtc_v_total =
+        kernel_drm_radeon_mmio_read32(candidate, AVIVO_D1CRTC_V_TOTAL);
+    snapshot_out->crtc_v_blank_start_end =
+        kernel_drm_radeon_mmio_read32(candidate, AVIVO_D1CRTC_V_BLANK_START_END);
+    snapshot_out->crtc_v_sync_a =
+        kernel_drm_radeon_mmio_read32(candidate, AVIVO_D1CRTC_V_SYNC_A);
     snapshot_out->crtc_control =
         kernel_drm_radeon_mmio_read32(candidate, AVIVO_D1CRTC_CONTROL);
     snapshot_out->crtc_blank_control =
@@ -981,13 +1267,33 @@ static uint32_t kernel_drm_radeon_expected_d1_crtc_update_lock(
 }
 
 static uint32_t kernel_drm_radeon_expected_d1_crtc_h_total(
-    const struct kernel_drm_radeon_d1_stage_snapshot *before) {
-    return before != 0 ? before->crtc_h_total : 0u;
+    const struct kernel_drm_radeon_mode_plan *plan) {
+    return plan != 0 ? plan->h_total : 0u;
 }
 
 static uint32_t kernel_drm_radeon_expected_d1_crtc_h_blank_start_end(
-    const struct kernel_drm_radeon_d1_stage_snapshot *before) {
-    return before != 0 ? before->crtc_h_blank_start_end : 0u;
+    const struct kernel_drm_radeon_mode_plan *plan) {
+    return plan != 0 ? plan->h_blank_start_end : 0u;
+}
+
+static uint32_t kernel_drm_radeon_expected_d1_crtc_h_sync_a(
+    const struct kernel_drm_radeon_mode_plan *plan) {
+    return plan != 0 ? plan->h_sync_a : 0u;
+}
+
+static uint32_t kernel_drm_radeon_expected_d1_crtc_v_total(
+    const struct kernel_drm_radeon_mode_plan *plan) {
+    return plan != 0 ? plan->v_total : 0u;
+}
+
+static uint32_t kernel_drm_radeon_expected_d1_crtc_v_blank_start_end(
+    const struct kernel_drm_radeon_mode_plan *plan) {
+    return plan != 0 ? plan->v_blank_start_end : 0u;
+}
+
+static uint32_t kernel_drm_radeon_expected_d1_crtc_v_sync_a(
+    const struct kernel_drm_radeon_mode_plan *plan) {
+    return plan != 0 ? plan->v_sync_a : 0u;
 }
 
 static uint32_t kernel_drm_radeon_expected_d1_crtc_control(
@@ -1053,9 +1359,14 @@ static int kernel_drm_radeon_d1_stage_matches(
     return snapshot->grph_update == expected_grph_update &&
            snapshot->master_update_lock == expected_master_update_lock &&
            snapshot->crtc_update_lock == kernel_drm_radeon_expected_d1_crtc_update_lock(before) &&
-           snapshot->crtc_h_total == kernel_drm_radeon_expected_d1_crtc_h_total(before) &&
+           snapshot->crtc_h_total == kernel_drm_radeon_expected_d1_crtc_h_total(plan) &&
            snapshot->crtc_h_blank_start_end ==
-               kernel_drm_radeon_expected_d1_crtc_h_blank_start_end(before) &&
+               kernel_drm_radeon_expected_d1_crtc_h_blank_start_end(plan) &&
+           snapshot->crtc_h_sync_a == kernel_drm_radeon_expected_d1_crtc_h_sync_a(plan) &&
+           snapshot->crtc_v_total == kernel_drm_radeon_expected_d1_crtc_v_total(plan) &&
+           snapshot->crtc_v_blank_start_end ==
+               kernel_drm_radeon_expected_d1_crtc_v_blank_start_end(plan) &&
+           snapshot->crtc_v_sync_a == kernel_drm_radeon_expected_d1_crtc_v_sync_a(plan) &&
            snapshot->crtc_control == kernel_drm_radeon_expected_d1_crtc_control(before) &&
            snapshot->crtc_blank_control ==
                kernel_drm_radeon_expected_d1_crtc_blank_control(before) &&
@@ -1145,6 +1456,10 @@ static int kernel_drm_radeon_d1_restore_matches(
            expected->crtc_update_lock == actual->crtc_update_lock &&
            expected->crtc_h_total == actual->crtc_h_total &&
            expected->crtc_h_blank_start_end == actual->crtc_h_blank_start_end &&
+           expected->crtc_h_sync_a == actual->crtc_h_sync_a &&
+           expected->crtc_v_total == actual->crtc_v_total &&
+           expected->crtc_v_blank_start_end == actual->crtc_v_blank_start_end &&
+           expected->crtc_v_sync_a == actual->crtc_v_sync_a &&
            expected->crtc_control == actual->crtc_control &&
            expected->crtc_blank_control == actual->crtc_blank_control &&
            expected->grph_update == actual->grph_update &&
@@ -1185,6 +1500,18 @@ static void kernel_drm_radeon_log_d1_restore_mismatches(
     kernel_drm_radeon_log_d1_stage_mismatch_u32("restore D1CRTC_H_BLANK_START_END",
                                                 expected->crtc_h_blank_start_end,
                                                 actual->crtc_h_blank_start_end);
+    kernel_drm_radeon_log_d1_stage_mismatch_u32("restore D1CRTC_H_SYNC_A",
+                                                expected->crtc_h_sync_a,
+                                                actual->crtc_h_sync_a);
+    kernel_drm_radeon_log_d1_stage_mismatch_u32("restore D1CRTC_V_TOTAL",
+                                                expected->crtc_v_total,
+                                                actual->crtc_v_total);
+    kernel_drm_radeon_log_d1_stage_mismatch_u32("restore D1CRTC_V_BLANK_START_END",
+                                                expected->crtc_v_blank_start_end,
+                                                actual->crtc_v_blank_start_end);
+    kernel_drm_radeon_log_d1_stage_mismatch_u32("restore D1CRTC_V_SYNC_A",
+                                                expected->crtc_v_sync_a,
+                                                actual->crtc_v_sync_a);
     kernel_drm_radeon_log_d1_stage_mismatch_u32("restore D1CRTC_CONTROL",
                                                 expected->crtc_control,
                                                 actual->crtc_control);
@@ -1266,11 +1593,23 @@ static void kernel_drm_radeon_log_d1_stage_mismatches(
                                                 kernel_drm_radeon_expected_d1_crtc_update_lock(before),
                                                 snapshot->crtc_update_lock);
     kernel_drm_radeon_log_d1_stage_mismatch_u32("D1CRTC_H_TOTAL",
-                                                kernel_drm_radeon_expected_d1_crtc_h_total(before),
+                                                kernel_drm_radeon_expected_d1_crtc_h_total(plan),
                                                 snapshot->crtc_h_total);
     kernel_drm_radeon_log_d1_stage_mismatch_u32("D1CRTC_H_BLANK_START_END",
-                                                kernel_drm_radeon_expected_d1_crtc_h_blank_start_end(before),
+                                                kernel_drm_radeon_expected_d1_crtc_h_blank_start_end(plan),
                                                 snapshot->crtc_h_blank_start_end);
+    kernel_drm_radeon_log_d1_stage_mismatch_u32("D1CRTC_H_SYNC_A",
+                                                kernel_drm_radeon_expected_d1_crtc_h_sync_a(plan),
+                                                snapshot->crtc_h_sync_a);
+    kernel_drm_radeon_log_d1_stage_mismatch_u32("D1CRTC_V_TOTAL",
+                                                kernel_drm_radeon_expected_d1_crtc_v_total(plan),
+                                                snapshot->crtc_v_total);
+    kernel_drm_radeon_log_d1_stage_mismatch_u32("D1CRTC_V_BLANK_START_END",
+                                                kernel_drm_radeon_expected_d1_crtc_v_blank_start_end(plan),
+                                                snapshot->crtc_v_blank_start_end);
+    kernel_drm_radeon_log_d1_stage_mismatch_u32("D1CRTC_V_SYNC_A",
+                                                kernel_drm_radeon_expected_d1_crtc_v_sync_a(plan),
+                                                snapshot->crtc_v_sync_a);
     kernel_drm_radeon_log_d1_stage_mismatch_u32("D1CRTC_CONTROL",
                                                 kernel_drm_radeon_expected_d1_crtc_control(before),
                                                 snapshot->crtc_control);
@@ -1343,6 +1682,18 @@ static void kernel_drm_radeon_restore_d1_stage(
     kernel_drm_radeon_mmio_write32(candidate,
                                    AVIVO_D1CRTC_H_BLANK_START_END,
                                    snapshot->crtc_h_blank_start_end);
+    kernel_drm_radeon_mmio_write32(candidate,
+                                   AVIVO_D1CRTC_H_SYNC_A,
+                                   snapshot->crtc_h_sync_a);
+    kernel_drm_radeon_mmio_write32(candidate,
+                                   AVIVO_D1CRTC_V_TOTAL,
+                                   snapshot->crtc_v_total);
+    kernel_drm_radeon_mmio_write32(candidate,
+                                   AVIVO_D1CRTC_V_BLANK_START_END,
+                                   snapshot->crtc_v_blank_start_end);
+    kernel_drm_radeon_mmio_write32(candidate,
+                                   AVIVO_D1CRTC_V_SYNC_A,
+                                   snapshot->crtc_v_sync_a);
     kernel_drm_radeon_mmio_write32(candidate,
                                    AVIVO_D1CRTC_CONTROL,
                                    snapshot->crtc_control);
@@ -1441,11 +1792,31 @@ static int kernel_drm_radeon_stage_d1_scanout(
     result_out->before = *before;
     expected_grph_control = kernel_drm_radeon_expected_d1_grph_control();
 
+    kernel_drm_radeon_program_d1_pll(candidate, plan);
+
     update = kernel_drm_radeon_expected_d1_grph_update(before);
     kernel_drm_radeon_mmio_write32(candidate, AVIVO_D1GRPH_UPDATE, update);
     kernel_drm_radeon_mmio_write32(candidate,
                                    AVIVO_D1MODE_MASTER_UPDATE_LOCK,
                                    kernel_drm_radeon_expected_d1_master_update_lock());
+    kernel_drm_radeon_mmio_write32(candidate,
+                                   AVIVO_D1CRTC_H_TOTAL,
+                                   kernel_drm_radeon_expected_d1_crtc_h_total(plan));
+    kernel_drm_radeon_mmio_write32(candidate,
+                                   AVIVO_D1CRTC_H_BLANK_START_END,
+                                   kernel_drm_radeon_expected_d1_crtc_h_blank_start_end(plan));
+    kernel_drm_radeon_mmio_write32(candidate,
+                                   AVIVO_D1CRTC_H_SYNC_A,
+                                   kernel_drm_radeon_expected_d1_crtc_h_sync_a(plan));
+    kernel_drm_radeon_mmio_write32(candidate,
+                                   AVIVO_D1CRTC_V_TOTAL,
+                                   kernel_drm_radeon_expected_d1_crtc_v_total(plan));
+    kernel_drm_radeon_mmio_write32(candidate,
+                                   AVIVO_D1CRTC_V_BLANK_START_END,
+                                   kernel_drm_radeon_expected_d1_crtc_v_blank_start_end(plan));
+    kernel_drm_radeon_mmio_write32(candidate,
+                                   AVIVO_D1CRTC_V_SYNC_A,
+                                   kernel_drm_radeon_expected_d1_crtc_v_sync_a(plan));
     kernel_drm_radeon_mmio_write32(candidate,
                                    AVIVO_D1GRPH_PRIMARY_SURFACE_ADDRESS,
                                    kernel_drm_radeon_expected_d1_surface_address(fb_addr));
@@ -1692,6 +2063,7 @@ static int kernel_drm_radeon_probe(const struct kernel_drm_candidate *candidate)
                             r6xx_analysis.viewport1_programmed,
                             r6xx_analysis.cursor0_programmed);
     }
+    kernel_drm_radeon_enable_modeset();
     return 0;
 }
 
@@ -1712,8 +2084,8 @@ int kernel_drm_radeon_revert_last_commit(void) {
     kernel_drm_radeon_forget_last_commit();
 
     if (kernel_drm_radeon_restore_d1_stage_and_verify(&candidate,
-                                                      &stage.before,
-                                                      &stage) != 0) {
+                                                       &stage.before,
+                                                       &stage) != 0) {
         kernel_debug_puts("radeon: modeset-commit revert display restore failed\n");
         return -1;
     }
@@ -1745,14 +2117,24 @@ static int kernel_drm_radeon_set_mode(const struct kernel_drm_candidate *candida
     kernel_drm_radeon_clear_mode_out(mode_out);
     kernel_drm_radeon_forget_last_commit();
 
+    if (!g_radeon_modeset_enabled) {
+        kernel_debug_printf("radeon: modeset blocked (safe mode), would set %dx%d mode=%x dev=%x\n",
+                            (int)width,
+                            (int)height,
+                            mode_id,
+                            candidate != 0 ? candidate->pci.device_id : 0u);
+        kernel_drm_radeon_probe(candidate);
+        return -1;
+    }
+
     if (candidate == 0) {
         return -1;
     }
     if (kernel_drm_radeon_preflight_r6xx(candidate,
-                                         width,
-                                         height,
-                                         &plan,
-                                         &analysis) != 0) {
+                                          width,
+                                          height,
+                                          &plan,
+                                          &analysis) != 0) {
         kernel_debug_printf("radeon: modeset preflight rejected dev=%x family=%s asic=%s requested=%dx%d mode=%x mmio=%x fb=%x\n",
                             candidate->pci.device_id,
                             kernel_drm_radeon_family_name(candidate->pci.device_id),

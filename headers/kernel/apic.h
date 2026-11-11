@@ -14,4 +14,9 @@ int local_apic_broadcast_ipi(uint8_t vector);
 int local_apic_send_init(uint32_t apic_id);
 int local_apic_send_startup(uint32_t apic_id, uint8_t vector);
 
+/* Per-CPU LAPIC periodic timer calibrated against the PIT tick source
+ * (starts at the system 100 Hz rate). Calling CPU only. Returns 0 on
+ * success, -1 when calibration fails (timer left masked). */
+int local_apic_timer_start_tick_rate(uint8_t vector);
+
 #endif

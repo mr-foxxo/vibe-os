@@ -180,6 +180,35 @@ struct mk_network_ethernet_config {
     char dns_server[MK_NETWORK_ADDR_MAX];
 };
 
+/* Socket-list export (item 1.5). Stable wire-visible codes (append-only):
+ * a consumer compiled today must read the same numbers tomorrow. */
+#define MK_NETWORK_LIST_PROTO_TCP 1u
+#define MK_NETWORK_LIST_PROTO_UDP 2u
+#define MK_NETWORK_LIST_PROTO_ICMP 3u
+#define MK_NETWORK_LIST_PROTO_UNIX 4u
+#define MK_NETWORK_LIST_STATE_BOUND 1u
+#define MK_NETWORK_LIST_STATE_CONNECTING 2u
+#define MK_NETWORK_LIST_STATE_ESTABLISHED 3u
+#define MK_NETWORK_LIST_STATE_LISTEN 4u
+#define MK_NETWORK_LIST_STATE_LOOPBACK_CONNECTED 5u
+
+struct mk_network_socket_list_request {
+    uint32_t index; /* k-th exported socket; returns -1 past the end */
+};
+
+struct mk_network_socket_list_entry {
+    uint32_t proto;     /* MK_NETWORK_LIST_PROTO_* */
+    uint32_t state;     /* MK_NETWORK_LIST_STATE_* */
+    uint32_t recv_ready;/* nonzero when data is queued for recv (queue flag) */
+    uint32_t local_port;
+    uint32_t remote_ipv4;
+    uint32_t remote_port;
+    uint32_t owner_pid;
+};
+
+int mk_network_service_socket_list(uint32_t index,
+                                   struct mk_network_socket_list_entry *entry);
+
 void mk_network_service_init(void);
 int mk_network_service_ready(void);
 int mk_network_service_get_info(struct mk_network_info *info);
@@ -195,6 +224,10 @@ int mk_network_service_bind(int handle, const struct sockaddr *address, uint32_t
 int mk_network_service_socket_connect(int handle, const struct sockaddr *address, uint32_t address_length);
 int mk_network_service_send(int handle, const void *data, uint32_t size);
 int mk_network_service_recv(int handle, void *buffer, uint32_t size);
+int mk_network_service_sendto(int handle, const void *data, uint32_t size,
+                              const struct sockaddr *dest_addr, uint32_t addrlen);
+int mk_network_service_recvfrom_addr(int handle, void *buffer, uint32_t size,
+                                     struct sockaddr *src_addr, uint32_t *addrlen);
 int mk_network_service_close(int handle);
 int mk_network_service_listen(int handle, int backlog);
 int mk_network_service_accept(int handle);

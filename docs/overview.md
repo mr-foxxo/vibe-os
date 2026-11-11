@@ -23,9 +23,46 @@ The current architecture is not a classic monolithic "load kernel, then exec ELF
 - [`stage2.md`](stage2.md): FAT32 parsing, BIOS discovery, menu logic, boot mode flags, and kernel handoff.
 - [`memory_map.md`](memory_map.md): low-memory layout, bootloader scratch regions, kernel reservations, disk layout, and AppFS arenas.
 - [`kernel_init.md`](kernel_init.md): what `kernel_entry()` really initializes and in which order.
-- [`drivers.md`](drivers.md): storage, video, input, timer, interrupt, and debug driver behavior.
+- [`drivers.md`](drivers.md): storage, video, input, timer, interrupt, debug, network, and audio driver behavior.
 - [`runtime_and_services.md`](runtime_and_services.md): scheduler, process model, microkernel services, syscalls, init, AppFS loading, and shell/Desktop bootstrap.
 - [`apps_and_modules.md`](apps_and_modules.md): built-in bootstrap code, modular apps, language runtimes, desktop apps, games, and compatibility ports.
+
+## New Drivers
+
+The kernel now includes a comprehensive set of hardware drivers:
+
+- **Network**: `virtio_net.c` (VirtIO), `e1000.c` (Intel PRO/1000 family), `rtl8139.c` (Realtek), `wifi_data_plane.c` (Intel 7260 with real BAR0/MAC/firmware/IRQ), `wifi_wpa2.c` (PBKDF2-SHA1, HMAC-SHA1, 4-way EAPOL handshake), `wifi_scanning.c` (802.11 probe requests, beacon parsing, channel hopping)
+- **Storage**: `nvme.c` (NVMe with admin/I/O queues, PRP), `usb_storage.c` (USB BOT with SCSI command set)
+- **Audio**: `hda.c` (Intel HDA with CORB/RIRB, DMA BDL playback)
+- **Video DRM**: `drm.c` (orchestrator), `bga.c` (Bochs/QEMU/VirtualBox), `i915.c` (Intel gen5+), `radeon.c` (AMD r6xx+), `nouveau.c` (NVIDIA NV40+) — native GPU modeset with commit/restore and automatic fallback
+
+## Memory Subsystem Rewrite
+
+- `heap.c`: bump allocator replaced with free-list allocator (best-fit, coalescing, `kernel_realloc`)
+- `physmem.c`: supports up to 4GB with dynamic bitmap, `alloc_phys_pages()`/`free_phys_pages()`
+- `paging.c`: 4KB page support with `paging_map_page()`/`paging_unmap_page()`, page table allocation
+- `memory_init.c`: improved bootinfo detection
+
+## GUI Rewrite
+
+The desktop GUI has been completely rewritten:
+
+- **microui.h/c**: 840-line embedded immediate-mode UI library integrated
+- **mu_renderer.h/c**: VibeOS-specific renderer backend
+- **desktop_new.c**: Dynamic desktop (492 lines vs 7000+ legacy), menu from app registry, taskbar, sound/network applets
+
+## Microkernel Improvements
+
+- **IPC**: queues per process, blocking receive with waitable
+- **Service restart**: retry with backoff, event subscriptions (online/offline/degraded/restarted)
+- **Async messaging**: transfer buffers for efficient data passing
+- **All services migrated**: Video (service-owned with worker thread), Audio (dataplane executor), Input (event queue), Network (socket queues, NIC drivers) — all with local fallback for service worker offline
+
+## Known Bugs Fixed
+
+- Audio: playback_buffer drain in `mk_audio_service_pump_async()`
+- Network: DHCP parser size check relaxed
+- Doom: WAD path resolution with 6 alias names
 
 ## Key facts to keep in mind
 

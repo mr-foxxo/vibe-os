@@ -40,6 +40,9 @@ extern struct graphics_driver grx_driver;
 #ifdef GRDRV_SDL
 extern struct graphics_driver sdl_driver;
 #endif
+#ifdef GRDRV_VIBEOS
+extern struct graphics_driver vibeos_driver;
+#endif
 
 /*
  * On SPAD you must test first svgalib and then X (because X test is slow).
@@ -82,6 +85,9 @@ static struct graphics_driver *graphics_drivers[] = {
 #endif
 #ifdef GRDRV_SDL
 	&sdl_driver,
+#endif
+#ifdef GRDRV_VIBEOS
+	&vibeos_driver,
 #endif
 	NULL
 };

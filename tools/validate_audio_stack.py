@@ -3,6 +3,7 @@ import argparse
 import json
 import re
 import shutil
+import os
 import socket
 import subprocess
 import sys
@@ -37,6 +38,8 @@ class QemuMonitorSession:
         self.serial_log = workspace / "serial.log"
         self.monitor_socket = workspace / "monitor.sock"
         self.qmp_socket = workspace / "qmp.sock"
+        self._mon: Optional[socket.socket] = None
+        self.key_latencies: List = []
         qemu_cmd = [
             qemu_binary,
             "-m",
@@ -100,7 +103,91 @@ class QemuMonitorSession:
             time.sleep(0.05)
         raise RuntimeError("Timed out waiting for QMP socket")
 
+    def _drain_mon(self, timeout: float) -> None:
+        if self._mon is None:
+            return
+        s = self._mon
+        s.settimeout(timeout)
+        try:
+            while True:
+                b = s.recv(4096)
+                if not b:
+                    break
+                if b"(qemu)" in b:
+                    break
+        except socket.timeout:
+            pass
+        finally:
+            s.settimeout(2.0)
+
+    def _mon_sock(self) -> socket.socket:
+        if self._mon is None:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.settimeout(2.0)
+            s.connect(str(self.monitor_socket))
+            self._mon = s
+            self._drain_mon(0.5)
+        return self._mon
+
+    def type_batch(self, text: str, ret: bool = True) -> None:
+        """Items 0.15/0.16 pacing ported from validate_network_surface.py
+        (19_ns40). The old per-character fresh-HMP-connection + `(qemu)`
+        prompt wait cost seconds of wall per key on this 2-core TCG host,
+        which is why every audio gate died waiting for
+        `shell: command audiosvc` (11/11 A/B: identical on clean HEAD —
+        KNOWN_BUGS #22 left the audio host unlaunched; with the host back,
+        the gates still needed paced typing). One persistent connection,
+        one key at a time, paced on serial GROWTH (the shell echoes every
+        keystroke); no growth for 30 s raises named-key freeze."""
+        s = self._mon_sock()
+
+        def type_one(key: str) -> None:
+            before = self.serial_log.stat().st_size if self.serial_log.exists() else 0
+            t_send = time.time()
+            s.sendall(f"sendkey {key}\n".encode("utf-8"))
+            deadline = time.time() + 60.0
+            quiet = 0
+            while time.time() < deadline:
+                try:
+                    after = self.serial_log.stat().st_size
+                except OSError:
+                    after = 0
+                if after > before:
+                    self.key_latencies.append(round(time.time() - t_send, 2))
+                    return
+                time.sleep(0.1)
+                quiet += 1
+                if quiet >= 300:
+                    raise RuntimeError(
+                        f"serial frozen sending {key!r}: no guest output "
+                        "for 30 s (freeze, not slowness)")
+            self.key_latencies.append(">=60")
+
+        for ch in text:
+            if ch == " ":
+                key = "spc"
+            elif ch == "/":
+                key = "slash"
+            elif ch == "-":
+                key = "minus"
+            elif ch == ".":
+                key = "dot"
+            elif ch == ":":
+                key = "shift-semicolon"
+            else:
+                key = ch
+            type_one(key)
+        if ret:
+            type_one("ret")
+        self._drain_mon(0.5)
+
     def close(self) -> None:
+        if self._mon is not None:
+            try:
+                self._mon.close()
+            except OSError:
+                pass
+            self._mon = None
         if self.proc.poll() is None:
             try:
                 self.hmp("quit", timeout=0.5)
@@ -497,12 +584,11 @@ def run_command(session: QemuMonitorSession,
     start_offset = len(session.read_log())
     if command_marker is None:
         command_marker = command.split(" ", 1)[0] if command else ""
-    session.type_text(command, pause=pause)
-    session.send_key("ret", pause=0.15)
+    session.type_batch(command)
     if command_marker:
         wait_for_all_since(session,
                            [f"shell: command {command_marker}"],
-                           timeout=timeout,
+                           timeout=max(timeout, 25.0),
                            start_offset=start_offset)
     return start_offset
 
@@ -566,7 +652,8 @@ def run_audio_capture_smoke(qemu_binary: str,
                             require_path_programmed: bool,
                             require_hardware_diag: bool,
                             require_desktop_startup_sound: bool,
-                            require_boot_startup_sound: bool) -> AudioScenarioResult:
+                            require_boot_startup_sound: bool,
+                            require_capture_smoke: bool = False) -> AudioScenarioResult:
     backend_markers = [
         f"audiosvc: backend={expected_backend}",
         f"soundctl: backend={expected_backend}",
@@ -581,11 +668,25 @@ def run_audio_capture_smoke(qemu_binary: str,
         ("status: backend-executor=kernel", ["audiosvc: backend-executor=kernel", "soundctl: backend-executor=kernel"]),
         ("status: ui-progress=decoupled", ["audiosvc: ui-progress=decoupled", "soundctl: ui-progress=decoupled"]),
     ]
-    required_markers = [
-        "desktop: session start",
-        "audiosvc: export ok",
-        "desktop: open-new w=0 t=1 i=0",
-    ]
+    if require_capture_smoke:
+        # Boot-witness-only deterministic gate (KNOWN_BUGS #24: the post-ksh
+        # desktop terminal no longer emits the busybox-shell typed-command
+        # witnesses these gates were written against; capture proof must not
+        # depend on that broken channel).
+        required_markers = [
+            "desktop: session start",
+            "audiosvc: online",
+            f"audio: deferred launch backend={expected_backend}",
+            "audio: hda capture smoke bytes=",
+        ]
+        if expected_backend == "compat-azalia":
+            required_markers.append("capture path usable")
+    else:
+        required_markers = [
+            "desktop: session start",
+            "audiosvc: export ok",
+            "desktop: open-new w=0 t=1 i=0",
+        ]
     if require_capture:
         required_markers.extend(
             [
@@ -664,10 +765,17 @@ def run_audio_capture_smoke(qemu_binary: str,
                     ],
                     timeout=20.0,
                 )
+            # Boot-window hardening (same lesson as the network-surface gate):
+            # on the slow 2-core TCG host a full desktop boot measured 105s to
+            # `desktop: session start` (2026-11-11, AC97 profile) while the
+            # kernel itself was healthy - a 45s wall was an environment budget,
+            # not an assertion. The marker set is unchanged; only the window is
+            # configurable now (env VIBE_AUDIO_BOOT_TIMEOUT, default 180s).
+            boot_wait = float(os.environ.get("VIBE_AUDIO_BOOT_TIMEOUT", "180"))
             wait_for_any_marker(session,
                                 ["desktop.app: launch startx", "host: startx start", "host: desktop session launched"],
-                                timeout=45.0)
-            session.wait_for_all(["desktop: session start"], timeout=45.0)
+                                timeout=boot_wait)
+            session.wait_for_all(["desktop: session start"], timeout=boot_wait)
             if require_desktop_startup_sound:
                 session.wait_for_all(
                     [
@@ -680,6 +788,23 @@ def run_audio_capture_smoke(qemu_binary: str,
                     timeout=20.0,
                 )
             time.sleep(1.0)
+            if require_capture_smoke:
+                log = session.read_log()
+                missing = [m for m in required_markers if m not in log]
+                mm = re.search(
+                    r"audio: hda capture smoke bytes=(\d+) blocks=(\d+) xruns=(\d+)",
+                    log)
+                if mm:
+                    got, blocks, xruns = (int(g) for g in mm.groups())
+                    if got < 256:
+                        missing.append(f"capture smoke bytes={got}<256")
+                    if blocks < 2:
+                        missing.append(f"capture smoke blocks={blocks}<2")
+                    if xruns != 0:
+                        missing.append(f"capture smoke xruns={xruns}")
+                else:
+                    missing.append("capture smoke witness not found")
+                return AudioScenarioResult(not missing, log, missing, "")
             focus_terminal(session, timeout=12.0, expect_open=True)
             time.sleep(1.0)
             focus_existing_terminal(session)
@@ -852,6 +977,11 @@ def main() -> int:
     parser.add_argument("--require-boot-startup-sound",
                         action="store_true",
                         help="require the boot WAV path to run during bootstrap before startx")
+    parser.add_argument("--require-capture-smoke",
+                        action="store_true",
+                        help="instead of typed capture, assert the boot-time azalia "
+                             "capture self-test witness (bytes>0, xruns==0); no typing "
+                             "required (KNOWN_BUGS #24)")
     args = parser.parse_args()
 
     audio_devices = args.audio_devices if args.audio_devices else ([] if args.no_default_audio_device else ["AC97"])
@@ -870,7 +1000,8 @@ def main() -> int:
                                      args.require_path_programmed,
                                      args.require_hardware_diag,
                                      args.require_desktop_startup_sound,
-                                     args.require_boot_startup_sound)
+                                     args.require_boot_startup_sound,
+                                     args.require_capture_smoke)
     report_path = Path(args.report)
     write_report(report_path, result)
     if not result.passed:

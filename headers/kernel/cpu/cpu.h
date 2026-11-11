@@ -14,6 +14,12 @@ void gdt_init(void);
 void kernel_cpu_enable_current_features(void);
 uint16_t kernel_cpu_tss_selector(uint32_t cpu_index);
 void kernel_tss_set_kernel_stack(uintptr_t stack_top);
+uintptr_t kernel_tss_get_kernel_stack(uint32_t cpu_index);
+/* Face-1 diagnostic: dumps the last 12 esp0 installs {cpu, esp0, caller-pc}.
+ * kernel_tss_set_kernel_stack is the ONLY esp0 writer; the ring names which
+ * installation armed a crash window. Call from panic/#UD halt paths. */
+void kernel_tss_install_ring_dump(const char *why);
+uint16_t kernel_current_tr(void);
 int kernel_cpu_has_pat(void);
 int kernel_cpu_has_sse2(void);
 int kernel_cpu_sse_enabled(void);

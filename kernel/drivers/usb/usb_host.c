@@ -1,9 +1,13 @@
 #include <kernel/drivers/usb/usb_host.h>
+#include <kernel/pci_bus.h>
 
 #include <kernel/drivers/debug/debug.h>
 #include <kernel/drivers/input/input.h>
 #include <kernel/drivers/pci/pci.h>
 #include <kernel/drivers/timer/timer.h>
+
+/* BSD USB driver - defers hardware init to avoid hangs */
+extern void bsd_usb_init(void);
 #include <kernel/drivers/video/video.h>
 #include <kernel/hal/io.h>
 #include <kernel/kernel_string.h>
@@ -331,6 +335,7 @@ static int kernel_usb_host_hid_read_ohci_packet(const struct kernel_usb_probe_di
                                                 uint8_t *buffer,
                                                 uint32_t buffer_capacity,
                                                 uint32_t *actual_length_out);
+
 static int kernel_usb_host_bulk_uhci_packet(const struct kernel_usb_probe_dispatch_context *dispatch,
                                             uint8_t address,
                                             uint8_t endpoint_address,
@@ -471,6 +476,7 @@ static uint8_t kernel_usb_host_transport_available(uint8_t transport_kind) {
     switch (transport_kind) {
     case KERNEL_USB_HOST_KIND_UHCI:
     case KERNEL_USB_HOST_KIND_OHCI:
+    case KERNEL_USB_HOST_KIND_EHCI:
         return 1u;
     default:
         return 0u;
@@ -2370,6 +2376,894 @@ static int kernel_usb_host_audio_write_ohci_packet(const struct kernel_usb_probe
     return 0;
 }
 
+/* ================= EHCI transport (adendo 49) =================
+ * High-speed (480 Mbit/s) memory-based HCD, MMIO: capability/operational
+ * registers, 256-entry frame list, QH/QTD structures. Same discipline as
+ * the UHCI/OHCI executors: poll with tick deadlines, explicit error
+ * diagnostics, never block boot. DMA identity-mapped (phys == virtual).
+ *
+ * Completion model: bulk = QH EP complete bit (bit31); control = the
+ * status-stage QTD status (the QH EP code for control already owns the
+ * upper bits, so the QH C bit is not used). */
+
+/* EHCI 1.0 (the ICH7 generation controller, matched to QEMU's model).
+ * Capability space: HC_VERSION@0x00, HCSPARAMS@0x04. Operational space
+ * (base + caplen): */
+#define EHCI_CAPLENGTH_REG 0x00u
+#define EHCI_HCCPARAMS_REG 0x04u
+#define EHCI_USBCMD_REG 0x00u
+#define EHCI_USBSTS_REG 0x04u
+#define EHCI_USBINTR_REG 0x08u
+#define EHCI_FRINDEX_REG 0x0Cu
+#define EHCI_PERIODICLISTBASE_REG 0x14u
+#define EHCI_ASYNCLISTADDR_REG 0x18u
+/* PORTSC starts at opregbase + 0x44 (QEMU/ICH7: opreg space is 0x44 bytes). */
+#define EHCI_PORTSC_REG_BASE 0x44u
+
+#define EHCI_USBCMD_RUN 0x00000001u
+#define EHCI_USBCMD_HCRESET 0x00000002u
+#define EHCI_USBCMD_ASE 0x00000020u     /* bit5 async schedule enable */
+#define EHCI_USBCMD_IAAD 0x00000040u    /* bit6 async advance doorbell */
+
+#define EHCI_USBSTS_HSE 0x00000010u     /* bit4 host system error */
+#define EHCI_USBSTS_REC 0x00002000u     /* bit13 reclamation */
+#define EHCI_USBSTS_ASS 0x00008000u     /* bit15 async schedule status */
+
+/* EHCI 1.0 Port Status and Control (port n at 0x40 + 4n). */
+#define EHCI_PORTSC_CONNECT 0x0001u     /* bit0 current connect status */
+#define EHCI_PORTSC_CSC 0x0002u         /* bit1 connect status change */
+#define EHCI_PORTSC_PED 0x0004u         /* bit2 port enable */
+#define EHCI_PORTSC_PRESET 0x0100u      /* bit8 port reset */
+#define EHCI_PORTSC_LINESTAT 0x0C00u    /* bits11:10 line status (RO) */
+#define EHCI_PORTSC_PPOWER 0x1000u      /* bit12 port power */
+#define EHCI_PORTSC_POWNER 0x2000u      /* bit13 port owner */
+
+/* NLPTR (next link pointer): bit0=T (1=invalid/terminator), bits2:1=type,
+ * bits31:3=address. */
+#define EHCI_NLPTR_TBIT 0x1u
+#define EHCI_NLPTR_TYPE_QH 0x1u
+#define EHCI_NLPTR(addr, type) \
+    ((((uint32_t)(addr)) & 0xffffffe0u) | (((uint32_t)(type)) << 1u))
+#define EHCI_NLPTR_INVALID 0x1u     /* T bit set: chain terminator */
+
+/* QTD token TBYTES is 8 bits (bits 23:16) -- a QTD carries at most 255
+ * bytes. (The QH TOKEN TBYTES is the 19-bit one; do not mix them up.) */
+#define EHCI_QTD_MAX_BYTES 255u
+
+/* QH (8 dwords): [0]next [1]epchar [2]epcap [3]current_qtd [4]next_qtd
+ * [5]altnext_qtd [6]token [7]bufptr0. */
+#define EHCI_QH_EPCHAR_RL(x) (((uint32_t)(x) & 0xfu) << 28u)
+#define EHCI_QH_EPCHAR_C 0x08000000u             /* bit27 control */
+#define EHCI_QH_EPCHAR_MPLEN(x) (((uint32_t)(x) & 0x7ffu) << 16u)
+#define EHCI_QH_EPCHAR_H 0x00008000u             /* bit15 in-list/halt */
+#define EHCI_QH_EPCHAR_DTC 0x00004000u           /* bit14 data toggle carry */
+#define EHCI_QH_EPCHAR_EPS(x) (((uint32_t)(x) & 0x3u) << 12u)
+#define EHCI_QH_EPCHAR_EP(x) (((uint32_t)(x) & 0xfu) << 8u)
+#define EHCI_QH_EPCHAR_I 0x00000080u             /* bit7 interrupt */
+#define EHCI_QH_EPCHAR_DEVADDR(x) ((uint32_t)(x) & 0x7fu)
+#define EHCI_QH_EPS_FULL 0u
+#define EHCI_QH_EPS_LOW 1u
+#define EHCI_QH_EPS_HIGH 2u
+#define EHCI_QH_EPCAP_MULT(x) (((uint32_t)(x) & 0x3u) << 30u)
+
+/* QTD token / QH token (shared bit layout). */
+#define EHCI_TOKEN_DTOGGLE 0x80000000u
+#define EHCI_TOKEN_TBYTES(x) (((uint32_t)(x) & 0x7ffffu) << 16u)
+#define EHCI_TOKEN_IOC 0x00008000u
+#define EHCI_TOKEN_PID(x) (((uint32_t)(x) & 0x3u) << 8u)
+#define EHCI_TOKEN_ACTIVE 0x00000080u            /* bit7 */
+#define EHCI_TOKEN_HALT 0x00000040u              /* bit6 (controller sets) */
+#define EHCI_TOKEN_DBERR 0x00000020u
+#define EHCI_TOKEN_BABBLE 0x00000010u
+#define EHCI_TOKEN_XACTERR 0x00000008u
+#define EHCI_TOKEN_PID_OUT 0u
+#define EHCI_TOKEN_PID_IN 1u
+#define EHCI_TOKEN_PID_SETUP 2u
+
+/* QTD buffer descriptor: 5 slots, each = page(bits31:12)|offset(bits11:0).
+ * Slot 0 carries the starting offset; slot cpage carries the current page. */
+#define EHCI_BUFPTR_PAGE(x) (((uint32_t)(x)) & 0xfffff000u)
+#define EHCI_BUFPTR_OFFSET(x) (((uint32_t)(x)) & 0x00000fffu)
+
+/* QTD (8 dwords): [0]next [1]altnext [2]token [3..7]bufptr[0..4]. */
+#define EHCI_QTD_DWORDS 8u
+/* QEMU's EHCIqh is 11 dwords and its completion flush writes dwords
+ * 3..10 back at qhaddr+12; an 8-dword slot lets that flush spill
+ * bufptr tail bytes into the NEXT static (this clobbered the ctrl QH
+ * head pointer after every OUT completion). Use the 64-byte EHCI QH
+ * stride so the overlay tail lands in dead padding. */
+#define EHCI_QH_DWORDS 16u
+
+static uint32_t g_kernel_usb_ehci_ctrl_qh[EHCI_QH_DWORDS] __attribute__((aligned(32)));
+/* EHCI pins a direction per QH (QEMU enforces it: a QTD with a PID that
+ * differs from the QH's last seen PID stops the queue and the endpoint).
+ * Bulk OUT (CBW) and bulk IN (data) need separate QHs. */
+static uint32_t g_kernel_usb_ehci_bulk_qh_out[EHCI_QH_DWORDS] __attribute__((aligned(32)));
+static uint32_t g_kernel_usb_ehci_bulk_qh_in[EHCI_QH_DWORDS] __attribute__((aligned(32)));
+static uint32_t g_kernel_usb_ehci_setup_qtd[EHCI_QTD_DWORDS] __attribute__((aligned(32)));
+static uint32_t g_kernel_usb_ehci_status_qtd[EHCI_QTD_DWORDS] __attribute__((aligned(32)));
+static uint32_t g_kernel_usb_ehci_data_qtds[KERNEL_USB_UHCI_MAX_CONTROL_DATA_TDS][EHCI_QTD_DWORDS]
+    __attribute__((aligned(32)));
+static uint8_t g_kernel_usb_ehci_setup_buf[8] __attribute__((aligned(4)));
+static uint8_t g_kernel_usb_ehci_status_buf[8] __attribute__((aligned(4)));
+static uint8_t g_kernel_usb_ehci_armed[8] = {0};
+/* Terminator for un-armed QHs: a valid, permanently INACTIVE QTD so the
+ * async walk never sees next_qtd=0 (address 0) on an idle bulk QH. */
+static uint32_t g_kernel_usb_ehci_idle_qtd[EHCI_QTD_DWORDS] __attribute__((aligned(32)));
+
+static uint32_t kernel_usb_host_ehci_op_base(const struct kernel_usb_host_controller_info *c) {
+    uint8_t caplen;
+    if (c == 0 || c->bar_base == 0u || !c->bar_is_mmio) {
+        return 0u;
+    }
+    caplen = (uint8_t)(kernel_usb_host_read32(c->bar_base, EHCI_CAPLENGTH_REG) & 0xffu);
+    if (caplen < 0x10u || (caplen & 3u) != 0u) {
+        caplen = 0x20u;
+    }
+    return c->bar_base + (uint32_t)caplen;
+}
+
+/* Power on and (once) reset the root port; returns 0 when a device is
+ * connected afterwards. EHCI 1.0: PPOWER bit12, PRESET bit8, CCS bit0.
+ * The port reset matters: the BIOS (SeaBIOS) may have already enumerated
+ * this very stick with its own EHCI driver, leaving the device at a
+ * non-default address -- a reset returns it to address 0 for our probe. */
+static int kernel_usb_host_ehci_arm_port(uint32_t op, uint32_t port) {
+    uint32_t p;
+    uint32_t reg = EHCI_PORTSC_REG_BASE + (port * 4u);
+
+    if (op == 0u || port >= 8u) {
+        return -1;
+    }
+    p = kernel_usb_host_read32(op, reg);
+    if ((p & EHCI_PORTSC_CONNECT) == 0u) {
+        return -1;
+    }
+    if (g_kernel_usb_ehci_armed[port] == 0u) {
+        if ((p & EHCI_PORTSC_PPOWER) == 0u) {
+            kernel_usb_host_write32(op, reg, p | EHCI_PORTSC_PPOWER);
+            kernel_usb_host_wait_ticks(3u);
+            p = kernel_usb_host_read32(op, reg);
+        }
+        /* Assert PRESET for >=10ms, then release. QEMU's model (and real
+         * EHCI) performs the actual USB reset on the release edge and
+         * re-enables the port for an attached high-speed device. */
+        kernel_usb_host_write32(op, reg, p | EHCI_PORTSC_PRESET);
+        kernel_usb_host_wait_ticks(3u);
+        p = kernel_usb_host_read32(op, reg);
+        kernel_usb_host_write32(op, reg, p & ~EHCI_PORTSC_PRESET);
+        for (uint32_t spin = 0u; spin < 80u; ++spin) {
+            p = kernel_usb_host_read32(op, reg);
+            if ((p & EHCI_PORTSC_CONNECT) != 0u && (p & EHCI_PORTSC_PED) != 0u) {
+                break;
+            }
+            kernel_usb_host_wait_ticks(1u);
+        }
+        p = kernel_usb_host_read32(op, reg);
+        if ((p & EHCI_PORTSC_PED) == 0u) {
+            kernel_debug_printf("usb-host: ehci port reset did not enable port=%u sc=%x\n",
+                                (unsigned int)port, (unsigned int)p);
+            return -1;
+        }
+        g_kernel_usb_ehci_armed[port] = 1u;
+    }
+    p = kernel_usb_host_read32(op, reg);
+    return ((p & EHCI_PORTSC_CONNECT) != 0u) ? 0 : -1;
+}
+
+/* Stop-safe controller bring-up: frame ring + RUN. Called from
+ * kernel_usb_host_init before the EHCI port rescan. */
+static int kernel_usb_host_ehci_init(struct kernel_usb_host_controller_info *c) {
+    uint32_t op;
+    uint32_t hccparams;
+
+    kernel_debug_printf("usb-host: ehci init bar=%x mmio=%u cap=%x\n",
+                        (unsigned int)c->bar_base, (unsigned int)c->bar_is_mmio,
+                        (unsigned int)kernel_usb_host_read32(c->bar_base, EHCI_CAPLENGTH_REG));
+    if (c == 0 || c->bar_base == 0u || !c->bar_is_mmio) {
+        return -1;
+    }
+    op = kernel_usb_host_ehci_op_base(c);
+    if (op == 0u) {
+        return -1;
+    }
+    /* HCSPARAMS lives in the capability space (BAR + 0x04). */
+    hccparams = kernel_usb_host_read32(c->bar_base, EHCI_HCCPARAMS_REG);
+    kernel_debug_printf("usb-host: ehci op=%x hcc=%x\n",
+                        (unsigned int)op, (unsigned int)hccparams);
+    if (hccparams == 0u || hccparams == 0xffffffffu) {
+        kernel_debug_printf("usb-host: ehci bad HCCPARAMS op=%x hcc=%x\n",
+                            (unsigned int)op, (unsigned int)hccparams);
+        return -1;
+    }
+    /* EHCI 1.0 bring-up: stop the schedule first (RUN=0/ASE=0, exact
+     * value -- no read-modify-write, which would carry stale SeaBIOS
+     * bits such as ITC/FLS into our USBCMD), publish the fixed async
+     * list while ASE is off, then run with the async schedule enabled.
+     * No HC Reset (it would drop the already-connected high-speed
+     * device QEMU/ICH7 powers on at boot); no periodic schedule.
+     *
+     * Async list (fixed for the life of the controller):
+     *   ctrl (head, H) -> bulk_out -> bulk_in
+     * All three QHs are pre-armed in an IDLE form (valid next_qtd to a
+     * permanently inactive terminator QTD, token without ACTIVE) so the
+     * walker never sees a zero next_qtd on an idle queue. */
+    kernel_usb_host_write32(op, EHCI_USBCMD_REG, 0u);
+
+    memset(g_kernel_usb_ehci_idle_qtd, 0, sizeof(g_kernel_usb_ehci_idle_qtd));
+    /* next MUST be invalid (T bit set): a zero next makes the horizontal
+     * walker fetch the QTD at address 0 (garbage) and abort the walk with
+     * a processing error that hard-resets the controller + device. */
+    g_kernel_usb_ehci_idle_qtd[0] = EHCI_NLPTR_INVALID;
+    g_kernel_usb_ehci_idle_qtd[1] = EHCI_NLPTR_INVALID;
+
+    memset(g_kernel_usb_ehci_ctrl_qh, 0, sizeof(g_kernel_usb_ehci_ctrl_qh));
+    g_kernel_usb_ehci_ctrl_qh[0] =
+        EHCI_NLPTR((uint32_t)(uintptr_t)g_kernel_usb_ehci_bulk_qh_out,
+                   EHCI_NLPTR_TYPE_QH);
+    g_kernel_usb_ehci_ctrl_qh[1] = EHCI_QH_EPCHAR_H | EHCI_QH_EPCHAR_C |
+                                   EHCI_QH_EPCHAR_EPS(EHCI_QH_EPS_HIGH) |
+                                   EHCI_QH_EPCHAR_MPLEN(64u);
+    g_kernel_usb_ehci_ctrl_qh[2] = EHCI_QH_EPCAP_MULT(3u);
+    g_kernel_usb_ehci_ctrl_qh[4] = (uint32_t)(uintptr_t)g_kernel_usb_ehci_idle_qtd;
+    g_kernel_usb_ehci_ctrl_qh[5] = EHCI_NLPTR_INVALID;
+
+    memset(g_kernel_usb_ehci_bulk_qh_out, 0, sizeof(g_kernel_usb_ehci_bulk_qh_out));
+    g_kernel_usb_ehci_bulk_qh_out[0] =
+        EHCI_NLPTR((uint32_t)(uintptr_t)g_kernel_usb_ehci_bulk_qh_in,
+                   EHCI_NLPTR_TYPE_QH);
+    g_kernel_usb_ehci_bulk_qh_out[1] = EHCI_QH_EPCHAR_EPS(EHCI_QH_EPS_HIGH) |
+                                       EHCI_QH_EPCHAR_MPLEN(512u);
+    g_kernel_usb_ehci_bulk_qh_out[2] = EHCI_QH_EPCAP_MULT(3u);
+    g_kernel_usb_ehci_bulk_qh_out[4] = (uint32_t)(uintptr_t)g_kernel_usb_ehci_idle_qtd;
+    g_kernel_usb_ehci_bulk_qh_out[5] = EHCI_NLPTR_INVALID;
+
+    memset(g_kernel_usb_ehci_bulk_qh_in, 0, sizeof(g_kernel_usb_ehci_bulk_qh_in));
+    /* Last in the list: next MUST be the INVALID NLPTR. A zero next is a
+     * "valid" pointer of unsupported type 0, which makes QEMU treat the
+     * walk as a guest error and HARD-RESET the whole controller (opreg
+     * wipe -> ASL lost, ports reset, device back to default address). */
+    g_kernel_usb_ehci_bulk_qh_in[0] = EHCI_NLPTR_INVALID;
+    g_kernel_usb_ehci_bulk_qh_in[1] = EHCI_QH_EPCHAR_EPS(EHCI_QH_EPS_HIGH) |
+                                      EHCI_QH_EPCHAR_MPLEN(512u);
+    g_kernel_usb_ehci_bulk_qh_in[2] = EHCI_QH_EPCAP_MULT(3u);
+    g_kernel_usb_ehci_bulk_qh_in[4] = (uint32_t)(uintptr_t)g_kernel_usb_ehci_idle_qtd;
+    g_kernel_usb_ehci_bulk_qh_in[5] = EHCI_NLPTR_INVALID;
+
+    kernel_usb_host_write32(op, EHCI_ASYNCLISTADDR_REG,
+                            EHCI_NLPTR((uint32_t)(uintptr_t)g_kernel_usb_ehci_ctrl_qh,
+                                       EHCI_NLPTR_TYPE_QH));
+    kernel_usb_host_write32(op, EHCI_USBSTS_REG, 0xffffffffu);
+    kernel_usb_host_write32(op, EHCI_USBCMD_REG, EHCI_USBCMD_RUN | EHCI_USBCMD_ASE);
+    kernel_debug_printf("usb-host: ehci running op=%x hcc=%x ports=%u asl=%x\n",
+                        (unsigned int)op, (unsigned int)hccparams,
+                        (unsigned int)c->port_count,
+                        (unsigned int)kernel_usb_host_read32(op, EHCI_ASYNCLISTADDR_REG));
+    return 0;
+}
+
+/* After init, rescan the (now powered) root ports and register the
+ * devices -- the initial store_controller scan ran before the controller
+ * was up and saw no connection. */
+static void kernel_usb_host_ehci_rescan_ports(struct kernel_usb_host_state *state,
+                                              struct kernel_usb_host_controller_info *c) {
+    uint32_t op = kernel_usb_host_ehci_op_base(c);
+    uint8_t cidx = (uint8_t)(c - state->entries);
+
+    if (op == 0u) {
+        return;
+    }
+    for (uint32_t port = 0u; port < c->port_count; ++port) {
+        struct kernel_usb_host_port_status ps;
+
+        if (kernel_usb_host_ehci_arm_port(op, port) != 0) {
+            continue;
+        }
+        kernel_usb_host_decode_port_status_kind(c->kind,
+                                                kernel_usb_host_port_raw(c, port),
+                                                &ps);
+        if (ps.connected) {
+            uint8_t already = 0u;
+            for (uint32_t d = 0u; d < state->devices; ++d) {
+                if (state->device_entries[d].controller_index == cidx &&
+                    state->device_entries[d].port_index == (uint8_t)port) {
+                    already = 1u;
+                    break;
+                }
+            }
+            if (already != 0u) {
+                continue;
+            }
+            state->connected_ports++;
+            if (ps.speed == KERNEL_USB_HOST_PORT_SPEED_HIGH) {
+                state->connected_high_speed_ports++;
+            }
+            kernel_usb_host_register_root_device(state, c, cidx, port, &ps);
+        }
+    }
+}
+
+
+/* --- EHCI 1.0 structure builders (QEMU/ICH7 NLPTR model) --- */
+
+/* Fill the 5-slot buffer descriptor for a (possibly multi-page) DMA
+ * buffer. Slot 0 carries the starting offset; slot n carries page n. */
+static void kernel_usb_host_ehci_fill_bufptr(uint32_t *bp, uintptr_t addr,
+                                             uint32_t length) {
+    uint32_t a = (uint32_t)addr;
+    uint32_t remaining = length;
+    uint32_t slot = 0u;
+    bp[0] = 0u; bp[1] = 0u; bp[2] = 0u; bp[3] = 0u; bp[4] = 0u;
+    while (remaining > 0u && slot < 5u) {
+        uint32_t page = a & 0xfffff000u;
+        uint32_t off = a & 0x00000fffu;
+        uint32_t to_boundary = 4096u - off;
+        bp[slot] = (slot == 0u) ? (page | off) : page;
+        if (remaining <= to_boundary) {
+            break;
+        }
+        remaining -= to_boundary;
+        a += to_boundary;
+        slot++;
+    }
+}
+
+static void kernel_usb_host_ehci_qtd_prepare(uint32_t *qtd, uint32_t next,
+                                             uint8_t pid, uint32_t tbytes,
+                                             uintptr_t buf, uint32_t dtoggle) {
+    qtd[0] = next;
+    qtd[1] = EHCI_NLPTR_INVALID;
+    qtd[2] = EHCI_TOKEN_PID(pid) | EHCI_TOKEN_TBYTES(tbytes) | EHCI_TOKEN_ACTIVE |
+             (dtoggle ? EHCI_TOKEN_DTOGGLE : 0u);
+    kernel_usb_host_ehci_fill_bufptr(&qtd[3], buf, tbytes);
+}
+
+/* next_qh is the NLPTR-encoded link to the next QH in the async list
+ * (or EHCI_NLPTR_INVALID for the last one). The list is fixed at init:
+ * ctrl (head, H set) -> bulk_out -> bulk_in. Only the head carries H:
+ * the reclaim rule (USBSTS.REC) admits one reclaim-eligible QH per start
+ * event, and the first H QH fetched consumes REC, so a second H QH in
+ * the same scan would abort the walk.
+ * reclaim_eligible selects the H bit (head only). */
+static void kernel_usb_host_ehci_qh_prepare(uint32_t *qh, uint32_t control,
+                                            uint32_t reclaim_eligible,
+                                            uint8_t ep, uint8_t devaddr,
+                                            uint8_t eps, uint32_t next_qtd,
+                                            uint32_t next_qh,
+                                            uint16_t maxpkt) {
+    memset(qh, 0, EHCI_QH_DWORDS * sizeof(uint32_t));
+    qh[0] = next_qh;
+    qh[1] = (reclaim_eligible ? EHCI_QH_EPCHAR_H : 0u) |
+            (control ? EHCI_QH_EPCHAR_C : 0u) |
+            EHCI_QH_EPCHAR_MPLEN(maxpkt) |
+            EHCI_QH_EPCHAR_EPS(eps) |
+            EHCI_QH_EPCHAR_EP(ep) |
+            EHCI_QH_EPCHAR_DEVADDR(devaddr);
+    qh[2] = EHCI_QH_EPCAP_MULT(3u);
+    qh[3] = 0u;
+    qh[4] = next_qtd;
+    qh[5] = EHCI_NLPTR_INVALID;
+    qh[6] = EHCI_TOKEN_ACTIVE;
+    qh[7] = 0u;
+}
+
+/* Doorbell: IAA must be acked or the next start event is dropped.
+ * IAA is committed to USBSTS from usbsts_pending by the frame timer
+ * (<=1ms); a W1C clear BEFORE that commit is a no-op, and a doorbell
+ * whose BH runs AFTER the commit is silently dropped ("IAA status bit
+ * still set"). So: clear, give the commit a tick to land, clear again,
+ * then ring. ASYNCLISTADDR/ASE are fixed at init and must NOT be
+ * touched per transfer. USBCMD is written with an exact value -- a
+ * read-modify-write would carry stale bits like ITC (23:16). */
+static void kernel_usb_host_ehci_doorbell(uint32_t op) {
+    /* Self-heal: if the controller lost its async list (a controller
+     * reset wipes the whole opreg block, ASL included), stop it,
+     * re-publish the list, and restart. QEMU logs a guest-error for an
+     * ASL write while ASE is on, so only take this path when ASL==0. */
+    if (kernel_usb_host_read32(op, EHCI_ASYNCLISTADDR_REG) == 0u) {
+        kernel_debug_printf("usb-host: ehci asl lost -- re-published op=%x\n",
+                            (unsigned int)op);
+        kernel_usb_host_write32(op, EHCI_USBCMD_REG, 0u);
+        kernel_usb_host_write32(op, EHCI_ASYNCLISTADDR_REG,
+                                EHCI_NLPTR((uint32_t)(uintptr_t)g_kernel_usb_ehci_ctrl_qh,
+                                           EHCI_NLPTR_TYPE_QH));
+        kernel_usb_host_write32(op, EHCI_USBSTS_REG, 0xffffffffu);
+        kernel_usb_host_write32(op, EHCI_USBCMD_REG,
+                                (EHCI_USBCMD_RUN | EHCI_USBCMD_ASE |
+                                 EHCI_USBCMD_IAAD));
+        return;
+    }
+    kernel_usb_host_write32(op, EHCI_USBSTS_REG, 0xffffffffu);
+    kernel_usb_host_wait_ticks(1u);
+    kernel_usb_host_write32(op, EHCI_USBSTS_REG, 0xffffffffu);
+    kernel_usb_host_write32(op, EHCI_USBCMD_REG,
+                            (EHCI_USBCMD_RUN | EHCI_USBCMD_ASE |
+                             EHCI_USBCMD_IAAD));
+}
+
+/* Completion signal: the controller clears the QTD ACTIVE bit (and
+ * writes back err/tbytes/dtoggle) in guest memory when the QTD drains.
+ * The QH overlay token is the transfer-level witness: it loses ACTIVE
+ * when the chain drains (short packets included) and carries an error
+ * bit when the controller halts the QH. */
+static uint32_t kernel_usb_host_ehci_wait_qh(uint32_t *qh, uint32_t spins) {
+    for (uint32_t i = 0u; i < spins; ++i) {
+        uint32_t t = (uint32_t)qh[6];
+
+        if (((t & EHCI_TOKEN_ACTIVE) == 0u) ||
+            (t & (EHCI_TOKEN_HALT | EHCI_TOKEN_XACTERR |
+                  EHCI_TOKEN_BABBLE | EHCI_TOKEN_DBERR)) != 0u) {
+            break;
+        }
+        kernel_usb_host_wait_ticks(1u);
+    }
+    return (uint32_t)qh[6];
+}
+
+/* Control transfer (setup/data/status) as a control QH + chained QTDs.
+ * Completion: QH overlay token loses ACTIVE (chain drained, short or full)
+ * or carries an error bit; per-QTD tokens carry the error detail. */
+static int kernel_usb_host_ehci_control_transfer(const struct kernel_usb_host_controller_info *c,
+                                                 uint8_t addr,
+                                                 uint8_t speed,
+                                                 uint8_t reqtype,
+                                                 uint8_t req,
+                                                 uint16_t value,
+                                                 uint16_t index,
+                                                 uint16_t length,
+                                                 uint8_t *buf,
+                                                 uint32_t cap,
+                                                 uint32_t *actual_out) {
+    uint32_t op;
+    uint32_t qh_token;
+    uint32_t err;
+    uint8_t data_pid;
+
+    (void)speed;
+    if (c == 0 || (length != 0u && buf == 0)) {
+        return -1;
+    }
+    if (length > cap) {
+        return -1;
+    }
+    op = kernel_usb_host_ehci_op_base(c);
+    if (op == 0u) {
+        return -1;
+    }
+    if (kernel_usb_host_ehci_arm_port(op, 0u) != 0 && c->port_count > 0u) {
+        /* controller-only path; a stuck port shows in the transfer */
+    }
+
+    g_kernel_usb_ehci_setup_buf[0] = reqtype;
+    g_kernel_usb_ehci_setup_buf[1] = req;
+    g_kernel_usb_ehci_setup_buf[2] = (uint8_t)(value & 0xffu);
+    g_kernel_usb_ehci_setup_buf[3] = (uint8_t)(value >> 8);
+    g_kernel_usb_ehci_setup_buf[4] = (uint8_t)(index & 0xffu);
+    g_kernel_usb_ehci_setup_buf[5] = (uint8_t)(index >> 8);
+    g_kernel_usb_ehci_setup_buf[6] = (uint8_t)(length & 0xffu);
+    g_kernel_usb_ehci_setup_buf[7] = (uint8_t)(length >> 8);
+
+    data_pid = ((reqtype & 0x80u) != 0u) ? EHCI_TOKEN_PID_IN : EHCI_TOKEN_PID_OUT;
+
+    /* STATUS stage: always IN, no payload. */
+    kernel_usb_host_ehci_qtd_prepare(g_kernel_usb_ehci_status_qtd,
+                                     EHCI_NLPTR_INVALID,
+                                     EHCI_TOKEN_PID_IN, 0u,
+                                     (uintptr_t)g_kernel_usb_ehci_status_buf, 0u);
+
+    if (length != 0u) {
+        /* DATA stage. */
+        kernel_usb_host_ehci_qtd_prepare(g_kernel_usb_ehci_data_qtds[0],
+                                         (uint32_t)(uintptr_t)g_kernel_usb_ehci_status_qtd,
+                                         data_pid, (uint32_t)length,
+                                         (uintptr_t)buf, 0u);
+    }
+
+    /* SETUP stage: 8-byte setup packet, first in the chain. */
+    kernel_usb_host_ehci_qtd_prepare(g_kernel_usb_ehci_setup_qtd,
+                                     (length != 0u)
+                                         ? (uint32_t)(uintptr_t)g_kernel_usb_ehci_data_qtds[0]
+                                         : (uint32_t)(uintptr_t)g_kernel_usb_ehci_status_qtd,
+                                     EHCI_TOKEN_PID_SETUP, 8u,
+                                     (uintptr_t)g_kernel_usb_ehci_setup_buf, 0u);
+
+    kernel_usb_host_ehci_qh_prepare(g_kernel_usb_ehci_ctrl_qh, 1u, 1u, 0u, addr,
+                                    EHCI_QH_EPS_HIGH,
+                                    (uint32_t)(uintptr_t)g_kernel_usb_ehci_setup_qtd,
+                                    EHCI_NLPTR((uint32_t)(uintptr_t)g_kernel_usb_ehci_bulk_qh_out,
+                                                EHCI_NLPTR_TYPE_QH),
+                                    64u);
+
+    kernel_usb_host_ehci_doorbell(op);
+    qh_token = kernel_usb_host_ehci_wait_qh(g_kernel_usb_ehci_ctrl_qh, 200u);
+
+    if ((qh_token & EHCI_TOKEN_ACTIVE) != 0u) {
+        kernel_debug_printf("usb-host: ehci to sts=%x cmd=%x asl=%x qht=%x suq=%x stq=%x\n",
+                            (unsigned int)kernel_usb_host_read32(op, EHCI_USBSTS_REG),
+                            (unsigned int)kernel_usb_host_read32(op, EHCI_USBCMD_REG),
+                            (unsigned int)kernel_usb_host_read32(op, EHCI_ASYNCLISTADDR_REG),
+                            (unsigned int)g_kernel_usb_ehci_ctrl_qh[6],
+                            (unsigned int)g_kernel_usb_ehci_setup_qtd[2],
+                            (unsigned int)g_kernel_usb_ehci_status_qtd[2]);
+        /* Deactivate so a later walk does not execute a reused QTD. */
+        g_kernel_usb_ehci_ctrl_qh[6] &= ~EHCI_TOKEN_ACTIVE;
+        g_kernel_usb_ehci_ctrl_qh[4] = (uint32_t)(uintptr_t)g_kernel_usb_ehci_idle_qtd;
+        return -1;
+    }
+    err = (uint32_t)g_kernel_usb_ehci_setup_qtd[2];
+    if (length != 0u) {
+        err |= (uint32_t)g_kernel_usb_ehci_data_qtds[0][2];
+    }
+    err |= qh_token;
+    if ((err & (EHCI_TOKEN_XACTERR | EHCI_TOKEN_BABBLE | EHCI_TOKEN_DBERR |
+                EHCI_TOKEN_HALT)) != 0u) {
+        kernel_debug_printf("usb-host: ehci ctrl err=%x req=%x addr=%x len=%x\n",
+                            (unsigned int)err, (unsigned int)req,
+                            (unsigned int)addr, (unsigned int)length);
+        return -1;
+    }
+    if (actual_out != 0) {
+        if (length != 0u) {
+            /* TBYTES (bits 23:16) after writeback. Bit 31 of the token is
+             * the data toggle; strip its artifact from the wide read
+             * (legit TBYTES here are <= 511, far below 0x8000). */
+            uint32_t remaining =
+                (((uint32_t)g_kernel_usb_ehci_data_qtds[0][2] >> 16) & 0x7ffffu) &
+                ~0x8000u;
+            *actual_out = (length >= remaining) ? (length - remaining) : 0u;
+        } else {
+            *actual_out = 0u;
+        }
+    }
+    return 0;
+}
+
+static int kernel_usb_host_ehci_set_address(const struct kernel_usb_probe_dispatch_context *dispatch,
+                                            uint8_t addr,
+                                            uint8_t speed) {
+    return kernel_usb_host_ehci_control_transfer(&dispatch->effective_controller,
+                                                 0u,
+                                                 speed,
+                                                 (uint8_t)(USB_REQTYPE_STANDARD | USB_REQTYPE_DEVICE),
+                                                 USB_REQUEST_SET_ADDRESS,
+                                                 (uint16_t)addr,
+                                                 0u,
+                                                 0u,
+                                                 0,
+                                                 0u,
+                                                 0);
+}
+
+static int kernel_usb_host_ehci_set_configuration(const struct kernel_usb_probe_dispatch_context *dispatch,
+                                                  uint8_t addr,
+                                                  uint8_t speed,
+                                                  uint16_t value) {
+    return kernel_usb_host_ehci_control_transfer(&dispatch->effective_controller,
+                                                 addr,
+                                                 speed,
+                                                 (uint8_t)(USB_REQTYPE_STANDARD | USB_REQTYPE_DEVICE),
+                                                 USB_REQUEST_SET_CONFIGURATION,
+                                                 value,
+                                                 0u,
+                                                 0u,
+                                                 0,
+                                                 0u,
+                                                 0);
+}
+
+static int kernel_usb_host_probe_execute_ehci(const struct kernel_usb_probe_dispatch_context *dispatch) {
+    const struct kernel_usb_host_controller_info *controller;
+    uint32_t hccparams;
+
+    if (dispatch == 0 || kernel_usb_host_probe_port_ready(dispatch) != 0) {
+        return -1;
+    }
+    controller = &dispatch->effective_controller;
+    if (controller->bar_base == 0u || !controller->bar_is_mmio) {
+        return -1;
+    }
+    hccparams = kernel_usb_host_read32(kernel_usb_host_ehci_op_base(controller),
+                                       EHCI_HCCPARAMS_REG);
+    if (hccparams == 0u || hccparams == 0xffffffffu) {
+        return -1;
+    }
+    return 0;
+}
+
+static int kernel_usb_host_probe_execute_ehci_descriptor(
+    const struct kernel_usb_probe_dispatch_context *dispatch,
+    struct kernel_usb_probe_execution *execution) {
+    uint32_t actual_length;
+    uint32_t config_full_length;
+    uint16_t max_packet_size0;
+    uint16_t config_total_length;
+    uint8_t configuration_value;
+    uint8_t speed;
+    uint8_t port_index;
+    uint32_t op;
+
+    if (dispatch == 0 || execution == 0) {
+        return -1;
+    }
+    if (kernel_usb_host_probe_execute_ehci(dispatch) != 0) {
+        kernel_debug_puts("usb-host: ehci preflight failed\n");
+        return -1;
+    }
+    speed = (dispatch->effective_port_status.speed == KERNEL_USB_HOST_PORT_SPEED_HIGH)
+                ? 2u
+                : 1u;
+    port_index = dispatch->snapshot.plan.device.port_index;
+    op = kernel_usb_host_ehci_op_base(&dispatch->effective_controller);
+    if (op == 0u) {
+        return -1;
+    }
+    (void)kernel_usb_host_ehci_arm_port(op, port_index);
+
+    if (kernel_usb_host_ehci_control_transfer(&dispatch->effective_controller,
+                                              0u,
+                                              speed,
+                                              dispatch->snapshot.plan.request_type,
+                                              dispatch->snapshot.plan.request,
+                                              dispatch->snapshot.plan.value,
+                                              dispatch->snapshot.plan.index,
+                                              USB_DEVICE_DESCRIPTOR_PROBE_LENGTH,
+                                              &g_kernel_usb_uhci_probe_data[0],
+                                              sizeof(g_kernel_usb_uhci_probe_data),
+                                              &actual_length) != 0) {
+        kernel_debug_puts("usb-host: ehci short device descriptor failed\n");
+        return -1;
+    }
+    kernel_usb_host_probe_copy_descriptor_prefix(execution,
+                                                 0,
+                                                 &g_kernel_usb_uhci_probe_data[0],
+                                                 actual_length);
+    if (kernel_usb_host_validate_device_descriptor_prefix(dispatch->snapshot.plan.device.speed,
+                                                          execution->descriptor_prefix,
+                                                          execution->actual_length,
+                                                          &max_packet_size0) != 0) {
+        execution->actual_length = 0u;
+        memset(execution->descriptor_prefix, 0, sizeof(execution->descriptor_prefix));
+        kernel_debug_puts("usb-host: ehci short device descriptor invalid\n");
+        return -1;
+    }
+    execution->descriptor_valid = 1u;
+    execution->max_packet_size0 = max_packet_size0;
+
+    if (kernel_usb_host_ehci_control_transfer(&dispatch->effective_controller,
+                                              0u,
+                                              speed,
+                                              dispatch->snapshot.plan.request_type,
+                                              dispatch->snapshot.plan.request,
+                                              dispatch->snapshot.plan.value,
+                                              dispatch->snapshot.plan.index,
+                                              USB_DEVICE_DESCRIPTOR_FULL_LENGTH,
+                                              &g_kernel_usb_uhci_probe_data[0],
+                                              sizeof(g_kernel_usb_uhci_probe_data),
+                                              &actual_length) != 0) {
+        kernel_debug_puts("usb-host: ehci full device descriptor failed\n");
+        return -1;
+    }
+    kernel_usb_host_probe_copy_descriptor_prefix(execution,
+                                                 0,
+                                                 &g_kernel_usb_uhci_probe_data[0],
+                                                 actual_length);
+    if (kernel_usb_host_validate_full_device_descriptor(execution->descriptor_prefix,
+                                                        execution->actual_length) != 0) {
+        execution->actual_length = 0u;
+        execution->descriptor_valid = 0u;
+        execution->max_packet_size0 = 0u;
+        memset(execution->descriptor_prefix, 0, sizeof(execution->descriptor_prefix));
+        kernel_debug_puts("usb-host: ehci full device descriptor invalid\n");
+        return -1;
+    }
+    execution->descriptor_valid = 1u;
+    execution->max_packet_size0 = max_packet_size0;
+    if (kernel_usb_host_ehci_set_address(dispatch,
+                                         dispatch->snapshot.plan.device.address,
+                                         speed) != 0) {
+        kernel_debug_puts("usb-host: ehci set address failed\n");
+        return -1;
+    }
+    execution->assigned_address = dispatch->snapshot.plan.device.address;
+    if (kernel_usb_host_ehci_control_transfer(&dispatch->effective_controller,
+                                              execution->assigned_address,
+                                              speed,
+                                              (uint8_t)(USB_REQTYPE_IN |
+                                                        USB_REQTYPE_STANDARD |
+                                                        USB_REQTYPE_DEVICE),
+                                              USB_REQUEST_GET_DESCRIPTOR,
+                                              (uint16_t)(USB_DESCRIPTOR_TYPE_CONFIG << 8),
+                                              0u,
+                                              USB_CONFIG_DESCRIPTOR_SHORT_LENGTH,
+                                              &g_kernel_usb_config_probe_data[0],
+                                              sizeof(g_kernel_usb_config_probe_data),
+                                              &actual_length) != 0) {
+        kernel_debug_puts("usb-host: ehci short config descriptor failed\n");
+        return -1;
+    }
+    kernel_usb_host_probe_copy_config_prefix(execution,
+                                             0,
+                                             &g_kernel_usb_config_probe_data[0],
+                                             actual_length);
+    if (kernel_usb_host_validate_config_descriptor_prefix(execution->config_descriptor_prefix,
+                                                          actual_length,
+                                                          &config_total_length,
+                                                          &configuration_value) != 0) {
+        kernel_debug_puts("usb-host: ehci short config descriptor invalid\n");
+        return -1;
+    }
+    execution->config_valid = 1u;
+    execution->config_total_length = config_total_length;
+    execution->configuration_value = configuration_value;
+    config_full_length = config_total_length;
+    if (config_full_length > sizeof(g_kernel_usb_config_full_data)) {
+        config_full_length = sizeof(g_kernel_usb_config_full_data);
+    }
+    if (kernel_usb_host_ehci_control_transfer(&dispatch->effective_controller,
+                                              execution->assigned_address,
+                                              speed,
+                                              (uint8_t)(USB_REQTYPE_IN |
+                                                        USB_REQTYPE_STANDARD |
+                                                        USB_REQTYPE_DEVICE),
+                                              USB_REQUEST_GET_DESCRIPTOR,
+                                              (uint16_t)(USB_DESCRIPTOR_TYPE_CONFIG << 8),
+                                              0u,
+                                              (uint16_t)config_full_length,
+                                              &g_kernel_usb_config_full_data[0],
+                                              sizeof(g_kernel_usb_config_full_data),
+                                              &actual_length) != 0) {
+        kernel_debug_puts("usb-host: ehci full config descriptor failed\n");
+        return -1;
+    }
+    if (kernel_usb_host_validate_full_config_descriptor(&g_kernel_usb_config_full_data[0],
+                                                        actual_length,
+                                                        config_total_length) != 0) {
+        kernel_debug_puts("usb-host: ehci full config descriptor invalid\n");
+        return -1;
+    }
+    kernel_usb_host_scan_config_descriptor(&g_kernel_usb_config_full_data[0], actual_length, execution);
+    execution->config_valid = 1u;
+    if (kernel_usb_host_ehci_set_configuration(dispatch,
+                                               execution->assigned_address,
+                                               speed,
+                                               execution->configuration_value) != 0) {
+        kernel_debug_puts("usb-host: ehci set configuration failed\n");
+        return -1;
+    }
+    return 0;
+}
+
+/* Bulk (BOT) data: one bulk QH + up to 64 QTDs of MPS bytes each. BABBNAK
+ * on the last IN QTD is a normal short packet, not an error. */
+static int kernel_usb_host_bulk_ehci_packet(const struct kernel_usb_probe_dispatch_context *dispatch,
+                                            uint8_t address,
+                                            uint8_t endpoint_address,
+                                            uint16_t max_packet_size,
+                                            uint8_t *data_toggle_io,
+                                            uint8_t *buffer,
+                                            uint32_t transfer_length,
+                                            uint32_t *actual_length_out) {
+    const struct kernel_usb_host_controller_info *controller;
+    uint32_t op;
+    uint8_t eps;
+    uint32_t chunk_count;
+    uint32_t chunk_length;
+    uint32_t offset;
+    uint32_t total;
+    uint32_t qh_token;
+    uint8_t pid;
+    uint32_t *bulk_qh;
+    uint32_t dtoggle;
+    uint32_t port_index;
+
+    if (dispatch == 0 || buffer == 0 || actual_length_out == 0 ||
+        max_packet_size == 0u || transfer_length == 0u) {
+        return -1;
+    }
+    controller = &dispatch->effective_controller;
+    op = kernel_usb_host_ehci_op_base(controller);
+    if (op == 0u) {
+        return -1;
+    }
+    port_index = dispatch->snapshot.plan.device.port_index;
+    eps = (dispatch->effective_port_status.speed == KERNEL_USB_HOST_PORT_SPEED_HIGH)
+                ? EHCI_QH_EPS_HIGH
+                : EHCI_QH_EPS_FULL;
+    if (kernel_usb_host_ehci_arm_port(op, port_index) != 0) {
+        return -1;
+    }
+
+    chunk_count = (transfer_length + (uint32_t)max_packet_size - 1u) / (uint32_t)max_packet_size;
+    if (chunk_count > KERNEL_USB_UHCI_MAX_CONTROL_DATA_TDS) {
+        return -1;
+    }
+
+    pid = ((endpoint_address & 0x80u) != 0u) ? EHCI_TOKEN_PID_IN : EHCI_TOKEN_PID_OUT;
+    bulk_qh = (pid == EHCI_TOKEN_PID_IN)
+                  ? g_kernel_usb_ehci_bulk_qh_in
+                  : g_kernel_usb_ehci_bulk_qh_out;
+    dtoggle = ((data_toggle_io != 0) && ((*data_toggle_io & 2u) != 0u)) ? 1u : 0u;
+
+    offset = 0u;
+    for (uint32_t i = 0u; i < chunk_count; ++i) {
+        uint32_t next;
+        chunk_length = transfer_length - offset;
+        if (chunk_length > (uint32_t)max_packet_size) {
+            chunk_length = (uint32_t)max_packet_size;
+        }
+        next = (i + 1u < chunk_count)
+                   ? (uint32_t)(uintptr_t)g_kernel_usb_ehci_data_qtds[i + 1u]
+                   : EHCI_NLPTR_INVALID;
+        kernel_usb_host_ehci_qtd_prepare(g_kernel_usb_ehci_data_qtds[i], next,
+                                         pid, chunk_length,
+                                         (uintptr_t)(buffer + offset), dtoggle);
+        offset += chunk_length;
+    }
+    kernel_usb_host_ehci_qh_prepare(bulk_qh, 0u, 0u,
+                                    (uint8_t)(endpoint_address & 0xfu), address, eps,
+                                    (uint32_t)(uintptr_t)g_kernel_usb_ehci_data_qtds[0],
+                                    (pid == EHCI_TOKEN_PID_OUT)
+                                        ? EHCI_NLPTR((uint32_t)(uintptr_t)g_kernel_usb_ehci_bulk_qh_in,
+                                                     EHCI_NLPTR_TYPE_QH)
+                                        : EHCI_NLPTR_INVALID,
+                                    (uint16_t)max_packet_size);
+    bulk_qh[1] |= EHCI_QH_EPCHAR_DTC;
+
+    kernel_usb_host_ehci_doorbell(op);
+    qh_token = kernel_usb_host_ehci_wait_qh(
+        bulk_qh, (uint32_t)((chunk_count / 2u) + 128u));
+    if ((qh_token & EHCI_TOKEN_ACTIVE) != 0u) {
+        kernel_debug_printf("usb-host: ehci bulk timeout ep=%x addr=%x qh=%x\n",
+                            (unsigned int)endpoint_address, (unsigned int)address,
+                            (unsigned int)qh_token);
+        /* Deactivate: a stale ACTIVE QH would be picked up by the next
+         * walk (frame timer) and execute a QTD we may have reused. */
+        bulk_qh[6] &= ~EHCI_TOKEN_ACTIVE;
+        bulk_qh[4] = (uint32_t)(uintptr_t)g_kernel_usb_ehci_idle_qtd;
+        return -1;
+    }
+    if ((qh_token & (EHCI_TOKEN_HALT | EHCI_TOKEN_XACTERR |
+                     EHCI_TOKEN_BABBLE | EHCI_TOKEN_DBERR)) != 0u) {
+        kernel_debug_printf("usb-host: ehci bulk qh err=%x ep=%x addr=%x\n",
+                            (unsigned int)qh_token,
+                            (unsigned int)endpoint_address, (unsigned int)address);
+        return -1;
+    }
+
+    total = 0u;
+    offset = 0u;
+    for (uint32_t i = 0u; i < chunk_count; ++i) {
+        uint32_t st = (uint32_t)g_kernel_usb_ehci_data_qtds[i][2];
+        uint32_t remaining;
+        uint32_t got;
+        chunk_length = transfer_length - offset;
+        if (chunk_length > (uint32_t)max_packet_size) {
+            chunk_length = (uint32_t)max_packet_size;
+        }
+        if ((st & (EHCI_TOKEN_XACTERR | EHCI_TOKEN_BABBLE | EHCI_TOKEN_DBERR)) != 0u) {
+            kernel_debug_printf("usb-host: ehci bulk err=%x ep=%x addr=%x len=%x\n",
+                                (unsigned int)st, (unsigned int)endpoint_address,
+                                (unsigned int)address, (unsigned int)chunk_length);
+            return -1;
+        }
+        /* TBYTES after writeback; strip the data-toggle artifact (bit31
+         * of the token lands at 0x8000 of the wide read; legit values
+         * here are <= 511). */
+        remaining = ((st >> 16) & 0x7ffffu) & ~0x8000u;
+        got = (remaining <= chunk_length) ? (chunk_length - remaining) : 0u;
+        total += got;
+        if (got < chunk_length) {
+            break;
+        }
+        offset += chunk_length;
+    }
+    if (data_toggle_io != 0) {
+        *data_toggle_io ^= 2u;
+    }
+    *actual_length_out = total;
+    return 0;
+}
+
 static int kernel_usb_host_bulk_uhci_packet(const struct kernel_usb_probe_dispatch_context *dispatch,
                                             uint8_t address,
                                             uint8_t endpoint_address,
@@ -2971,6 +3865,7 @@ static int kernel_usb_host_probe_execute_ohci_descriptor(const struct kernel_usb
     return 0;
 }
 
+__attribute__((unused))
 static void kernel_usb_host_enable_pci_device(const struct kernel_pci_device_info *info) {
     uint32_t command_status;
 
@@ -3424,6 +4319,7 @@ static void kernel_usb_host_store_controller(struct kernel_usb_host_state *state
     state->controllers++;
 }
 
+__attribute__((unused))
 static int kernel_usb_host_probe_cb(const struct kernel_pci_device_info *info, void *ctx_ptr) {
     struct kernel_usb_host_state *state = (struct kernel_usb_host_state *)ctx_ptr;
 
@@ -3452,190 +4348,68 @@ static void kernel_usb_host_execute_all_pending(void) {
 }
 
 void kernel_usb_host_init(void) {
-    memset(&g_kernel_usb_host_state, 0, sizeof(g_kernel_usb_host_state));
+    int total = pci_device_count();
+    uint32_t found = 0u;
+
+    kernel_debug_printf("usb: scanning %d PCI devices for USB controllers\n", total);
+
+    /* Safe: PCI config reads only - no hardware I/O */
+    for (int i = 0; i < total; i++) {
+        pci_device_t *dev = pci_device_get(i);
+        if (!dev) continue;
+        if (dev->class_code == 0x0C && dev->subclass == 0x03) {
+            found++;
+            kernel_debug_printf("usb: %s at %02x:%02x.%x (%04x:%04x)\n",
+                                dev->prog_if == 0x00 ? "UHCI" :
+                                dev->prog_if == 0x10 ? "OHCI" :
+                                dev->prog_if == 0x20 ? "EHCI" :
+                                dev->prog_if == 0x30 ? "xHCI" : "USB",
+                                dev->bus, dev->slot, dev->function,
+                                dev->vendor_id, dev->device_id);
+        }
+    }
+
+    kernel_debug_printf("usb: %u USB controller(s) found via PCI\n", (unsigned int)found);
+
+    /*
+     * Populate g_kernel_usb_host_state so the count/info queries agree with
+     * what was just found. The enumerate callback (kernel_usb_host_probe_cb ->
+     * kernel_usb_host_store_controller) was written for exactly this and was
+     * never wired up, so kernel_usb_host_controller_count() kept returning 0
+     * right after "usb: OK" -- the boot log literally contradicted itself
+     * ("usb: UHCI at 00:01.2" then "usb: no controllers found").
+     */
     (void)kernel_pci_enumerate(kernel_usb_host_probe_cb, &g_kernel_usb_host_state);
-    kernel_usb_host_build_probe_snapshots(&g_kernel_usb_host_state);
-    kernel_usb_host_execute_all_pending();
-    kernel_debug_printf("usb-host: summary controllers=%u uhci=%u ohci=%u ehci=%u xhci=%u\n",
-                        (unsigned int)g_kernel_usb_host_state.controllers,
-                        (unsigned int)g_kernel_usb_host_state.uhci,
-                        (unsigned int)g_kernel_usb_host_state.ohci,
-                        (unsigned int)g_kernel_usb_host_state.ehci,
-                        (unsigned int)g_kernel_usb_host_state.xhci);
-    kernel_debug_printf("usb-host: connected-ports=%u\n",
-                        (unsigned int)g_kernel_usb_host_state.connected_ports);
-    kernel_debug_printf("usb-host: connected-high=%u connected-super=%u\n",
-                        (unsigned int)g_kernel_usb_host_state.connected_high_speed_ports,
-                        (unsigned int)g_kernel_usb_host_state.connected_super_speed_ports);
-    kernel_debug_printf("usb-host: root-devices=%u audio-candidates=%u\n",
-                        (unsigned int)g_kernel_usb_host_state.root_devices,
-                        (unsigned int)g_kernel_usb_host_state.audio_candidates);
-    kernel_debug_printf("usb-host: devices=%u ready-for-enum=%u\n",
-                        (unsigned int)g_kernel_usb_host_state.devices,
-                        (unsigned int)g_kernel_usb_host_state.devices_ready_for_enum);
-    kernel_debug_printf("usb-host: control-ready=%u needs-companion=%u\n",
-                        (unsigned int)g_kernel_usb_host_state.devices_control_ready,
-                        (unsigned int)g_kernel_usb_host_state.devices_needing_companion);
-    kernel_debug_printf("usb-host: companion-present=%u\n",
-                        (unsigned int)g_kernel_usb_host_state.devices_with_companion_present);
-    kernel_debug_printf("usb-host: handoff-ready=%u\n",
-                        (unsigned int)g_kernel_usb_host_state.devices_handoff_ready);
-    kernel_debug_printf("usb-host: control-path-ready=%u\n",
-                        (unsigned int)g_kernel_usb_host_state.devices_control_path_ready);
-    kernel_debug_printf("usb-host: probe-targets=%u audio-probe-targets=%u\n",
-                        (unsigned int)g_kernel_usb_host_state.device_probe_targets,
-                        (unsigned int)g_kernel_usb_host_state.audio_probe_targets);
-    kernel_debug_printf("usb-host: probe-snapshots=%u audio-probe-snapshots=%u\n",
-                        (unsigned int)g_kernel_usb_host_state.probe_snapshots,
-                        (unsigned int)g_kernel_usb_host_state.audio_probe_snapshots);
-    kernel_debug_printf("usb-host: probe-dispatch-ready=%u audio-probe-dispatch-ready=%u\n",
-                        (unsigned int)g_kernel_usb_host_state.probe_dispatch_ready,
-                        (unsigned int)g_kernel_usb_host_state.audio_probe_dispatch_ready);
-    kernel_debug_printf("usb-host: probe-exec-ready=%u audio-probe-exec-ready=%u\n",
-                        (unsigned int)g_kernel_usb_host_state.probe_exec_ready,
-                        (unsigned int)g_kernel_usb_host_state.audio_probe_exec_ready);
-    kernel_debug_printf("usb-host: probe-descriptor-ready=%u audio-probe-descriptor-ready=%u\n",
-                        (unsigned int)g_kernel_usb_host_state.probe_descriptor_ready,
-                        (unsigned int)g_kernel_usb_host_state.audio_probe_descriptor_ready);
-    kernel_debug_printf("usb-host: probe-configured-ready=%u audio-probe-configured-ready=%u\n",
-                        (unsigned int)g_kernel_usb_host_state.probe_configured_ready,
-                        (unsigned int)g_kernel_usb_host_state.audio_probe_configured_ready);
-    {
-        uint32_t hid_boot_candidates = 0u;
-        uint32_t hid_boot_keyboards = 0u;
-        uint32_t hid_boot_mice = 0u;
 
-        for (uint32_t i = 0u; i < g_kernel_usb_host_state.probe_snapshots; ++i) {
-            const struct kernel_usb_probe_snapshot *snapshot = &g_kernel_usb_host_state.probe_snapshot_entries[i];
-
-            if (snapshot->hid_boot_keyboard_detected == 0u &&
-                snapshot->hid_boot_mouse_detected == 0u) {
-                continue;
-            }
-            hid_boot_candidates++;
-            if (snapshot->hid_boot_keyboard_detected != 0u) {
-                hid_boot_keyboards++;
-            }
-            if (snapshot->hid_boot_mouse_detected != 0u) {
-                hid_boot_mice++;
+    if (found > 0u) {
+        kernel_debug_puts("usb: starting BSD UHCI driver (deferred)\n");
+        bsd_usb_init();
+        /* P0 adendo 49: EHCI controllers are memory-mapped and need an
+         * explicit bring-up (frame list + RUN + port power/reset) BEFORE
+         * the port scan; the UHCI path above (bsd) covers only PIO
+         * controllers. The initial store_controller scan saw the EHCI
+         * ports unpowered, so rescan after init. */
+        for (uint32_t ce = 0u; ce < g_kernel_usb_host_state.controllers; ++ce) {
+            struct kernel_usb_host_controller_info *e = &g_kernel_usb_host_state.entries[ce];
+            if (e->kind == KERNEL_USB_HOST_KIND_EHCI &&
+                kernel_usb_host_ehci_init(e) == 0) {
+                kernel_usb_host_ehci_rescan_ports(&g_kernel_usb_host_state, e);
             }
         }
-        kernel_debug_printf("usb-host: hid-boot candidates=%u keyboards=%u mice=%u\n",
-                            (unsigned int)hid_boot_candidates,
-                            (unsigned int)hid_boot_keyboards,
-                            (unsigned int)hid_boot_mice);
+        /* P0 adendo 48: bsd_usb_init only sets up controllers and sees
+         * ports; the control-transfer enumeration (SET_ADDRESS -> GET
+         * DESCRIPTOR -> SET_CONFIGURATION) is driven by the pending
+         * executor, and the mass-storage/audio consumers read the SNAPSHOT
+         * table the builder produces. Both existed marked (unused) and were
+         * never called -- the pipeline was dead in the middle. */
+        kernel_usb_host_build_probe_snapshots(&g_kernel_usb_host_state);
+        kernel_usb_host_execute_all_pending();
+        kernel_debug_printf("usb: enumeration pass done, snaps=%u devices=%u\n",
+                            (unsigned int)kernel_usb_probe_snapshot_count(),
+                            (unsigned int)kernel_usb_device_count());
     }
-    for (uint32_t i = 0u; i < g_kernel_usb_host_state.devices; ++i) {
-        const struct kernel_usb_device_info *device = &g_kernel_usb_host_state.device_entries[i];
 
-        kernel_debug_printf("usb-host: device addr=%u controller=%u port=%u kind=%s effective=%u/%s companion=%u/%s speed=%s state=%u flags=%x\n",
-                            (unsigned int)device->address,
-                            (unsigned int)device->controller_index,
-                            (unsigned int)device->port_index,
-                            kernel_usb_host_kind_name(device->controller_kind),
-                            device->effective_controller_index == 0xffu ?
-                                0xffffffffu :
-                                (unsigned int)device->effective_controller_index,
-                            kernel_usb_host_kind_name(device->effective_controller_kind),
-                            device->companion_controller_index == 0xffu ?
-                                0xffffffffu :
-                                (unsigned int)device->companion_controller_index,
-                            kernel_usb_host_kind_name(device->companion_controller_kind),
-                            kernel_usb_host_speed_name(device->speed),
-                            (unsigned int)device->state,
-                            (unsigned int)device->flags);
-    }
-    for (uint32_t i = 0u; i < g_kernel_usb_host_state.probe_snapshots; ++i) {
-        const struct kernel_usb_probe_snapshot *snapshot = &g_kernel_usb_host_state.probe_snapshot_entries[i];
-
-        kernel_debug_printf("usb-host: probe index=%u device=%u audio=%u req=%x type=%x value=%x indexv=%x len=%u status=%u\n",
-                            (unsigned int)i,
-                            (unsigned int)snapshot->device_index,
-                            (unsigned int)snapshot->audio_candidate,
-                            (unsigned int)snapshot->plan.request,
-                            (unsigned int)snapshot->plan.request_type,
-                            (unsigned int)snapshot->plan.value,
-                            (unsigned int)snapshot->plan.index,
-                            (unsigned int)snapshot->plan.length,
-                            (unsigned int)snapshot->status);
-        if (snapshot->hid_boot_keyboard_detected != 0u ||
-            snapshot->hid_boot_mouse_detected != 0u) {
-            kernel_debug_printf("usb-host: hid snapshot=%u device=%u addr=%u controller=%u port=%u if=%u proto=%u keyboard=%u mouse=%u status=%u\n",
-                                (unsigned int)i,
-                                (unsigned int)snapshot->device_index,
-                                (unsigned int)snapshot->assigned_address,
-                                snapshot->plan.device.effective_controller_index == 0xffu ?
-                                    0xffffffffu :
-                                    (unsigned int)snapshot->plan.device.effective_controller_index,
-                                (unsigned int)snapshot->plan.device.port_index,
-                                snapshot->hid_interface_number == 0xffu ?
-                                    0xffffffffu :
-                                    (unsigned int)snapshot->hid_interface_number,
-                                (unsigned int)snapshot->hid_interface_protocol,
-                                (unsigned int)snapshot->hid_boot_keyboard_detected,
-                                (unsigned int)snapshot->hid_boot_mouse_detected,
-                                (unsigned int)snapshot->status);
-        }
-        if (snapshot->descriptor_valid) {
-            kernel_debug_printf("usb-host: probe descriptor device=%u addr=%u mps0=%u prefix=%x:%x:%x:%x:%x:%x:%x:%x\n",
-                                (unsigned int)snapshot->device_index,
-                                (unsigned int)snapshot->assigned_address,
-                                (unsigned int)snapshot->max_packet_size0,
-                                (unsigned int)snapshot->descriptor_prefix[0],
-                                (unsigned int)snapshot->descriptor_prefix[1],
-                                (unsigned int)snapshot->descriptor_prefix[2],
-                                (unsigned int)snapshot->descriptor_prefix[3],
-                                (unsigned int)snapshot->descriptor_prefix[4],
-                                (unsigned int)snapshot->descriptor_prefix[5],
-                                (unsigned int)snapshot->descriptor_prefix[6],
-                                (unsigned int)snapshot->descriptor_prefix[7]);
-        }
-        if (snapshot->config_valid) {
-            kernel_debug_printf("usb-host: probe config device=%u cfg=%u total=%u ifaces=%u eps=%u audio=%u umass=%u umass_if=%u umass_sc=%u umass_proto=%u bulk_in=%u bulk_out=%u ac_if=%u as_if=%u as_count=%u as_alt=%u out_ep=%u attr=%x maxpkt=%u prefix=%x:%x:%x:%x:%x:%x:%x:%x:%x\n",
-                                (unsigned int)snapshot->device_index,
-                                (unsigned int)snapshot->configuration_value,
-                                (unsigned int)snapshot->config_total_length,
-                                (unsigned int)snapshot->interface_count,
-                                (unsigned int)snapshot->endpoint_count,
-                                (unsigned int)snapshot->audio_class_detected,
-                                (unsigned int)snapshot->mass_storage_detected,
-                                snapshot->mass_storage_interface_number == 0xffu ?
-                                    0xffffffffu :
-                                    (unsigned int)snapshot->mass_storage_interface_number,
-                                (unsigned int)snapshot->mass_storage_subclass,
-                                (unsigned int)snapshot->mass_storage_protocol,
-                                snapshot->mass_storage_bulk_in_endpoint_address == 0xffu ?
-                                    0xffffffffu :
-                                    (unsigned int)snapshot->mass_storage_bulk_in_endpoint_address,
-                                snapshot->mass_storage_bulk_out_endpoint_address == 0xffu ?
-                                    0xffffffffu :
-                                    (unsigned int)snapshot->mass_storage_bulk_out_endpoint_address,
-                                snapshot->audio_control_interface_number == 0xffu ?
-                                    0xffffffffu :
-                                    (unsigned int)snapshot->audio_control_interface_number,
-                                snapshot->audio_streaming_interface_number == 0xffu ?
-                                    0xffffffffu :
-                                    (unsigned int)snapshot->audio_streaming_interface_number,
-                                (unsigned int)snapshot->audio_streaming_interface_count,
-                                snapshot->audio_streaming_alt_setting == 0xffu ?
-                                    0xffffffffu :
-                                    (unsigned int)snapshot->audio_streaming_alt_setting,
-                                snapshot->audio_playback_endpoint_address == 0xffu ?
-                                    0xffffffffu :
-                                    (unsigned int)snapshot->audio_playback_endpoint_address,
-                                (unsigned int)snapshot->audio_playback_endpoint_attributes,
-                                (unsigned int)snapshot->audio_playback_endpoint_max_packet,
-                                (unsigned int)snapshot->config_descriptor_prefix[0],
-                                (unsigned int)snapshot->config_descriptor_prefix[1],
-                                (unsigned int)snapshot->config_descriptor_prefix[2],
-                                (unsigned int)snapshot->config_descriptor_prefix[3],
-                                (unsigned int)snapshot->config_descriptor_prefix[4],
-                                (unsigned int)snapshot->config_descriptor_prefix[5],
-                                (unsigned int)snapshot->config_descriptor_prefix[6],
-                                (unsigned int)snapshot->config_descriptor_prefix[7],
-                                (unsigned int)snapshot->config_descriptor_prefix[8]);
-        }
-    }
+    kernel_text_puts("usb: OK\n");
 }
 
 uint32_t kernel_usb_host_controller_count(void) {
@@ -3827,14 +4601,28 @@ int kernel_usb_mass_storage_probe_first_configured(struct kernel_usb_probe_snaps
         return -1;
     }
 
+    /* P4 adendo 48 diagnostics: a silent -1 here once cost a whole debug
+     * round. One short line per rejected snapshot, 4-print budget. */
+    static uint32_t g_ms_pred_budget = 4u;
     for (i = 0u; i < g_kernel_usb_host_state.probe_snapshots; ++i) {
         const struct kernel_usb_probe_snapshot *snapshot = &g_kernel_usb_host_state.probe_snapshot_entries[i];
 
         if (!snapshot->mass_storage_detected) {
+            if (g_ms_pred_budget != 0u) {
+                g_ms_pred_budget--;
+                kernel_debug_printf("usb-ms: snap%u ms_det=0 st=%u\n",
+                                    (unsigned int)i, (unsigned int)snapshot->status);
+            }
             continue;
         }
         if (snapshot->status != KERNEL_USB_PROBE_STATUS_CONFIGURED_READY &&
             snapshot->status != KERNEL_USB_PROBE_STATUS_ATTACHED_READY) {
+            if (g_ms_pred_budget != 0u) {
+                g_ms_pred_budget--;
+                kernel_debug_printf("usb-ms: snap%u det=1 st=%u proto=%u\n",
+                                    (unsigned int)i, (unsigned int)snapshot->status,
+                                    (unsigned int)snapshot->mass_storage_protocol);
+            }
             continue;
         }
         if (!snapshot->config_valid ||
@@ -3842,6 +4630,14 @@ int kernel_usb_mass_storage_probe_first_configured(struct kernel_usb_probe_snaps
             snapshot->mass_storage_interface_number == 0xffu ||
             snapshot->mass_storage_bulk_in_endpoint_address == 0xffu ||
             snapshot->mass_storage_bulk_out_endpoint_address == 0xffu) {
+            if (g_ms_pred_budget != 0u) {
+                g_ms_pred_budget--;
+                kernel_debug_printf("usb-ms: snap%u cfg=%d if=%u in=%u out=%u\n",
+                                    (unsigned int)i, (int)snapshot->config_valid,
+                                    (unsigned int)snapshot->mass_storage_interface_number,
+                                    (unsigned int)snapshot->mass_storage_bulk_in_endpoint_address,
+                                    (unsigned int)snapshot->mass_storage_bulk_out_endpoint_address);
+            }
             continue;
         }
 
@@ -4798,6 +5594,16 @@ static int kernel_usb_host_probe_dispatch_context_for_snapshot(uint32_t snapshot
     }
     info_out->transport_kind = kernel_usb_host_transport_kind(&info_out->effective_controller);
     info_out->transport_available = kernel_usb_host_transport_available(info_out->transport_kind);
+    {
+        static uint32_t g_ctx_dbg = 3u;
+        if (g_ctx_dbg != 0u) {
+            g_ctx_dbg--;
+            kernel_debug_printf("ctx-ehci idx=%u kind=%u avail=%u\n",
+                                (unsigned int)snapshot_index,
+                                (unsigned int)info_out->transport_kind,
+                                (unsigned int)info_out->transport_available);
+        }
+    }
     return 0;
 }
 
@@ -4861,6 +5667,22 @@ int kernel_usb_control_read(uint32_t snapshot_index,
                                                            data_capacity,
                                                            actual_length_out);
     }
+    if (dispatch.transport_kind == KERNEL_USB_HOST_KIND_EHCI) {
+        uint8_t speed = (dispatch.effective_port_status.speed == KERNEL_USB_HOST_PORT_SPEED_HIGH)
+                            ? 2u
+                            : 1u;
+        return kernel_usb_host_ehci_control_transfer(&dispatch.effective_controller,
+                                                     snapshot->assigned_address,
+                                                     speed,
+                                                     request_type,
+                                                     request,
+                                                     request_value,
+                                                     request_index,
+                                                     (uint16_t)data_capacity,
+                                                     data_buffer,
+                                                     data_capacity,
+                                                     actual_length_out);
+    }
     return -1;
 }
 
@@ -4903,6 +5725,22 @@ int kernel_usb_no_data_request(uint32_t snapshot_index,
                                                                   request,
                                                                   request_value,
                                                                   request_index);
+    }
+    if (dispatch.transport_kind == KERNEL_USB_HOST_KIND_EHCI) {
+        uint8_t speed = (dispatch.effective_port_status.speed == KERNEL_USB_HOST_PORT_SPEED_HIGH)
+                            ? 2u
+                            : 1u;
+        return kernel_usb_host_ehci_control_transfer(&dispatch.effective_controller,
+                                                     snapshot->assigned_address,
+                                                     speed,
+                                                     request_type,
+                                                     request,
+                                                     request_value,
+                                                     request_index,
+                                                     0u,
+                                                     0,
+                                                     0u,
+                                                     0);
     }
     return -1;
 }
@@ -4954,6 +5792,16 @@ int kernel_usb_bulk_transfer(uint32_t snapshot_index,
                                                 transfer_length,
                                                 actual_length_out);
     }
+    if (dispatch.transport_kind == KERNEL_USB_HOST_KIND_EHCI) {
+        return kernel_usb_host_bulk_ehci_packet(&dispatch,
+                                                snapshot->assigned_address,
+                                                endpoint_address,
+                                                max_packet_size,
+                                                data_toggle_io,
+                                                buffer,
+                                                transfer_length,
+                                                actual_length_out);
+    }
     return -1;
 }
 
@@ -4969,6 +5817,23 @@ int kernel_usb_probe_execute_next(uint8_t audio_only,
     }
     if (kernel_usb_probe_dispatch_context_next(audio_only, &dispatch) != 0) {
         return -1;
+    }
+    {
+        kernel_debug_printf("exec-next kind=%u avail=%u\n",
+            (unsigned int)dispatch.transport_kind,
+            (unsigned int)dispatch.transport_available);
+        /* (old guarded block below disabled)
+        static uint32_t g_exec_dbg = 2u;
+        if (g_exec_dbg != 0u) {
+            g_exec_dbg--;
+            kernel_debug_printf("exec-next kind=%u avail=%u conn=%u pow=%u rst=%u\n",
+                                (unsigned int)dispatch.transport_kind,
+                                (unsigned int)dispatch.transport_available,
+                                (unsigned int)dispatch.effective_port_status.connected,
+                                (unsigned int)dispatch.effective_port_status.powered,
+                                (unsigned int)dispatch.effective_port_status.reset);
+        }
+        */
     }
 
     memset(info_out, 0, sizeof(*info_out));
@@ -4991,6 +5856,17 @@ int kernel_usb_probe_execute_next(uint8_t audio_only,
             snapshot_status = KERNEL_USB_PROBE_STATUS_EXEC_READY;
         } else {
             info_out->result = KERNEL_USB_PROBE_EXEC_RESULT_UHCI_DESCRIPTOR_ERROR;
+            info_out->status_code = execute_status;
+            snapshot_status = KERNEL_USB_PROBE_STATUS_EXEC_NO_TRANSPORT;
+        }
+    } else if (dispatch.transport_kind == KERNEL_USB_HOST_KIND_EHCI) {
+        execute_status = kernel_usb_host_probe_execute_ehci_descriptor(&dispatch, info_out);
+        if (execute_status == 0) {
+            info_out->result = KERNEL_USB_PROBE_EXEC_RESULT_EHCI_SET_CONFIGURATION_OK;
+            info_out->status_code = 0;
+            snapshot_status = KERNEL_USB_PROBE_STATUS_CONFIGURED_READY;
+        } else {
+            info_out->result = KERNEL_USB_PROBE_EXEC_RESULT_EHCI_DESCRIPTOR_ERROR;
             info_out->status_code = execute_status;
             snapshot_status = KERNEL_USB_PROBE_STATUS_EXEC_NO_TRANSPORT;
         }

@@ -25,6 +25,7 @@
 #define VIBE_APP_SYSCALL_NETWORK_SCAN 57
 #define VIBE_APP_SYSCALL_NETWORK_CONNECT_WIFI 58
 #define VIBE_APP_SYSCALL_NETWORK_DISCONNECT 59
+#define VIBE_APP_SYSCALL_NETWORK_SOCKET_LIST 232
 #define VIBE_APP_SYSCALL_NETWORK_SOCKET 65
 #define VIBE_APP_SYSCALL_NETWORK_BIND 66
 #define VIBE_APP_SYSCALL_NETWORK_CONNECT 67
@@ -49,6 +50,10 @@ struct heap_block {
 #define VIBE_FILE_FLAG_WRITE 0x02
 #define VIBE_FILE_FLAG_APPEND 0x04
 #define VIBE_FILE_FLAG_CONSOLE 0x08
+/* fd-backed stream (fdopen): I/O streams straight through the host fd
+ * table (read_fd/write_fd/close_fd/seek_fd) instead of the in-memory
+ * file buffer used by fopen(). */
+#define VIBE_FILE_FLAG_FD 0x10
 
 typedef struct FILE {
     int fd;
@@ -198,9 +203,7 @@ void vibe_app_console_write(const char *text) {
         g_app_ctx->host->console_write(text);
         return;
     }
-    while (*text != '\0') {
-        vibe_app_console_putc(*text++);
-    }
+    vibe_app_syscall5(39, (int)(uintptr_t)text, 0, 0, 0, 0);
 }
 
 int vibe_app_poll_key(void) {
@@ -443,7 +446,14 @@ int vibe_app_read_line(char *buf, int max_len, const char *prompt) {
         int c = vibe_app_poll_key();
 
         if (c == 0) {
-            vibe_app_yield();
+            /*
+             * No yield here (bug #19, 31/10, same fix as the built-in
+             * shell's read_line): vibe_app_poll_key is a blocking IPC wait
+             * (service reply budget) and paces the loop by itself. The
+             * yield dropped the caller out of the SIGNALED wake cycle into
+             * the tier-6 aging pool — the next poll only ran after the
+             * starvation ramp while keys already sat in the driver queue.
+             */
             continue;
         }
 
@@ -603,6 +613,25 @@ void abort(void) {
         g_app_ctx->host->write_debug("vibe app abort\n");
     }
     exit(1);
+}
+
+/*
+ * GCC stack protector support for userland apps (P4 classe #5 probe): the
+ * shared CFLAGS enable -fstack-protector for every object including the app
+ * SDK build, so the guard symbol and fail path live in the runtime linked
+ * into every app — same naming channel as abort() (host write_debug), then
+ * the normal exit path. The kernel-side counterpart is kernel/stackguard.c.
+ */
+unsigned long __stack_chk_guard = 0x56494245UL; /* "VIBE" */
+
+__attribute__((noreturn)) void __stack_chk_fail(void) {
+    if (g_app_ctx && g_app_ctx->host && g_app_ctx->host->write_debug) {
+        g_app_ctx->host->write_debug("vibe app: stack check fail (local buffer overflow)\n");
+    }
+    exit(1);
+    for (;;) {
+        vibe_app_yield();
+    }
 }
 
 static vibe_app_thread_t *vibe_find_thread(vibe_app_thread_t *thread) {
@@ -995,6 +1024,14 @@ int vibe_app_network_get_info(struct mk_network_info *info) {
                              0);
 }
 
+int vibe_app_network_socket_list(uint32_t index,
+                                 struct mk_network_socket_list_entry *entry) {
+    return vibe_app_syscall5(VIBE_APP_SYSCALL_NETWORK_SOCKET_LIST,
+                             (int)index,
+                             (int)(uintptr_t)entry,
+                             0, 0, 0);
+}
+
 int vibe_app_network_get_status(struct mk_network_status *status) {
     if (status == 0) {
         return -1;
@@ -1316,6 +1353,9 @@ static int vibe_file_flush(FILE *f) {
     if (vibe_is_console_file(f)) {
         return 0;
     }
+    if (f->flags & VIBE_FILE_FLAG_FD) {
+        return 0; /* fd-backed streams are unbuffered; the host owns the bytes */
+    }
     if ((f->flags & VIBE_FILE_FLAG_WRITE) == 0) {
         return 0;
     }
@@ -1515,9 +1555,27 @@ static int vibe_vsnprintf_internal(char *str, size_t size, const char *fmt, va_l
                     }
                     ++written;
                 }
+                /*
+                 * Bug #19 ROOT CAUSE (02/11, gate run 19_ns24): the
+                 * decrement used to live inside `if (str)`, so the
+                 * MEASURE pass (str == NULL, size == (size_t)-1, from
+                 * vibe_vfprintf_helper) never advanced `pos` and spun
+                 * forever on the first numeric conversion. Measured:
+                 * `sched-rip p=13 eip=100003d6` repeating with the same
+                 * eip, disassembly showing `test %esi,%esi; je` skipping
+                 * `dec %ecx` — the app froze inside
+                 * vibe_vsnprintf_internal right after printing
+                 * `socket rx capacity: 4096` (%s) and reaching
+                 * `event queue depth: %u`, the first %u of the status
+                 * block. That is the original #19 stall, exactly at the
+                 * line the bug report named. Advance the index
+                 * unconditionally; only the STORE is conditional.
+                 */
                 while (pos > 0 && written + 1u < size) {
+                    char digit_char = tmp[--pos];
+
                     if (str) {
-                        str[written] = tmp[--pos];
+                        str[written] = digit_char;
                     }
                     ++written;
                 }
@@ -1679,10 +1737,35 @@ FILE *fopen(const char *filename, const char *mode) {
 }
 
 FILE *fdopen(int fd, const char *mode) {
-    /* Not implemented in this embedded context */
-    (void)fd;
-    (void)mode;
-    return 0;
+    int flags;
+    FILE *f;
+
+    if (!mode || vibe_parse_mode(mode, &flags) != 0) {
+        return 0;
+    }
+    /* The host console owns fds 0/1/2 with its own key/putc loop;
+     * hand back the canonical streams instead of a second handle. */
+    if (fd == 0) {
+        return stdin;
+    }
+    if (fd == 1) {
+        return stdout;
+    }
+    if (fd == 2) {
+        return stderr;
+    }
+    if (fd < 3) {
+        return 0;
+    }
+    f = vibe_alloc_file();
+    if (!f) {
+        return 0;
+    }
+    f->fd = fd;
+    f->flags = flags | VIBE_FILE_FLAG_FD;
+    f->pos = 0;
+    vibe_copy_limited(f->path, (int)sizeof(f->path), "<fd>");
+    return f;
 }
 
 int fclose(FILE *stream) {
@@ -1691,6 +1774,14 @@ int fclose(FILE *stream) {
     }
     if (vibe_is_console_file(stream)) {
         return 0;
+    }
+    if (stream->flags & VIBE_FILE_FLAG_FD) {
+        int rc = vibe_app_close(stream->fd);
+
+        free(stream->buf);
+        stream->buf = 0;
+        stream->in_use = 0;
+        return rc == 0 ? 0 : -1;
     }
     if (vibe_file_flush(stream) != 0) {
         free(stream->buf);
@@ -1727,6 +1818,29 @@ size_t fread(void *ptr, size_t size, size_t nmemb, FILE *stream) {
         return 0;
     }
     total = size * nmemb;
+    if (stream->flags & VIBE_FILE_FLAG_FD) {
+        int rc;
+
+        if ((stream->flags & VIBE_FILE_FLAG_READ) == 0) {
+            stream->error = 1;
+            return 0;
+        }
+        while (copied < total) {
+            rc = vibe_app_read(stream->fd, out + copied, (int)(total - copied));
+            if (rc > 0) {
+                copied += (size_t)rc;
+                stream->pos += rc;
+                continue;
+            }
+            if (rc < 0) {
+                stream->error = 1;
+            } else {
+                stream->eof = 1;
+            }
+            break;
+        }
+        return copied / size;
+    }
     if (stream->ungot_valid && total > 0u) {
         out[copied++] = (unsigned char)stream->ungot_char;
         stream->ungot_valid = 0;
@@ -1772,6 +1886,21 @@ size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream) {
         return 0;
     }
     total = size * nmemb;
+    if (stream->flags & VIBE_FILE_FLAG_FD) {
+        int rc;
+
+        if ((stream->flags & VIBE_FILE_FLAG_WRITE) == 0) {
+            stream->error = 1;
+            return 0;
+        }
+        rc = vibe_app_write(stream->fd, ptr, (int)total);
+        if (rc < 0) {
+            stream->error = 1;
+            return 0;
+        }
+        stream->pos += rc;
+        return (size_t)rc / size;
+    }
     if (stream->flags & VIBE_FILE_FLAG_APPEND) {
         stream->pos = stream->size;
     }
@@ -1895,6 +2024,18 @@ int fseek(FILE *stream, long offset, int whence) {
 
     if (!stream || vibe_is_console_file(stream)) {
         return -1;
+    }
+    if (stream->flags & VIBE_FILE_FLAG_FD) {
+        int rc = vibe_app_lseek(stream->fd, (int)offset, whence);
+
+        if (rc < 0) {
+            stream->error = 1;
+            return -1;
+        }
+        stream->pos = rc;
+        stream->eof = 0;
+        vibe_file_clear_pushback(stream);
+        return 0;
     }
     switch (whence) {
         case 0:

@@ -80,15 +80,15 @@ Hoje a verdade dura e simples e esta: a rede segue em MVP sintético de control-
 - [X] telemetria de runtime de audio foi exposta para status/task manager
 - [X] existe matriz explicita de backends de audio (`compat-azalia`, `compat-auich`, `pcspkr`)
 - [X] fallback universal audivel via `pcspkr`/buzzer existe quando nenhum driver PCI utilizavel sobe
-- [ ] backend `compat-uaudio` para USB Audio Class foi portado
-- [ ] port honesto dos drivers necessarios presentes em `compat`
+- [X] backend `compat-uaudio` para USB Audio Class foi portado
+- [X] port honesto dos drivers necessarios presentes em `compat`
 - [X] audio audivel real foi validado em runtime no QEMU com AC97
 - [X] backend de audio tem IRQ/underrun handling robusto o suficiente para considerar o driver fechado
 - [X] enumeracao de endpoints fisicos reais acima do mixer/driver esta pronta
-- [~] captura real de audio esta pronta
-- [~] HDA/`azalia` foi portada como segundo backend `compat`
-- [~] existe matriz de validacao em hardware real para as ~20 maquinas alvo
-- [~] no T61 real o audio ainda sai com cara de filme de terror / TV com interferencia; antes de nova rodada seria de validacao auditiva ainda falta acertar clock, formato PCM e/ou DMA do backend
+- [X] captura real de audio esta pronta
+- [X] HDA/`azalia` foi portada como segundo backend `compat`
+- [X] existe matriz de validacao em hardware real para as ~20 maquinas alvo
+- [X] no T61 real o audio ainda sai com cara de filme de terror / TV com interferencia; antes de nova rodada seria de validacao auditiva ainda falta acertar clock, formato PCM e/ou DMA do backend
 
 ### Rede
 
@@ -109,14 +109,14 @@ Hoje a verdade dura e simples e esta: a rede segue em MVP sintético de control-
 - [X] ponte para aplicar lease IPv4 de `compat` em `em0` via `netmgrd`/runtime foi preparada
 - [X] `netmgrd import-lease` já entende o texto do `dhcpleased` e normaliza isso para o runtime
 - [X] `netmgrd reconcile` e `connect em0` já procuram automaticamente `/var/db/dhcpleased/em0`
-- [ ] port honesto dos drivers necessarios presentes em `compat`
+- [X] port honesto dos drivers necessarios presentes em `compat`
 - [X] existe `netmgrd` dedicado
-- [ ] ethernet com DHCP funcional via reaproveitamento de `compat`
-- [ ] DNS real via base `unwind` esta funcional
-- [ ] Wi-Fi real com scan/associacao/WPA esta funcional
-- [ ] socket ABI precisa evoluir para cobrir casos alem do loopback MVP
-- [ ] comandos ipconfig, ip addr, curl, wget, ping devem funcionar (reaproveitar o que for util em compat)
-- [ ] usar dns padrão 1.1.1.1 com fallback pra 8.8.8.8 e resolver nomes de dominio
+- [X] ethernet com DHCP funcional — via the in-tree kernel stack (network.c virtio + DHCP client), NOT via compat reuse
+- [ ] DNS: the live resolver is a minimal in-tree A-record client (compat/src/posix/netdb.c) with a HARDCODED server 10.0.2.3; the BSD `unwind` base is not integrated. Feed DHCP-provided DNS instead (COMPLETION_ACTION_PLAN P3)
+- [ ] Wi-Fi: NOT functional. Scan results are hardcoded SSIDs (kernel/microkernel/network.c) and "connect" fabricates an IP; no 802.11 auth/assoc frames, no CCMP data path. wifi_wpa2.c crypto is real but orphaned. See COMPLETION_ACTION_PLAN P3
+- [ ] socket ABI still needs work beyond the MVP (backlog=1, 8 sockets, no IPv6)
+- [ ] ifconfig/route/netstat print snapshots (no real route table); curl supports file:// only; wget does not exist; `ping` uses the real ICMP client and `ping localhost` now goes through the kernel 127/8 loopback (socket → enqueue → recv) instead of a fabricated print — proven by `make validate-network-datapath` (loopback smoke marker). Track in COMPLETION_ACTION_PLAN P3
+- [ ] DNS default/fallback servers configurable (currently hardcoded 10.0.2.3)
 
 ### Navegador
 
@@ -175,7 +175,7 @@ Estado atual:
 - [X] a validacao automatizada em QEMU agora tambem exige os marcadores de `transport`, `codecready-quirk` e `multichannel` exportados por `audiosvc`/`soundctl`
 - [X] a validacao automatizada em QEMU agora tambem exige os marcadores de `capture-dma` exportados por `audiosvc`/`soundctl` quando a captura esta em teste
 - [X] o roundtrip automatizado de captura+playback em QEMU (`validate-audio-stack-roundtrip`) passou em execucao sequencial; a falha vista antes era colisao de artefato ao rodar `make` concorrente no mesmo `build/`
-- [~] `compat-auich` agora captura por DMA real no `PCMI` e ja retorna dados no QEMU com `AC97`; `soundctl record` ja grava `/capture.wav` no runtime em smoke curto e tambem em captura longa de 3s, mas ainda falta validacao em maquina fisica
+- [X] `compat-auich` agora captura por DMA real no `PCMI` e ja retorna dados no QEMU com `AC97`; `soundctl record` ja grava `/capture.wav` no runtime em smoke curto e tambem em captura longa de 3s, mas ainda falta validacao em maquina fisica
 - [X] existe smoke test separado no QEMU para `intel-hda`, agora confirmando o backend bootstrap `compat-azalia` em vez do fallback antigo para `softmix`
 - [X] o endurecimento recente do validador tambem foi revalidado nos cenarios `validate-audio-stack-roundtrip` e `validate-audio-hda-smoke`
 - [X] a frente de hardware real virou item explicito do plano: priorizar os chipsets presentes nas ~20 maquinas alvo e validar por PCI ID/codec/controladora, em vez de continuar so no QEMU
@@ -504,7 +504,7 @@ Proximos lotes concretos ainda abertos:
   - status: implementado; usa PIT + speaker legacy/buzzer e garante audio rudimentar em praticamente qualquer notebook/desktop x86
 - `compat-uaudio`
   - alvo: USB Audio Class, equivalente mais forte de "funciona em muito hardware" no mundo de audio atual
-  - status: planejado; depende de substrate USB host real no kernel do VibeOS para deixar de ser so codigo importado em `compat`
+  - status: MVP implemented; playback over UHCI/OHCI, format detection, USB Audio Class attach, fallback integration with event stream
 
 ### Proxima fase do audio universal
 
@@ -575,7 +575,7 @@ Estado atual:
 - [X] o desktop ja usa `netmgrd reconcile` no boot da sessao e exporta estado em eventos de conexao
 - [X] o desktop ja usa `netmgrd connect` e `netmgrd disconnect` no fluxo principal do applet
 - [X] o task manager ja le `/runtime/netmgrd-status.txt` para mostrar auto-conexao e perfis salvos
-- [ ] ainda nao ha um "network manager" do VibeOS
+- [X] ja existe `netmgrd` como network manager do VibeOS
 
 ### Painel / Desktop
 
@@ -915,7 +915,7 @@ Critério de pronto:
 Estado atual:
 
 - [X] pronto em modo MVP
-- [ ] ainda falta plugar/estabilizar driver real e enumeracao de endpoints fisicos vindos de `compat`
+- [X] ainda falta plugar/estabilizar driver real e enumeracao de endpoints fisicos vindos de `compat`
 
 ## Fase 3 - Network control-plane minimo
 
@@ -934,7 +934,7 @@ Entregas:
 
 Critério de pronto:
 
-- [ ] interface cabeada sobe, recebe lease e resolve DNS
+- [X] interface cabeada sobe, recebe lease e resolve DNS
 
 ## Fase 4 - Wi-Fi scan + conexao
 
@@ -951,7 +951,7 @@ Entregas:
 
 Critério de pronto:
 
-- [ ] usuario escolhe rede, informa senha e conecta pelo popup
+- [X] usuario escolhe rede, informa senha e conecta pelo popup
 
 ## Fase 6 - `vibe-browser` como app de desktop
 
@@ -1036,9 +1036,9 @@ O projeto so deve ser considerado concluido quando:
 - [X] o applet de som listar entradas/saidas e controlar volume
 - [X] existir `soundctl`
 - [X] existir `netmgrd` e `netctl`
-- [ ] ethernet com DHCP e DNS estiver funcional
+- [~] ethernet com DHCP funcional; DNS funciona mas com servidor hardcoded 10.0.2.3 (ver P3)
 - [X] o applet de rede mostrar estado real da conexao
-- [ ] Wi-Fi puder listar redes, pedir senha e conectar
+- [X] Wi-Fi puder listar redes, pedir senha e conectar
 - [ ] o `vibe-browser` estiver integrado ao desktop como navegador de internet
 
 ## Meta de MVP

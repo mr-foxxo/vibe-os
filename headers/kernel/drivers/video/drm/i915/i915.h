@@ -49,6 +49,9 @@ struct kernel_drm_i915_display_snapshot {
     uint32_t fuse_strap;
     uint32_t disp_arb_ctl2;
     uint32_t skl_dfsm;
+    uint32_t dpll_a;
+    uint32_t pipeconf_a;
+    uint32_t transconf_a;
 };
 
 struct kernel_drm_i915_mode_plan {
@@ -98,6 +101,23 @@ struct kernel_drm_i915_stage_result {
 #define INTEL_I915_DSPCNTR_PIPE_SEL_MASK (3u << INTEL_I915_DSPCNTR_PIPE_SEL_SHIFT)
 #define INTEL_I915_DSPCNTR_PIPE_SEL_A (0u << INTEL_I915_DSPCNTR_PIPE_SEL_SHIFT)
 
+#define INTEL_I915_MMIO_PIPECONF_A     0x00070008u
+#define INTEL_I915_MMIO_PIPESTAT_A     0x00070024u
+#define INTEL_I915_MMIO_TRANS_CONF_A   0x0006001Cu
+#define INTEL_I915_MMIO_DPLL_A         0x00006014u
+#define INTEL_I915_MMIO_DPLL_DIVIDER_A 0x00006040u
+
+#define INTEL_I915_PIPECONF_ENABLE       (1u << 31)
+#define INTEL_I915_PIPESTAT_VBLANK_START (1u << 1)
+#define INTEL_I915_TRANS_CONF_ENABLE     (1u << 31)
+#define INTEL_I915_DPLL_VCO_ENABLE       (1u << 31)
+#define INTEL_I915_DPLL_P1_SHIFT         16u
+#define INTEL_I915_DPLL_P1_MASK          (0x7Fu << INTEL_I915_DPLL_P1_SHIFT)
+#define INTEL_I915_DPLL_P2_SHIFT         8u
+#define INTEL_I915_DPLL_P2_MASK          (0x1Fu << INTEL_I915_DPLL_P2_SHIFT)
+#define INTEL_I915_DPLL_N_SHIFT          0u
+#define INTEL_I915_DPLL_N_MASK           (0xFFu << INTEL_I915_DPLL_N_SHIFT)
+
 const struct kernel_drm_i915_id_info *kernel_drm_i915_find_id(uint16_t device_id);
 int kernel_drm_i915_is_supported_device(uint16_t device_id);
 int kernel_drm_i915_is_modeset_supported_device(uint16_t device_id);
@@ -127,5 +147,10 @@ int kernel_drm_i915_commit_mode_plan(const struct kernel_drm_candidate *candidat
                                      struct kernel_drm_i915_stage_result *result_out);
 int kernel_drm_i915_revert_last_commit(void);
 void kernel_drm_i915_forget_last_commit(void);
+int kernel_drm_i915_full_commit_mode_plan(
+    const struct kernel_drm_candidate *candidate,
+    const struct kernel_drm_i915_mode_plan *plan,
+    struct kernel_drm_i915_stage_result *result_out);
+void kernel_drm_i915_enable_modeset(void);
 
 #endif

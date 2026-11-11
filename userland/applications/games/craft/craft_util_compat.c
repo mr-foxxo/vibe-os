@@ -598,13 +598,7 @@ static int craft_scan_parse_string(const char **cursor, char *out, size_t width)
     return 1;
 }
 
-size_t strnlen(const char *s, size_t maxlen) {
-    size_t len = 0;
-    while (len < maxlen && s[len] != '\0') {
-        len += 1u;
-    }
-    return len;
-}
+/* strnlen is now provided by compat/libc */
 
 int __isoc99_vsscanf(const char *str, const char *fmt, va_list ap) {
     const char *s = str;

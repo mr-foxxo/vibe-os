@@ -30,7 +30,11 @@
 #define SCSI_CMD_READ_10 0x28u
 #define SCSI_CMD_WRITE_10 0x2au
 #define SCSI_CMD_SYNCHRONIZE_CACHE_10 0x35u
-#define USB_MASS_STORAGE_CACHE_SECTORS 4u
+/* adendo 48: 8 sectors = 4096B = exactly the UHCI data-TD pool
+ * (KERNEL_USB_UHCI_MAX_CONTROL_DATA_TDS=64 x 64B MPS). Doubling the BOT
+ * payload halves command count under TCG; on real UHCI it is one
+ * full-speed bulk packet per cache line. */
+#define USB_MASS_STORAGE_CACHE_SECTORS 8u
 
 struct usb_mass_storage_cbw {
     uint32_t signature;
@@ -465,6 +469,18 @@ static int usb_mass_storage_read_raw(void *context, uint32_t lba, uint8_t *buf) 
     cdb[7] = (uint8_t)((transfer_sectors >> 8) & 0xffu);
     cdb[8] = (uint8_t)(transfer_sectors & 0xffu);
 
+    { /* adendo 48 throughput probe: one line per 512 sectors read */
+        static uint32_t g_ms_prog_budget = 8u;
+        static uint32_t g_ms_reads = 0u;
+        if (g_ms_prog_budget != 0u) {
+            g_ms_reads++;
+            if ((g_ms_reads & 511u) == 0u) {
+                g_ms_prog_budget--;
+                kernel_debug_printf("usb-ms: reads=%u lba=%x\n",
+                                    (unsigned int)g_ms_reads, (unsigned int)lba);
+            }
+        }
+    }
     for (uint32_t attempt = 0u; attempt < 3u; ++attempt) {
         if (usb_mass_storage_bulk_only_command(device,
                                                cdb,
@@ -569,6 +585,8 @@ int kernel_usb_mass_storage_init(void) {
     memset(&g_kernel_usb_mass_storage_device, 0, sizeof(g_kernel_usb_mass_storage_device));
 
     if (kernel_usb_mass_storage_probe_first_configured(&snapshot, &snapshot_index) != 0) {
+        kernel_debug_printf("storage: usb no configured ms device (snaps=%u)\n",
+                            (unsigned int)kernel_usb_probe_snapshot_count());
         return -1;
     }
     if (snapshot.mass_storage_protocol != USB_MASS_STORAGE_PROTOCOL_BULK_ONLY ||

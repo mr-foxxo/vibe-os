@@ -40,6 +40,19 @@ static inline void *memset(void *s, int c, size_t n) {
     return s;
 }
 
+static inline int memcmp(const void *a, const void *b, size_t n) {
+    const uint8_t *p1 = (const uint8_t *)a;
+    const uint8_t *p2 = (const uint8_t *)b;
+    while (n--) {
+        if (*p1 != *p2) {
+            return (int)(*p1 - *p2);
+        }
+        p1++;
+        p2++;
+    }
+    return 0;
+}
+
 static inline int strcmp(const char *a, const char *b) {
     while (*a && (*a == *b)) {
         a++;
@@ -54,6 +67,15 @@ static inline size_t strlen(const char *s) {
         ++len;
     }
     return len;
+}
+
+static inline char *strcpy(char *dst, const char *src) {
+    char *d = dst;
+    while (*src) {
+        *d++ = *src++;
+    }
+    *d = '\0';
+    return dst;
 }
 
 static inline char *strncpy(char *dst, const char *src, size_t n) {

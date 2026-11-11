@@ -329,6 +329,10 @@ strtoq(const char *, char **, int);
 
 #include "setup.h"
 
+#ifdef GRDRV_VIBEOS
+#include "vibeos.h"
+#endif
+
 #define LINKS_2
 
 #ifdef HAVE_POINTER_COMPARISON_BUG
@@ -1832,7 +1836,7 @@ extern unsigned char term_seq_x_mouse[];
 extern unsigned char term_seq_tw_mouse[];
 extern unsigned char term_seq_xterm[];
 
-#if defined(GRDRV_SVGALIB) || defined(GRDRV_FB) || defined(GRDRV_GRX)
+#if defined(GRDRV_SVGALIB) || defined(GRDRV_FB) || defined(GRDRV_GRX) || defined(GRDRV_VIBEOS)
 #define GRDRV_VIRTUAL_DEVICES
 #endif
 

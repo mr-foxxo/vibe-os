@@ -1,27 +1,28 @@
-/* Python Runtime for Vibe OS - Simple Stub */
+/* Python Runtime for VibeOS - HONEST "not implemented" diagnostic.
+ *
+ * /bin/python ships in the catalog but there is no MicroPython engine linked
+ * into the build (MicroPython needs prebuilt artifacts; see
+ * COMPLETION_ACTION_PLAN P7).
+ *
+ * The previous version claimed "maps to JS engine internally" (false - it
+ * mapped to nothing) and "coming soon" behind a success-looking banner. The
+ * contract forbids fake states: unsupported paths must say so explicitly.
+ * Exit code stays 0 per the rescue-shell exit-on-nonzero convention (see
+ * lang/apps/js/js_main.c header for the full note).
+ */
 
 #include "vibe_app.h"
 #include "vibe_app_runtime.h"
-#include <string.h>
 
-// Simple Python interpreter stub - executes basic Python-like syntax
-int vibe_app_main(int argc, char **argv) 
-{
-    (void)argv;  // Suppress unused parameter warning
-    
-    printf("Vibe-OS Python Runtime v0.1 (stub)\n");
-    printf("=====================================\n\n");
-    
+int vibe_app_main(int argc, char **argv) {
+    (void)argv;
+    printf("python: NOT IMPLEMENTED (ENOSYS) - no MicroPython engine is linked into this build.\n");
+    printf("python: it does NOT map to any other interpreter; scripts were not executed.\n");
+    printf("python: tracked in docs/guidelines/COMPLETION_ACTION_PLAN.md (P7).\n");
+
     if (argc > 1) {
-        printf("Usage: python <script.py>\n");
-        printf("Interactive REPL:\n");
-        printf("python\n");
-    } else {
-        printf(">>> Interactive Python REPL\n");
-        printf("\nPython runtime wrapper - maps to JS engine internally\n");
-        printf("Example: print(\"Hello from Python\")\n");
-        printf("(Full MicroPython support coming soon)\n");
+        printf("python: requested file was NOT executed.\n");
     }
-    
+
     return 0;
 }

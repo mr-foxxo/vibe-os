@@ -9,6 +9,7 @@ These files are useful for execution and context, but they are not the canonical
 
 ## Key Active Guides
 
+- [COMPLETION_ACTION_PLAN.md](COMPLETION_ACTION_PLAN.md) — unified active plan for finishing the full implementation
 - [MICROKERNEL_MIGRATION.md](MICROKERNEL_MIGRATION.md)
 - [QUICK_BUILD.md](QUICK_BUILD.md)
 - [smp.md](smp.md)

@@ -1,6 +1,7 @@
 #include <kernel/drivers/storage/ata.h>
 #include <kernel/drivers/storage/block_device.h>
 #include <kernel/drivers/debug/debug.h>
+#include <kernel/drivers/timer/timer.h>
 #include <kernel/drivers/video/video.h>
 #include <kernel/hal/io.h>
 #include <kernel/kernel_string.h>
@@ -31,7 +32,7 @@
 #define ATA_SR_DRDY 0x40u
 #define ATA_SR_BSY 0x80u
 
-#define ATA_TIMEOUT 100000u
+#define ATA_TIMEOUT 500000u
 #define ATA_CTRL_SRST 0x04u
 #define ATA_READ_RETRIES 3u
 #define ATA_WRITE_VERIFY_RETRIES 3u
@@ -61,13 +62,14 @@ static int ata_soft_reset_locked(void) {
 }
 
 static int ata_wait_not_busy(void) {
+    uint32_t deadline = kernel_timer_get_ticks() + 50u; /* 0.5s timeout */
     for (uint32_t i = 0; i < ATA_TIMEOUT; ++i) {
         uint8_t status = inb(ATA_REG_STATUS);
-        if (status == 0xFFu) {
+        if (status == 0xFFu) return -1;
+        if ((status & ATA_SR_BSY) == 0u) return 0;
+        if ((int32_t)(kernel_timer_get_ticks() - deadline) >= 0) {
+            kernel_debug_puts("ata: wait_not_busy TIMEOUT\n");
             return -1;
-        }
-        if ((status & ATA_SR_BSY) == 0u) {
-            return 0;
         }
     }
     return -1;
@@ -87,35 +89,31 @@ static void ata_settle_bus(void) {
 }
 
 static int ata_wait_data_ready(void) {
+    uint32_t deadline = kernel_timer_get_ticks() + 50u;
     for (uint32_t i = 0; i < ATA_TIMEOUT; ++i) {
         uint8_t status = inb(ATA_REG_STATUS);
-        if (status == 0xFFu) {
+        if (status == 0xFFu) return -1;
+        if ((status & ATA_SR_ERR) != 0u || (status & ATA_SR_DF) != 0u) return -1;
+        if ((status & ATA_SR_BSY) == 0u && (status & ATA_SR_DRQ) != 0u &&
+            (status & ATA_SR_DRDY) != 0u) return 0;
+        if ((int32_t)(kernel_timer_get_ticks() - deadline) >= 0) {
+            kernel_debug_puts("ata: wait_data_ready TIMEOUT\n");
             return -1;
-        }
-        if ((status & ATA_SR_ERR) != 0u || (status & ATA_SR_DF) != 0u) {
-            return -1;
-        }
-        if ((status & ATA_SR_BSY) == 0u &&
-            (status & ATA_SR_DRQ) != 0u &&
-            (status & ATA_SR_DRDY) != 0u) {
-            return 0;
         }
     }
     return -1;
 }
 
 static int ata_wait_command_done(void) {
+    uint32_t deadline = kernel_timer_get_ticks() + 50u;
     for (uint32_t i = 0; i < ATA_TIMEOUT; ++i) {
         uint8_t status = inb(ATA_REG_STATUS);
-        if (status == 0xFFu) {
+        if (status == 0xFFu) return -1;
+        if ((status & ATA_SR_ERR) != 0u || (status & ATA_SR_DF) != 0u) return -1;
+        if ((status & ATA_SR_BSY) == 0u && (status & ATA_SR_DRQ) == 0u) return 0;
+        if ((int32_t)(kernel_timer_get_ticks() - deadline) >= 0) {
+            kernel_debug_puts("ata: wait_command_done TIMEOUT\n");
             return -1;
-        }
-        if ((status & ATA_SR_ERR) != 0u || (status & ATA_SR_DF) != 0u) {
-            return -1;
-        }
-        if ((status & ATA_SR_BSY) == 0u &&
-            (status & ATA_SR_DRQ) == 0u) {
-            return 0;
         }
     }
     return -1;

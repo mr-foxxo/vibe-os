@@ -92,15 +92,11 @@
  *
  * These are mostly opaque to the user.
  */
-struct pthread;
 struct pthread_attr;
-struct pthread_cond;
-struct pthread_cond_attr;
-struct pthread_mutex;
 struct pthread_mutex_attr;
-struct pthread_once;
-struct pthread_rwlock;
+struct pthread_cond_attr;
 struct pthread_rwlockattr;
+struct pthread_barrierattr;
 
 /*
  * Primitive system data type definitions required by P1003.1c.
@@ -109,19 +105,41 @@ struct pthread_rwlockattr;
  * or assignment operators for the types pthread_attr_t, pthread_cond_t,
  * pthread_condattr_t, pthread_mutex_t, pthread_mutexattr_t.
  */
-typedef struct	pthread			*pthread_t;
+typedef unsigned int			pthread_t;
 typedef struct	pthread_attr		*pthread_attr_t;
-typedef volatile struct pthread_mutex	*pthread_mutex_t;
+typedef struct {
+    int type;
+    volatile int state;
+    int lock;
+    pid_t owner;
+    int recursion_count;
+    unsigned long __wait_data[10];
+} pthread_mutex_t;
 typedef struct	pthread_mutex_attr	*pthread_mutexattr_t;
-typedef struct	pthread_cond		*pthread_cond_t;
+typedef struct {
+    unsigned long __wait_data[10];
+} pthread_cond_t;
 typedef struct	pthread_cond_attr	*pthread_condattr_t;
 typedef int				pthread_key_t;
 typedef struct	pthread_once		pthread_once_t;
-typedef struct	pthread_rwlock		*pthread_rwlock_t;
+typedef struct {
+    volatile int readers;
+    int writer;
+    int pending_writers;
+    pid_t writer_owner;
+    unsigned long __wait_rd[10];
+    unsigned long __wait_wr[10];
+} pthread_rwlock_t;
 typedef struct	pthread_rwlockattr	*pthread_rwlockattr_t;
-typedef struct	pthread_barrier		*pthread_barrier_t;
+typedef struct {
+    unsigned int count;
+    unsigned int total;
+    unsigned long __wait_data[10];
+} pthread_barrier_t;
 typedef struct	pthread_barrierattr	*pthread_barrierattr_t;
-typedef struct	pthread_spinlock	*pthread_spinlock_t;
+typedef struct {
+    volatile int lock;
+} pthread_spinlock_t;
 
 /*
  * Additional type definitions:
@@ -154,9 +172,9 @@ struct pthread_once {
 /*
  * Static initialization values. 
  */
-#define PTHREAD_MUTEX_INITIALIZER	NULL
-#define PTHREAD_COND_INITIALIZER	NULL
-#define PTHREAD_RWLOCK_INITIALIZER	NULL
+#define PTHREAD_MUTEX_INITIALIZER	{0}
+#define PTHREAD_COND_INITIALIZER	{0}
+#define PTHREAD_RWLOCK_INITIALIZER	{0}
 
 #define PTHREAD_PRIO_NONE	0
 #define PTHREAD_PRIO_INHERIT	1

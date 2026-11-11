@@ -31,6 +31,10 @@ void kernel_video_refresh_backend(void);
 struct video_mode *kernel_video_get_mode(void);
 volatile uint8_t *kernel_video_get_fb(void);
 uint8_t *kernel_video_get_backbuffer(void);
+/* LFB aperture actually reserved+mapped (entry.c); capacity clamps below. */
+void kernel_video_set_fb_window(uintptr_t base, size_t bytes);
+size_t kernel_video_target_capacity(const void *target);
+size_t kernel_video_fb_window_bytes(void);
 size_t kernel_video_get_pixel_count(void);
 int kernel_video_pack_blit8_source(const uint8_t *src, int src_w, int src_h,
                                    uint8_t *dst, size_t dst_size);
@@ -63,11 +67,29 @@ void kernel_gfx_blit8_stretch(const uint8_t *src, int src_w, int src_h,
 void kernel_gfx_blit8_stretch_present(const uint8_t *src, int src_w, int src_h,
                                       int dst_x, int dst_y, int dst_w, int dst_h);
 
+/* Video ioctl handler */
+int kernel_video_ioctl(int cmd, void *arg, size_t arg_size);
+
 /* VGA Text mode helpers */
 void kernel_text_init(void);
 void kernel_text_putc(char c);
 void kernel_text_puts(const char *s);
 void kernel_text_clear(void);
 void kernel_text_move_cursor(int delta);
+
+struct kernel_video_boundary_desc {
+    uint32_t privileged_mmio;
+    uint32_t privileged_modeset;
+    uint32_t privileged_irq;
+    uint32_t privileged_palette_dac;
+    uint32_t privileged_fb_map;
+    uint32_t privileged_backend_select;
+    uint32_t userland_present_queue;
+    uint32_t userland_control_plane;
+    uint32_t userland_policy;
+    uint32_t userland_compositor;
+};
+
+struct kernel_video_boundary_desc kernel_video_boundary(void);
 
 #endif /* KERNEL_DRIVERS_VIDEO_H */

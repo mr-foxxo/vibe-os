@@ -175,6 +175,13 @@ stage2_entry:
     lgdt [gdt_descriptor]
     mov eax, cr0
     or eax, 1
+    and eax, 0x9FFFFFFF    ; PE=1, CD=0 NW=0: enable caches entering PM.
+                           ; Paging is still OFF here, so this is the
+                           ; textbook safe cache-enable (no WBINVD needed,
+                           ; no paging boundary crossed). Hardware-real:
+                           ; if BIOS left CR0.CD=1 the loader menu would
+                           ; draw the VESA framebuffer at bus speed —
+                           ; invisible under QEMU/TCG (ignores these bits).
     mov cr0, eax
     jmp CODE_SEG:pmode
 
@@ -1547,14 +1554,19 @@ a20_is_enabled:
     mov byte [es:di], 0xFF
 
     cmp byte [ds:si], 0xFF
-
     pop ax
     mov [es:di], ah
     mov [ds:si], al
+    ; The comparison result MUST be latched before touching ax: the old
+    ; form did `xor ax, ax` (which sets ZF=1!) before `je`, so this probe
+    ; could never report A20 enabled and boot silently degraded to the
+    ; int 15h/2402h BIOS fallback — which real BIOSes often do not
+    ; implement, hard-stopping the loader on a20_error while A20 was fine.
+    ; pop and mov do not modify flags, so ZF from the cmp is still live.
+    mov ah, 0
+    setne al
 
-    xor ax, ax
-    je .done
-    mov ax, 1
+    jmp .done
 
 .done:
     pop di
@@ -1592,9 +1604,12 @@ a20_is_enabled_alt:
     mov [es:di], ah
     mov [ds:si], al
 
-    xor ax, ax
-    je .done
-    mov ax, 1
+    ; Same latching discipline as the primary probe: `xor ax, ax` before
+    ; `je` clobbered the flags and made this probe unable to confirm A20.
+    mov ah, 0
+    setne al
+
+    jmp .done
 
 .done:
     pop di
@@ -4106,7 +4121,14 @@ pmode_kernel_resume:
     mov fs, ax
     mov gs, ax
     mov ss, ax
-    mov esp, 0x70000
+    ; Kernel boot stack. 0x70000 is NOT safe anymore: the loaded kernel
+    ; image (.text/.rodata/.data) grows past it and the boot stack trashed
+    ; kernel .rodata (observed: the arena PDE snapshot spilled over
+    ; g_backend_fast_lfb_ops -> ops->activate garbage -> jump into the app
+    ; arena). 0x800000 stays inside boot/core reserved [0x100000,0x807000),
+    ; above kernel .bss end, below the heap start. linker/kernel.ld asserts
+    ; __bss_end never reaches this stack region.
+    mov esp, 0x800000
     cld
     jmp CODE_SEG:0x10000
 

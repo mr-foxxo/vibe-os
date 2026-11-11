@@ -19,6 +19,9 @@ void kernel_irq_restore(uint32_t flags);
 void kernel_pic_send_eoi(uint8_t irq_line);
 void kernel_irq_complete(uint8_t irq_line);
 
+/* Select PIC or IOAPIC based on platform availability */
+void kernel_irq_setup(void);
+
 /* Exception handlers called by stubs */
 void divide_error_handler(uint32_t eip, uint32_t cs);
 void invalid_opcode_handler(uint32_t eip, uint32_t cs);

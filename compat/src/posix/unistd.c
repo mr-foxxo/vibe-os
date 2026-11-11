@@ -3,11 +3,33 @@
 #include <compat/posix/stat.h>
 #include <compat/posix/errno.h>
 #include <stdint.h>
+#include <sys/time.h>
+#include <sys/resource.h>
 #include <lang/include/vibe_app_runtime.h>
 #include <include/userland_api.h>
 
 #include "compat_fd_state.h"
 #include "compat_tty_input.h"
+
+#define SYSCALL_SETPGID 156
+#define SYSCALL_GETPGID 157
+#define SYSCALL_SETSID 158
+#define SYSCALL_GETSID 159
+#define SYSCALL_SETUID 160
+#define SYSCALL_GETUID 161
+#define SYSCALL_SETEUID 162
+#define SYSCALL_GETEUID 163
+#define SYSCALL_SETGID 164
+#define SYSCALL_GETGID 165
+#define SYSCALL_SETEGID 166
+#define SYSCALL_GETEGID 167
+#define SYSCALL_NICE 168
+#define SYSCALL_GETPRIORITY 169
+#define SYSCALL_SETPRIORITY 170
+#define SYSCALL_GETRLIMIT 171
+#define SYSCALL_SETRLIMIT 172
+#define SYSCALL_GETGROUPS 173
+#define SYSCALL_SETGROUPS 174
 
 #define SEEK_SET 0
 #define SEEK_CUR 1
@@ -20,6 +42,16 @@ static int compat_syscall5(int num, int a, int b, int c, int d, int e) {
                      : "=a"(ret)
                      : "a"(num), "b"(a), "c"(b), "d"(c), "S"(d), "D"(e)
                      : "memory", "cc");
+    return ret;
+}
+
+static inline long syscall6(long num, long a1, long a2, long a3, long a4, long a5, __attribute__((unused)) long a6) {
+    long ret;
+
+    __asm__ volatile("int $0x80"
+                     : "=a"(ret)
+                     : "a"(num), "b"(a1), "c"(a2), "d"(a3), "S"(a4), "D"(a5)
+                     : "memory");
     return ret;
 }
 
@@ -435,15 +467,6 @@ int flock(int fd, int operation) {
     return -1;
 }
 
-pid_t getpid(void) {
-    int pid = compat_syscall5(SYSCALL_GETPID, 0, 0, 0, 0, 0);
-
-    if (pid <= 0) {
-        return 1;
-    }
-    return (pid_t)pid;
-}
-
 pid_t getppid(void) {
     return 1;
 }
@@ -453,15 +476,35 @@ char *getenv(const char *name) {
 }
 
 char *getcwd(char *buf, size_t size) {
+    long ret;
+
     if (buf == 0 || size == 0u) {
         errno = EINVAL;
         return 0;
     }
-    if (vibe_app_getcwd(buf, (int)size) != 0) {
-        errno = EINVAL;
+
+    ret = syscall6(129, (long)(uintptr_t)buf, (long)size, 0, 0, 0, 0);
+    if (ret < 0) {
+        errno = ENOENT;
         return 0;
     }
     return buf;
+}
+
+int chdir(const char *path) {
+    long ret;
+
+    if (!path || path[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+
+    ret = syscall6(130, (long)(uintptr_t)path, 0, 0, 0, 0, 0);
+    if (ret < 0) {
+        errno = ENOENT;
+        return -1;
+    }
+    return (int)ret;
 }
 
 int rmdir(const char *path) {
@@ -490,7 +533,7 @@ int rmdir(const char *path) {
 }
 
 int mkdir(const char *path, mode_t mode) {
-    int rc;
+    long ret;
 
     (void)mode;
 
@@ -499,17 +542,12 @@ int mkdir(const char *path, mode_t mode) {
         return -1;
     }
 
-    rc = vibe_app_create_dir(path);
-    if (rc == 0) {
-        return 0;
-    }
-    if (rc == -2) {
-        errno = EEXIST;
+    ret = syscall6(134, (long)(uintptr_t)path, 0, 0, 0, 0, 0);
+    if (ret < 0) {
+        errno = EACCES;
         return -1;
     }
-
-    errno = ENOENT;
-    return -1;
+    return (int)ret;
 }
 
 unsigned int sleep(unsigned int seconds) {
@@ -531,9 +569,327 @@ void sync(void) {
     (void)vibe_app_sync();
 }
 
-void _exit(int status) {
-    (void)status;
-    for (;;) {
-        vibe_app_yield();
+int truncate(const char *path, off_t length) {
+    long ret = syscall6(SYSCALL_TRUNCATE, (long)(uintptr_t)path, (long)length, 0, 0, 0, 0);
+    if (ret < 0) {
+        errno = EINVAL;
+        return -1;
     }
+    return (int)ret;
 }
+
+int ftruncate(int fd, off_t length) {
+    long ret = syscall6(SYSCALL_FTRUNCATE, (long)fd, (long)length, 0, 0, 0, 0);
+    if (ret < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return (int)ret;
+}
+
+int chmod(const char *path, mode_t mode) {
+    long ret = syscall6(SYSCALL_CHMOD, (long)(uintptr_t)path, (long)mode, 0, 0, 0, 0);
+    if (ret < 0) {
+        errno = EPERM;
+        return -1;
+    }
+    return (int)ret;
+}
+
+int fchmod(int fd, mode_t mode) {
+    (void)fd;
+    (void)mode;
+    return 0;
+}
+
+int chown(const char *path, uid_t owner, gid_t group) {
+    long ret = syscall6(SYSCALL_CHOWN, (long)(uintptr_t)path, (long)owner, (long)group, 0, 0, 0);
+    if (ret < 0) {
+        errno = EPERM;
+        return -1;
+    }
+    return (int)ret;
+}
+
+int fchown(int fd, uid_t owner, gid_t group) {
+    (void)fd;
+    (void)owner;
+    (void)group;
+    return 0;
+}
+
+int lchown(const char *path, uid_t owner, gid_t group) {
+    return chown(path, owner, group);
+}
+
+int link(const char *oldpath, const char *newpath) {
+    long ret = syscall6(SYSCALL_LINK, (long)(uintptr_t)oldpath, (long)(uintptr_t)newpath, 0, 0, 0, 0);
+    if (ret < 0) {
+        errno = EMLINK;
+        return -1;
+    }
+    return (int)ret;
+}
+
+int symlink(const char *target, const char *linkpath) {
+    long ret = syscall6(SYSCALL_SYMLINK, (long)(uintptr_t)target, (long)(uintptr_t)linkpath, 0, 0, 0, 0);
+    if (ret < 0) {
+        errno = EEXIST;
+        return -1;
+    }
+    return (int)ret;
+}
+
+ssize_t readlink(const char *path, char *buf, size_t bufsz) {
+    long ret = syscall6(SYSCALL_READLINK, (long)(uintptr_t)path, (long)(uintptr_t)buf, (long)bufsz, 0, 0, 0);
+    if (ret < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return (ssize_t)ret;
+}
+
+int utimensat(int dirfd, const char *pathname, const struct timespec times[2], int flags) {
+    long ret;
+    (void)flags;
+    if (dirfd != AT_FDCWD && dirfd != 0) {
+        errno = ENOSYS;
+        return -1;
+    }
+    ret = syscall6(SYSCALL_UTIMENSAT, (long)(uintptr_t)pathname, (long)(uintptr_t)times, 0, 0, 0, 0);
+    if (ret < 0) {
+        errno = EACCES;
+        return -1;
+    }
+    return (int)ret;
+}
+
+int futimens(__attribute__((unused)) int fd, const struct timespec times[2]) {
+    return utimensat(0, "", times, 0);
+}
+
+int mount(const char *source, const char *target, const char *fstype, unsigned long flags, const void *data) {
+    long ret = syscall6(SYSCALL_MOUNT, (long)(uintptr_t)source, (long)(uintptr_t)target,
+                        (long)(uintptr_t)fstype, (long)flags, (long)(uintptr_t)data, 0);
+    if (ret < 0) {
+        errno = EPERM;
+        return -1;
+    }
+    return (int)ret;
+}
+
+int umount(const char *target) {
+    long ret = syscall6(SYSCALL_UMOUNT, (long)(uintptr_t)target, 0, 0, 0, 0, 0);
+    if (ret < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return (int)ret;
+}
+
+int statvfs(const char *path, struct statvfs *buf) {
+    long ret = syscall6(SYSCALL_STATVFS, (long)(uintptr_t)path, (long)(uintptr_t)buf, 0, 0, 0, 0);
+    if (ret < 0) {
+        errno = EIO;
+        return -1;
+    }
+    return (int)ret;
+}
+
+int fstatvfs(int fd, struct statvfs *buf) {
+    (void)fd;
+    return statvfs("/", buf);
+}
+
+char *realpath(const char *path, char *resolved_path) {
+    long ret = syscall6(SYSCALL_REALPATH, (long)(uintptr_t)path, (long)(uintptr_t)resolved_path, 0, 0, 0, 0);
+    if (ret < 0) {
+        errno = ENOENT;
+        return 0;
+    }
+    return resolved_path;
+}
+
+pid_t getpgid(pid_t pid) {
+    long ret = syscall6(SYSCALL_GETPGID, (long)pid, 0, 0, 0, 0, 0);
+    if (ret < 0) {
+        errno = ESRCH;
+        return (pid_t)-1;
+    }
+    return (pid_t)ret;
+}
+
+int setpgid(pid_t pid, pid_t pgid) {
+    long ret = syscall6(SYSCALL_SETPGID, (long)pid, (long)pgid, 0, 0, 0, 0);
+    if (ret < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return 0;
+}
+
+pid_t setsid(void) {
+    long ret = syscall6(SYSCALL_SETSID, 0, 0, 0, 0, 0, 0);
+    if (ret < 0) {
+        errno = EPERM;
+        return (pid_t)-1;
+    }
+    return (pid_t)ret;
+}
+
+pid_t getsid(pid_t pid) {
+    long ret = syscall6(SYSCALL_GETSID, (long)pid, 0, 0, 0, 0, 0);
+    if (ret < 0) {
+        errno = ESRCH;
+        return (pid_t)-1;
+    }
+    return (pid_t)ret;
+}
+
+pid_t getpgrp(void) {
+    return getpgid(0);
+}
+
+int setpgrp(void) {
+    return setpgid(0, 0);
+}
+
+uid_t getuid(void) {
+    long ret = syscall6(SYSCALL_GETUID, 0, 0, 0, 0, 0, 0);
+    if (ret < 0) {
+        return (uid_t)-1;
+    }
+    return (uid_t)ret;
+}
+
+uid_t geteuid(void) {
+    long ret = syscall6(SYSCALL_GETEUID, 0, 0, 0, 0, 0, 0);
+    if (ret < 0) {
+        return (uid_t)-1;
+    }
+    return (uid_t)ret;
+}
+
+int setuid(uid_t uid) {
+    long ret = syscall6(SYSCALL_SETUID, (long)uid, 0, 0, 0, 0, 0);
+    if (ret < 0) {
+        errno = EPERM;
+        return -1;
+    }
+    return 0;
+}
+
+int seteuid(uid_t uid) {
+    long ret = syscall6(SYSCALL_SETEUID, (long)uid, 0, 0, 0, 0, 0);
+    if (ret < 0) {
+        errno = EPERM;
+        return -1;
+    }
+    return 0;
+}
+
+gid_t getgid(void) {
+    long ret = syscall6(SYSCALL_GETGID, 0, 0, 0, 0, 0, 0);
+    if (ret < 0) {
+        return (gid_t)-1;
+    }
+    return (gid_t)ret;
+}
+
+gid_t getegid(void) {
+    long ret = syscall6(SYSCALL_GETEGID, 0, 0, 0, 0, 0, 0);
+    if (ret < 0) {
+        return (gid_t)-1;
+    }
+    return (gid_t)ret;
+}
+
+int setgid(gid_t gid) {
+    long ret = syscall6(SYSCALL_SETGID, (long)gid, 0, 0, 0, 0, 0);
+    if (ret < 0) {
+        errno = EPERM;
+        return -1;
+    }
+    return 0;
+}
+
+int setegid(gid_t gid) {
+    long ret = syscall6(SYSCALL_SETEGID, (long)gid, 0, 0, 0, 0, 0);
+    if (ret < 0) {
+        errno = EPERM;
+        return -1;
+    }
+    return 0;
+}
+
+int getgroups(int size, gid_t list[]) {
+    long ret = syscall6(SYSCALL_GETGROUPS, (long)size, (long)(uintptr_t)list, 0, 0, 0, 0);
+    if (ret < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return (int)ret;
+}
+
+int setgroups(size_t size, const gid_t *list) {
+    long ret = syscall6(SYSCALL_SETGROUPS, (long)size, (long)(uintptr_t)list, 0, 0, 0, 0);
+    if (ret < 0) {
+        errno = EPERM;
+        return -1;
+    }
+    return 0;
+}
+
+int initgroups(const char *user, gid_t group) {
+    gid_t groups[1];
+    (void)user;
+    groups[0] = group;
+    return setgroups(1, groups);
+}
+
+int nice(int inc) {
+    long ret = syscall6(SYSCALL_NICE, (long)inc, 0, 0, 0, 0, 0);
+    if (ret < 0) {
+        errno = EPERM;
+        return -1;
+    }
+    return (int)(ret - 20);
+}
+
+int getpriority(int which, id_t who) {
+    long ret = syscall6(SYSCALL_GETPRIORITY, (long)which, (long)who, 0, 0, 0, 0);
+    if (ret == -1) {
+        errno = EINVAL;
+        return -1;
+    }
+    return (int)(ret - 20);
+}
+
+int setpriority(int which, id_t who, int value) {
+    long ret = syscall6(SYSCALL_SETPRIORITY, (long)which, (long)who, (long)value, 0, 0, 0);
+    if (ret < 0) {
+        errno = EPERM;
+        return -1;
+    }
+    return 0;
+}
+
+int getrlimit(int resource, struct rlimit *rlim) {
+    long ret = syscall6(SYSCALL_GETRLIMIT, (long)resource, (long)(uintptr_t)rlim, 0, 0, 0, 0);
+    if (ret < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return 0;
+}
+
+int setrlimit(int resource, const struct rlimit *rlim) {
+    long ret = syscall6(SYSCALL_SETRLIMIT, (long)resource, (long)(uintptr_t)rlim, 0, 0, 0, 0);
+    if (ret < 0) {
+        errno = EPERM;
+        return -1;
+    }
+    return 0;
+}
+
+

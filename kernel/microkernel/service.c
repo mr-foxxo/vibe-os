@@ -1,4 +1,5 @@
 #include <kernel/bootinfo.h>
+#include <kernel/telemetry.h>
 #include <kernel/microkernel/service.h>
 #include <kernel/kernel_string.h>
 #include <kernel/drivers/timer/timer.h>
@@ -18,20 +19,42 @@ static int g_console_request_trace_emitted = 0;
 static int g_console_worker_entry_trace_emitted = 0;
 static int g_console_worker_trace_emitted = 0;
 static int g_console_reply_trace_emitted = 0;
-static int g_transport_fallback_budget = 16;
-static int g_request_send_fail_budget = 16;
-static int g_unexpected_reply_budget = 16;
-static int g_request_timeout_budget = 16;
-static int g_storage_request_trace_budget = 8;
+static int g_transport_fallback_budget = VIBE_TRACE_BUDGET(16u);
+static int g_request_send_fail_budget = VIBE_TRACE_BUDGET(16u);
+static int g_unexpected_reply_budget = VIBE_TRACE_BUDGET(16u);
+static int g_request_timeout_budget = VIBE_TRACE_BUDGET(16u);
+static int g_storage_request_trace_budget = VIBE_TRACE_BUDGET(8u);
+static int g_storage_waitloop_trace_budget = VIBE_TRACE_BUDGET(16u);
+/* P4 adendo 20: the hang is a USERLAND task (pid5, entry=userland_entry)
+ * hammering ~20 requests/tick. Name WHICH message type per source. */
+static int g_request_rate_trace_budget = VIBE_TRACE_BUDGET(8u);
 static int g_storage_write_request_trace_emitted = 0;
-static int g_storage_worker_trace_budget = 8;
+static int g_storage_worker_trace_budget = VIBE_TRACE_BUDGET(8u);
 static int g_storage_reply_trace_budget = 8;
 static int g_interactive_request_trace_budget = 24;
 static spinlock_t g_service_event_lock;
 static kernel_waitable_t g_service_retry_waitable;
 static process_t *g_service_retry_worker = 0;
 
-#define MK_SERVICE_REQUEST_REPLY_TIMEOUT_TICKS 32u
+/*
+ * Re-bound 31/10 (bug #19, run 19_run10): 32 ticks is smaller than the
+ * measured worst-case handshake of a synchronous request — client dispatch
+ * (send) + host dispatch (process) + client dispatch (read reply), each leg
+ * paying the up-to-timeslice preemption latency of the incumbent task even
+ * after the IPC wake boost. A budget below that latency does not fail
+ * gracefully: every overshoot schedules a retry (MK_SERVICE_BACKGROUND_
+ * RETRY_BASE_TICKS=25) that RE-SENDS the in-flight request, the host drains
+ * duplicates into replies the client no longer waits for, and the reply
+ * path floods the client queue (measured: cliQ 1->16, cliW pend 1->31,
+ * tmo 13 with wake=1 while the shell polled at 32-tick cadence) until the
+ * deferred-reply cap (8) overflows and fails unrelated requests. 128 ticks
+ * = the value MK_SERVICE_FILESYSTEM_TIMEOUT_TICKS already uses for the same
+ * round-trip shape; it lets each poll block until the host actually answers,
+ * so the loop self-paces at the host's rate without duplications. This is a
+ * kernel-internal budget, not ABI; if the maintainer prefers another
+ * magnitude it is this one constant.
+ */
+#define MK_SERVICE_REQUEST_REPLY_TIMEOUT_TICKS 128u
 #define MK_SERVICE_VIDEO_CONTROL_TIMEOUT_TICKS 192u
 #define MK_SERVICE_STORAGE_TIMEOUT_TICKS 8192u
 #define MK_SERVICE_FILESYSTEM_TIMEOUT_TICKS 128u
@@ -65,6 +88,7 @@ static int mk_service_type_allows_rescue_local_fallback(uint32_t service_type) {
     case MK_SERVICE_STORAGE:
     case MK_SERVICE_FILESYSTEM:
     case MK_SERVICE_CONSOLE:
+    case MK_SERVICE_NETWORK:
         return 1;
     default:
         return 0;
@@ -355,6 +379,9 @@ static int mk_service_register_impl(uint32_t type,
                 g_services[slot].pid = pid;
                 g_services[slot].process = process;
                 g_services[slot].transport_degraded = 0u;
+                g_services[slot].last_error = 0u;
+                g_services[slot].start_tick = kernel_timer_get_ticks();
+                g_services[slot].pending_request_count = 0u;
                 mk_service_retry_reset(&g_services[slot]);
                 if (g_services[slot].subscriptions_ready == 0u) {
                     mk_service_init_subscriptions(&g_services[slot]);
@@ -378,6 +405,9 @@ static int mk_service_register_impl(uint32_t type,
             g_services[slot].local_handler = local_handler;
             g_services[slot].context = context;
             g_services[slot].transport_degraded = 0u;
+            g_services[slot].last_error = 0u;
+            g_services[slot].start_tick = kernel_timer_get_ticks();
+            g_services[slot].pending_request_count = 0u;
             mk_service_retry_reset(&g_services[slot]);
             if (pid != 0 || process != 0) {
                 mk_service_init_subscriptions(&g_services[slot]);
@@ -453,6 +483,21 @@ static void mk_service_discard_worker_record(struct mk_service_record *service) 
     service->process = 0;
 }
 
+static volatile uint32_t g_service_restart_fail_budget = 12u;
+
+static void mk_service_restart_fail(const char *why, const struct mk_service_record *service) {
+    if (g_service_restart_fail_budget == 0u || service == 0) {
+        return;
+    }
+    g_service_restart_fail_budget--;
+    kernel_debug_printf("service: restart FAIL %s type=%d name0=%c process=%x pid=%d handler=%x\n",
+                        why, (int)service->type,
+                        service->name[0] != '\0' ? service->name[0] : '0',
+                        (unsigned int)(uintptr_t)service->process,
+                        service->pid,
+                        (unsigned int)(uintptr_t)service->local_handler);
+}
+
 static int mk_service_restart_worker_record(struct mk_service_record *service) {
     struct mk_launch_descriptor descriptor;
     int force_restart;
@@ -462,9 +507,11 @@ static int mk_service_restart_worker_record(struct mk_service_record *service) {
         return -1;
     }
     if (service->local_handler == 0) {
+        mk_service_restart_fail("no-local-handler", service);
         return -1;
     }
     if (service->name[0] == '\0') {
+        mk_service_restart_fail("empty-name", service);
         return -1;
     }
     if (service->process == 0 && service->pid == 0 && service->launch_flags == 0u) {
@@ -751,6 +798,16 @@ int mk_service_launch_worker(uint32_t type,
                                   MK_LAUNCH_FLAG_BOOTSTRAP | MK_LAUNCH_FLAG_BUILTIN);
 }
 
+static volatile uint32_t g_service_prepare_fail_budget = 12u;
+
+static void mk_service_prepare_fail(const char *why, uint32_t type) {
+    if (g_service_prepare_fail_budget == 0u) {
+        return;
+    }
+    g_service_prepare_fail_budget--;
+    kernel_debug_printf("service: prepare FAIL %s type=%u\n", why, (unsigned int)type);
+}
+
 int mk_service_prepare_task(uint32_t type,
                             const char *name,
                             mk_service_local_handler_fn handler,
@@ -761,11 +818,14 @@ int mk_service_prepare_task(uint32_t type,
     struct mk_service_record *service;
 
     if (type == MK_SERVICE_NONE || name == 0 || handler == 0 || entry == 0) {
+        mk_service_prepare_fail("bad-args", type);
         return -1;
     }
 
     service = mk_service_find_mutable_by_type(type);
     if (service != 0 && service->process != 0) {
+        /* Already launched: return the live pid as a POSITIVE signal.
+         * Callers must treat >0 as success (see mk_service_launch_task). */
         return service->pid;
     }
 
@@ -784,6 +844,7 @@ int mk_service_prepare_task(uint32_t type,
             }
         }
         if (service == 0) {
+            mk_service_prepare_fail("no-slot", type);
             return -1;
         }
     }
@@ -805,15 +866,32 @@ int mk_service_launch_task(uint32_t type,
                            uint32_t launch_flags) {
     struct mk_service_record *service;
     struct mk_launch_descriptor descriptor;
+    int prepared;
 
-    if (mk_service_prepare_task(type,
+    prepared = mk_service_prepare_task(type,
                                 name,
                                 handler,
                                 context,
                                 entry,
                                 stack_size,
-                                launch_flags) != 0) {
+                                launch_flags);
+    if (prepared < 0) {
         return -1;
+    }
+    if (prepared > 0) {
+        /*
+         * prepare_task reports an ALREADY-LAUNCHED service by returning its
+         * live pid. Contract of THIS function (and of every caller: the
+         * deferred launchers feeding mk_service_restart/mk_service_ensure,
+         * and audio.c) is 0 = success, negative = failure — so the pid is
+         * normalized to success. The old `!= 0` test made both the
+         * already-running case and the successful fresh launch below read
+         * as failures: init's deferred inputsvc/consolesvc/networksvc
+         * restarts on smp2 (no record yet -> launcher -> launch_task ->
+         * positive pid) were reporting "launch failed" for launches that
+         * had actually SUCCEEDED.
+         */
+        return 0;
     }
 
     service = mk_service_find_mutable_by_type(type);
@@ -839,7 +917,8 @@ int mk_service_launch_task(uint32_t type,
             return -1;
         }
         mk_service_retry_reset(service);
-        return pid;
+        /* success = 0 (see contract above; no caller consumes the pid) */
+        return 0;
     }
 }
 
@@ -875,9 +954,11 @@ int mk_service_restart(uint32_t type) {
             g_service_deferred_launchers[type] != 0) {
             return g_service_deferred_launchers[type]();
         }
+        mk_service_prepare_fail("no-record-no-launcher", type);
         return -1;
     }
     if (service->type == MK_SERVICE_INIT) {
+        mk_service_prepare_fail("init-not-restartable", type);
         return -1;
     }
     if (service->process == 0 && service->pid == 0) {
@@ -989,6 +1070,48 @@ static int mk_service_request_process(const struct mk_service_record *service,
                                     service->pid);
             }
         }
+        /*
+         * P4 adendo 20 rate trace: budgeted once-per-(src,svc,type) first
+         * sighting. The measured hang has a USERLAND task (pid5,
+         * userland_entry) generating ~20 schedule_frame calls/tick as a
+         * request/reply loop against the extracted hosts. This names the
+         * message type and target so the spin can be localized to a call
+         * site in the app ABI (which syscall loops) instead of theory.
+         */
+        if (g_request_rate_trace_budget > 0) {
+            static struct { int src; uint32_t type; uint32_t svc; int seen; }
+                rate_seen[16];
+            static uint32_t rate_slots;
+            uint32_t si;
+            int dup = 0;
+
+            for (si = 0u; si < rate_slots && si < 16u; ++si) {
+                if (rate_seen[si].src == current->pid &&
+                    rate_seen[si].type == request_copy.type &&
+                    rate_seen[si].svc == service->type) {
+                    dup = 1;
+                    break;
+                }
+            }
+            if (!dup) {
+                if (rate_slots < 16u) {
+                    rate_seen[rate_slots].src = current->pid;
+                    rate_seen[rate_slots].type = request_copy.type;
+                    rate_seen[rate_slots].svc = service->type;
+                    rate_seen[rate_slots].seen = 1;
+                    rate_slots++;
+                }
+                g_request_rate_trace_budget -= 1;
+                kernel_debug_printf("service: first-of-kind req svc=%d type=%d src=%d dst=%d kind=%d user=%d tick=%u\n",
+                                    (int)service->type,
+                                    (int)request_copy.type,
+                                    (int)current->pid,
+                                    (int)service->pid,
+                                    (int)current->kind,
+                                    (int)current->runs_in_user_mode,
+                                    (unsigned int)kernel_timer_get_ticks());
+            }
+        }
         if ((service->type == MK_SERVICE_VIDEO ||
              service->type == MK_SERVICE_AUDIO ||
              service->type == MK_SERVICE_NETWORK ||
@@ -1000,6 +1123,13 @@ static int mk_service_request_process(const struct mk_service_record *service,
                                 (int)request_copy.type,
                                 current->pid,
                                 service->pid);
+        }
+
+        {
+            struct mk_service_record *mutable_service = mk_service_find_mutable_by_type(service->type);
+            if (mutable_service != 0) {
+                mutable_service->pending_request_count++;
+            }
         }
 
         if (ipc_send(service->process, &request_copy, sizeof(request_copy)) != 0) {
@@ -1055,13 +1185,53 @@ static int mk_service_request_process(const struct mk_service_record *service,
                                                     remaining_ticks);
             }
 
-            if (received == (int)sizeof(response)) {
+            /*
+             * P4 wake-loss trace (adendo 20): the client loop kept waiting
+             * WITHOUT the timeout branch ever firing, so the wait wakes on
+             * SOME signal but never yields a matching reply. Sample the
+             * task's own channel stats each iteration (budgeted): depth=
+             * messages queued here, pending=stray signals, wake/timeout=
+             * counter movement. depth>0 && received<0 => a message is stuck
+             * behind a size/match filter; pending>0 && depth==0 => someone
+             * signals the wrong channel (the host replies into a queue the
+             * client does not read); wake climbing while depth stays 0 =>
+             * phantom wakes (signal without message).
+             */
+            if (service->type == MK_SERVICE_STORAGE &&
+                g_storage_waitloop_trace_budget > 0) {
+                int depth = -1, waiters = -1;
+                uint32_t pend = 0u, wake = 0u, tmo = 0u;
+
+                g_storage_waitloop_trace_budget -= 1;
+                ipc_queue_stats(current, &depth, &pend, &wake, &tmo, &waiters);
+                kernel_debug_printf("storage waitloop: src=%d rem=%u recv=%d r{src=%d dst=%d type=%d} depth=%d pend=%u wake=%u tmo=%u waiters=%d\n",
+                                    (int)request_copy.source_pid,
+                                    (unsigned int)remaining_ticks,
+                                    received,
+                                    (received == (int)sizeof(response)) ?
+                                        (int)response.source_pid : -999,
+                                    (received == (int)sizeof(response)) ?
+                                        (int)response.target_pid : -999,
+                                    (received == (int)sizeof(response)) ?
+                                        (int)response.type : -999,
+                                    depth,
+                                    (unsigned int)pend, (unsigned int)wake,
+                                    (unsigned int)tmo, waiters);
+            }
+
+                    if (received == (int)sizeof(response)) {
                 if (response.source_pid == waiting_pid &&
                     response.target_pid == (uint32_t)current->pid) {
                     mk_service_restore_deferred_messages(current,
                                                          deferred_replies,
                                                          deferred_reply_count);
                     deferred_reply_count = 0u;
+                    {
+                        struct mk_service_record *mutable_service = mk_service_find_mutable_by_type(service->type);
+                        if (mutable_service != 0 && mutable_service->pending_request_count > 0u) {
+                            mutable_service->pending_request_count--;
+                        }
+                    }
                     if (service->type == MK_SERVICE_CONSOLE && !g_console_reply_trace_emitted) {
                         g_console_reply_trace_emitted = 1;
                         kernel_debug_printf("service: console reply type=%d src=%d dst=%d\n",
@@ -1108,11 +1278,42 @@ static int mk_service_request_process(const struct mk_service_record *service,
 
                 if (g_request_timeout_budget > 0) {
                     g_request_timeout_budget -= 1;
-                    kernel_debug_printf("service: request timeout svc=%d type=%d src=%d dst=%d\n",
-                                        (int)service->type,
-                                        (int)request_copy.type,
-                                        (int)request_copy.source_pid,
-                                        (int)request_copy.target_pid);
+                    /*
+                     * Host-state peek (KNOWN_BUGS "Sessao interativa trava no
+                     * meio" / plano 0.6): when a request times out, the two
+                     * possible culprits are (a) the host task is alive but
+                     * never dequeued this reply, or (b) the host task itself is
+                     * stuck/starved. Print the host task's scheduler state so
+                     * the stall localizes to a side by MEASUREMENT, not theory.
+                     */
+                    {
+                        process_t *host = scheduler_find_task_by_pid(service->pid);
+                        int host_depth = -1, host_waiters = -1;
+                        uint32_t host_pending = 0u, host_wake = 0u, host_tmo = 0u;
+                        int cli_depth = -1;
+                        uint32_t cli_pending = 0u, cli_wake = 0u, cli_tmo = 0u;
+
+                        ipc_queue_stats(host, &host_depth, &host_pending,
+                                        &host_wake, &host_tmo, &host_waiters);
+                        ipc_queue_stats(current, &cli_depth, &cli_pending,
+                                        &cli_wake, &cli_tmo, NULL);
+                        kernel_debug_printf("service: request timeout svc=%d type=%d src=%d dst=%d host-state=%d host-cpu=%d hostQ=%d hostW{pend=%u wake=%u tmo=%u waiters=%d} cliQ=%d cliW{pend=%u wake=%u tmo=%u}\n",
+                                            (int)service->type,
+                                            (int)request_copy.type,
+                                            (int)request_copy.source_pid,
+                                            (int)request_copy.target_pid,
+                                            host ? (int)host->state : -999,
+                                            host ? host->current_cpu : -999,
+                                            host_depth,
+                                            (unsigned int)host_pending,
+                                            (unsigned int)host_wake,
+                                            (unsigned int)host_tmo,
+                                            host_waiters,
+                                            cli_depth,
+                                            (unsigned int)cli_pending,
+                                            (unsigned int)cli_wake,
+                                            (unsigned int)cli_tmo);
+                    }
                 }
 
                 if (mutable_service != 0) {
@@ -1194,10 +1395,9 @@ int mk_service_request(uint32_t type, const struct mk_message *request, struct m
             }
         }
         service = mk_service_find_by_type(type);
-        if (service == 0 || service->process == 0 || !mk_service_process_online(service)) {
-            return -1;
+        if (service != 0 && service->process != 0 && mk_service_process_online(service)) {
+            return mk_service_request_process(service, request, reply);
         }
-        return mk_service_request_process(service, request, reply);
     }
 
     if (service->local_handler != 0 &&
@@ -1526,6 +1726,34 @@ static uint32_t mk_service_process_background_retries(uint32_t now_ticks) {
     }
 
     return next_wake_tick;
+}
+
+int mk_service_query_health(uint32_t type, struct mk_service_health_stats *stats) {
+    const struct mk_service_record *service;
+
+    if (stats == 0) {
+        return -1;
+    }
+    memset(stats, 0, sizeof(*stats));
+    stats->abi_version = 1u;
+    stats->service_type = type;
+
+    service = mk_service_find_by_type(type);
+    if (service == 0) {
+        stats->online = 0u;
+        stats->degraded = 0u;
+        stats->restart_count = 0u;
+        return 0;
+    }
+
+    stats->online = mk_service_process_online(service) ? 1u : 0u;
+    stats->degraded = service->transport_degraded;
+    stats->uptime_ticks = stats->online ? (kernel_timer_get_ticks() - service->start_tick) : 0u;
+    stats->last_error = service->last_error;
+    stats->pending_requests = service->pending_request_count;
+    stats->restart_count = service->restart_count;
+    stats->retry_attempts = service->retry_attempts;
+    return 0;
 }
 
 static void mk_service_retry_worker_entry(void) {

@@ -327,7 +327,7 @@ test_eval(Test_env *te, Test_op op, const char *opnd1, const char *opnd2,
 			 */
 			return stat(opnd1, &b1) == 0 &&
 			    (((s2 = stat(opnd2, &b2)) == 0 &&
-			    timespeccmp(&b1.st_mtim, &b2.st_mtim, >)) ||
+			    b1.st_mtime > b2.st_mtime) ||
 			    s2 != 0);
 		}
 	case TO_FILOT: /* -ot */
@@ -338,7 +338,7 @@ test_eval(Test_env *te, Test_op op, const char *opnd1, const char *opnd2,
 			 */
 			return stat(opnd2, &b2) == 0 &&
 			    (((s1 = stat(opnd1, &b1)) == 0 &&
-			    timespeccmp(&b1.st_mtim, &b2.st_mtim, <)) ||
+			    b1.st_mtime < b2.st_mtime) ||
 			    s1 != 0);
 		}
 	case TO_FILEQ: /* -ef */

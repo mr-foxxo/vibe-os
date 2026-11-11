@@ -125,7 +125,110 @@ enum syscall_id {
     SYSCALL_MESSAGE_POST = 112,
     SYSCALL_MESSAGE_RECV = 113,
     SYSCALL_MEMORY_STATUS = 114,
-    SYSCALL_MEMORY_BUDGET = 115
+    SYSCALL_MEMORY_BUDGET = 115,
+    SYSCALL_NETWORK_SENDTO = 116,
+    SYSCALL_NETWORK_RECVFROM = 117,
+
+    /* POSIX process & memory syscalls */
+    SYSCALL_FORK = 120,
+    SYSCALL_EXECVE = 121,
+    SYSCALL_EXIT = 122,
+    SYSCALL_WAITPID = 123,
+    SYSCALL_MMAP = 124,
+    SYSCALL_MUNMAP = 125,
+    SYSCALL_SBRK = 126,
+    SYSCALL_PIPE = 127,
+    SYSCALL_KILL = 128,
+    SYSCALL_GETCWD = 129,
+    SYSCALL_CHDIR = 130,
+    SYSCALL_OPENDIR = 131,
+    SYSCALL_READDIR = 132,
+    SYSCALL_CLOSEDIR = 133,
+    SYSCALL_MKDIR = 134,
+    SYSCALL_TRUNCATE = 144,
+    SYSCALL_FTRUNCATE = 145,
+    SYSCALL_CHMOD = 146,
+    SYSCALL_CHOWN = 147,
+    SYSCALL_LINK = 148,
+    SYSCALL_SYMLINK = 149,
+    SYSCALL_READLINK = 150,
+    SYSCALL_UTIMENSAT = 151,
+    SYSCALL_MOUNT = 152,
+    SYSCALL_UMOUNT = 153,
+    SYSCALL_STATVFS = 154,
+    SYSCALL_REALPATH = 155,
+
+    /* POSIX process groups, users, priority, resource limits */
+    SYSCALL_SETPGID = 156,
+    SYSCALL_GETPGID = 157,
+    SYSCALL_SETSID = 158,
+    SYSCALL_GETSID = 159,
+    SYSCALL_SETUID = 160,
+    SYSCALL_GETUID = 161,
+    SYSCALL_SETEUID = 162,
+    SYSCALL_GETEUID = 163,
+    SYSCALL_SETGID = 164,
+    SYSCALL_GETGID = 165,
+    SYSCALL_SETEGID = 166,
+    SYSCALL_GETEGID = 167,
+    SYSCALL_NICE = 168,
+    SYSCALL_GETPRIORITY = 169,
+    SYSCALL_SETPRIORITY = 170,
+    SYSCALL_GETRLIMIT = 171,
+    SYSCALL_SETRLIMIT = 172,
+    SYSCALL_GETGROUPS = 173,
+    SYSCALL_SETGROUPS = 174,
+
+    /* POSIX memory management syscalls */
+    SYSCALL_MPROTECT = 175,
+    SYSCALL_MLOCK = 176,
+    SYSCALL_MUNLOCK = 177,
+    SYSCALL_MLOCKALL = 178,
+    SYSCALL_MUNLOCKALL = 179,
+    SYSCALL_MADVISE = 180,
+    SYSCALL_SHM_OPEN = 181,
+    SYSCALL_SHM_UNLINK = 182,
+
+    /* Thread syscalls */
+    SYSCALL_THREAD_CREATE = 183,
+    SYSCALL_THREAD_EXIT = 184,
+    SYSCALL_THREAD_JOIN = 185,
+    SYSCALL_THREAD_GETTLS = 186,
+    SYSCALL_THREAD_SETTLS = 187,
+    SYSCALL_WAITABLE_INIT = 188,
+    SYSCALL_WAITABLE_WAIT = 189,
+    SYSCALL_WAITABLE_WAKE = 200,
+
+    /* Signal syscalls */
+    SYSCALL_SIGACTION = 190,
+    SYSCALL_SIGPROCMASK = 191,
+    SYSCALL_SIGSUSPEND = 192,
+    SYSCALL_SIGPENDING = 193,
+    SYSCALL_ALARM = 194,
+    SYSCALL_SETITIMER = 195,
+    SYSCALL_GETITIMER = 196,
+    SYSCALL_SIGWAIT = 197,
+    SYSCALL_SIGWAITINFO = 198,
+    SYSCALL_THREAD_DETACH = 199,
+
+    SYSCALL_GETADDRINFO = 220,
+    SYSCALL_GETNAMEINFO = 221,
+    SYSCALL_SENDMSG = 222,
+    SYSCALL_RECVMSG = 223,
+    SYSCALL_SOCKET_SHUTDOWN = 224,
+    SYSCALL_CLOCK_GETTIME = 225,
+    SYSCALL_CLOCK_SETTIME = 226,
+    SYSCALL_NANOSLEEP = 227,
+    SYSCALL_TIMER_CREATE = 228,
+    SYSCALL_TIMER_SETTIME = 229,
+    SYSCALL_SERVICE_HEALTH = 230,
+    /* Additive ABI (bug #19 item 0.12, 01/11): blocking key read.
+     * a = timeout ticks (0 = indefinite); returns key (>0) or -1.
+     * SYSCALL_INPUT_KEY (5) is unchanged for every existing caller. */
+    SYSCALL_INPUT_KEY_WAIT = 231,
+    /* Live socket-table export (item 1.5). Additive; the existing network
+     * syscalls and structs are byte-for-byte untouched. */
+    SYSCALL_NETWORK_SOCKET_LIST = 232
 };
 
 enum userland_builtin_target {
@@ -175,6 +278,8 @@ struct video_mode {
     uint32_t pitch;
     uint8_t bpp;
 };
+
+typedef struct video_mode video_mode_t;
 
 #define VIDEO_MODE_LIST_MAX 16u
 
@@ -323,6 +428,18 @@ struct userland_launch_info {
     uint32_t argc;
     char name[USERLAND_LAUNCH_NAME_MAX];
     char argv_data[USERLAND_LAUNCH_ARGV_BYTES];
+};
+
+struct mk_service_health_stats {
+    uint32_t abi_version;
+    uint32_t service_type;
+    uint32_t online;
+    uint32_t degraded;
+    uint32_t uptime_ticks;
+    uint32_t last_error;
+    uint32_t pending_requests;
+    uint32_t restart_count;
+    uint32_t retry_attempts;
 };
 
 enum mk_service_event_type {

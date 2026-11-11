@@ -3,6 +3,25 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <sys/types.h>
+#include <sys/resource.h>
+#include <sys/resource.h>
+
+union sigval {
+    int sival_int;
+    void *sival_ptr;
+};
+
+struct sigevent {
+    int sigev_notify;
+    int sigev_signo;
+    union sigval sigev_value;
+    void (*sigev_notify_function)(union sigval);
+    void *sigev_notify_attributes;
+};
+#include <kernel/event.h>
+
+#define PTHREAD_KEYS_MAX 64
 
 /* process states for scheduler bookkeeping */
 enum process_state {
@@ -106,6 +125,69 @@ typedef struct process {
     uint32_t runs_in_user_mode;
     struct process *wait_next;
     struct process *next;   /* linked‑list pointer for scheduler */
+    /*
+     * execve stack swap (P4 fix): the OLD kernel stack must NOT be freed
+     * while the kernel is still executing on it and the TSS esp0 may still
+     * point at its top. sys_execve parks it here; the next switch-away or
+     * the terminate of this task releases it (both run off this stack).
+     */
+    void *pending_stack_free;
+
+    /* Signal state */
+    uint32_t signal_pending;
+    uint32_t signal_blocked;
+    uint32_t alarm_ticks;
+    struct kernel_sigaction {
+        uint32_t handler;
+        uint32_t mask;
+        int      flags;
+    } signal_actions[32];
+
+    /* POSIX extensions */
+    int parent_pid;
+    int exit_status;
+    int child_exit_pid;
+    int child_exit_status;
+    int fds[16];
+    uint32_t program_break;
+    uint32_t program_break_start;
+    char cwd[256];
+
+    /* POSIX security and identity */
+    pid_t pgid;
+    pid_t sid;
+    uid_t uid;
+    uid_t euid;
+    uid_t saved_uid;
+    gid_t gid;
+    gid_t egid;
+    gid_t saved_gid;
+    int nice_value;
+    struct rlimit rlimits[RLIMIT_NLIMITS];
+    gid_t groups[16];
+    int ngroups;
+    mode_t umask;
+
+    /* Thread-local storage and thread management */
+    unsigned int thread_group_id;
+    void *thread_retval;
+    int thread_detached;
+    int thread_finished;
+    kernel_waitable_t thread_join_waitable;
+    void *tls_values[PTHREAD_KEYS_MAX];
+
+    /* POSIX timers */
+#define POSIX_TIMER_MAX 4
+    struct posix_timer {
+        int used;
+        clockid_t clock_id;
+        struct sigevent evp;
+        timer_t timer_id;
+        uint32_t it_value_ticks;
+        uint32_t it_interval_ticks;
+        uint32_t start_tick;
+        int armed;
+    } posix_timers[POSIX_TIMER_MAX];
 } process_t;
 
 /* create / destroy a process object.  the entry point will be installed
@@ -139,6 +221,9 @@ void process_set_abi_metadata(process_t *proc,
                               uintptr_t entry_point);
 int process_entry_supports_user_mode(uintptr_t entry);
 uintptr_t process_user_stack_top_for_entry(uintptr_t entry);
+
+extern int g_next_pid;
+int process_alloc_pid(void);
 
 static inline int process_frame_is_user_mode(const kernel_trap_frame_t *frame) {
     return frame != NULL && (frame->cs & 0x3u) == 0x3u;

@@ -916,14 +916,106 @@ uint16_t kernel_cpu_tss_selector(uint32_t cpu_index) {
     return (uint16_t)(GDT_TSS_ENTRY_INDEX(cpu_index) * 8u);
 }
 
+/*
+ * Face-1 esp0-install ring (COMPLETION_ACTION_PLAN P4, classe #5): the
+ * historical AP comment in smp_ap_entry names the exact failure family
+ * ("both CPUs shared one TSS esp0 ... user->kernel transitions resumed onto
+ * the other CPU's stack; observed #UD eip=3/7 and CS holding a stack
+ * address") — the SAME signature faces (c)/(f) show again. kernel_tss_set_kernel_stack
+ * is the ONLY esp0 writer, so the last installs are the direct history of
+ * "which stack was this CPU armed to take traps on". A 12-entry ring of
+ * {cpu, esp0, caller} is kept with three cheap stores per call (no locks;
+ * diagnostics only) and dumped when an exception/panic fires — naming the
+ * installation that armed the crash window.
+ */
+#define K_TSS_INSTALL_RING 12u
+static struct {
+    uint32_t cpu;
+    uint32_t esp0;
+    uint32_t caller;
+} g_tss_install_ring[K_TSS_INSTALL_RING];
+static volatile uint32_t g_tss_install_count;
+/* Totals SURVIVE ring overwrite: with a small ring it is essential to know
+ * whether a CPU EVER installed esp0 at all. */
+static volatile uint32_t g_tss_install_total[4];
+
 void kernel_tss_set_kernel_stack(uintptr_t stack_top) {
     uint32_t cpu_index = kernel_cpu_index();
+    uint32_t pos;
 
     if (cpu_index >= GDT_MAX_CPUS) {
         cpu_index = 0u;
     }
     g_cpu_tss[cpu_index].esp0 = (uint32_t)stack_top;
     g_cpu_tss[cpu_index].ss0 = KERNEL_DS_SELECTOR;
+
+    pos = g_tss_install_count % K_TSS_INSTALL_RING;
+    g_tss_install_count++;
+    g_tss_install_ring[pos].cpu = cpu_index;
+    g_tss_install_ring[pos].esp0 = (uint32_t)stack_top;
+    g_tss_install_ring[pos].caller = (uint32_t)(uintptr_t)__builtin_return_address(0);
+    if (cpu_index < 4u) {
+        g_tss_install_total[cpu_index]++;
+    }
+}
+
+void kernel_tss_install_ring_dump(const char *why) {
+    uint32_t total = g_tss_install_count;
+    uint32_t n = total < K_TSS_INSTALL_RING ? total : K_TSS_INSTALL_RING;
+    uint32_t i;
+
+    /* The esp0 each CPU is armed with RIGHT NOW: a CPU dying with a
+     * stale/foreign esp0 is the "resumed onto the other CPU's stack" family
+     * (smp_ap_entry comment). The ring shows WHO installed what; the tail
+     * being all-cpu0 while an AP died means the AP stopped installing long
+     * before the death (or its installs landed on another slot). */
+    kernel_debug_printf("tss-ring: %s installs=%u last=%u totals{cpu0=%u cpu1=%u cpu2=%u cpu3=%u} live_esp0{cpu0=%x cpu1=%x cpu2=%x cpu3=%x}\n",
+                        why != NULL ? why : "?",
+                        (unsigned int)total, (unsigned int)n,
+                        (unsigned int)g_tss_install_total[0],
+                        (unsigned int)g_tss_install_total[1],
+                        (unsigned int)g_tss_install_total[2],
+                        (unsigned int)g_tss_install_total[3],
+                        (unsigned int)g_cpu_tss[0].esp0,
+                        (unsigned int)g_cpu_tss[1].esp0,
+                        (unsigned int)g_cpu_tss[2].esp0,
+                        (unsigned int)g_cpu_tss[3].esp0);
+    for (i = 0u; i < n; ++i) {
+        uint32_t slot = (total - n + i) % K_TSS_INSTALL_RING;
+        kernel_debug_printf("tss-ring[%u]: cpu=%u esp0=%x caller=%x\n",
+                            (unsigned int)i,
+                            (unsigned int)g_tss_install_ring[slot].cpu,
+                            (unsigned int)g_tss_install_ring[slot].esp0,
+                            (unsigned int)g_tss_install_ring[slot].caller);
+    }
+}
+
+/* Read-back of the esp0 a CPU would load on its next ring3->ring0 entry.
+ * Used by the face-1 tick guard: if some writer clobbers g_cpu_tss (it lives
+ * in .bss, the same neighborhood the corrupted frames were observed in),
+ * this exposes it without depending on the setter path. */
+uintptr_t kernel_tss_get_kernel_stack(uint32_t cpu_index) {
+    if (cpu_index >= GDT_MAX_CPUS) {
+        return 0u;
+    }
+    return (uintptr_t)g_cpu_tss[cpu_index].esp0;
+}
+
+/*
+ * TSS/TR diagnostic (COMPLETION_ACTION_PLAN P4, class #5). kernel_cpu_index()
+ * picks WHICH g_cpu_tss[] we write; the CPU's actual TR picks which one the
+ * hardware loads esp0 from. If those disagree (e.g. kernel_cpu_index()==0 on
+ * an AP whose TR already points at the AP TSS), every ring3->ring0 entry
+ * would use the WRONG esp0 and push the interrupt frame onto another CPU's
+ * stack — which is exactly the class #5 shape (a frame whose cs/eip words
+ * hold kernel-data addresses like &g_scheduler_lock). Return the live TR
+ * selector so the scheduler can assert it matches the expected CPU TSS.
+ */
+uint16_t kernel_current_tr(void) {
+    uint16_t tr;
+
+    __asm__ volatile("str %0" : "=rm"(tr));
+    return tr;
 }
 
 const struct kernel_cpu_topology *kernel_cpu_topology(void) {

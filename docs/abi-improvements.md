@@ -1,8 +1,12 @@
 # ABI Improvements Plan
 
+**Status: ALL PHASES COMPLETE (0-10)**
+
 ## Objetivo
 
 Fechar as lacunas de ABI do `vibeOS` com compatibilidade progressiva, usando `compat/` como referência de semântica e layout sem quebrar o userland atual.
+
+**Nota:** Todas as fases do plano ABI foram concluídas. As ABIs compartilhadas estão documentadas, versionadas, e validadas com userland real. O próximo trilho (gráfico POSIX/X-like) está liberado para execução.
 
 ## Regras
 

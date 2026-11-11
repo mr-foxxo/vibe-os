@@ -1,5 +1,7 @@
 #include <kernel/drivers/pci/pci.h>
+#include <kernel/pci_bus.h>
 #include <kernel/hal/io.h>
+#include <kernel/drivers/debug/debug.h>
 
 #define PCI_CONFIG_ADDRESS 0xCF8u
 #define PCI_CONFIG_DATA 0xCFCu
@@ -36,15 +38,36 @@ void kernel_pci_config_write_u32(uint8_t bus,
     outl(PCI_CONFIG_DATA, value);
 }
 
+static void pci_device_to_info(const pci_device_t *src, struct kernel_pci_device_info *dst) {
+    dst->bus = src->bus;
+    dst->slot = src->slot;
+    dst->function = src->function;
+    dst->vendor_id = src->vendor_id;
+    dst->device_id = src->device_id;
+    dst->command = kernel_pci_config_read_u16(src->bus, src->slot, src->function, 0x04u);
+    dst->status = kernel_pci_config_read_u16(src->bus, src->slot, src->function, 0x06u);
+    dst->revision = src->revision;
+    dst->prog_if = src->prog_if;
+    dst->subclass = src->subclass;
+    dst->class_code = src->class_code;
+    dst->header_type = src->header_type;
+    dst->irq_line = src->irq_line;
+    dst->secondary_bus = 0u;
+    dst->subsystem_vendor_id = src->subsystem_vendor;
+    dst->subsystem_device_id = src->subsystem_device;
+    if ((src->header_type & 0x7Fu) == 0x01u) {
+        dst->secondary_bus = kernel_pci_config_read_u8(src->bus, src->slot, src->function, 0x19u);
+    }
+    for (int i = 0; i < 6; ++i) {
+        dst->bars[i] = src->bar_raw[i];
+    }
+}
+
 int kernel_pci_get_device_info(uint8_t bus,
                                uint8_t slot,
                                uint8_t function,
                                struct kernel_pci_device_info *info_out) {
     uint32_t vendor_device;
-    uint32_t command_status_reg;
-    uint32_t class_reg;
-    uint32_t header_reg;
-    uint32_t subsystem_reg;
 
     if (info_out == 0) {
         return -1;
@@ -55,34 +78,49 @@ int kernel_pci_get_device_info(uint8_t bus,
         return -1;
     }
 
-    command_status_reg = kernel_pci_config_read_u32(bus, slot, function, 0x04u);
-    class_reg = kernel_pci_config_read_u32(bus, slot, function, 0x08u);
-    header_reg = kernel_pci_config_read_u32(bus, slot, function, 0x0Cu);
-    subsystem_reg = kernel_pci_config_read_u32(bus, slot, function, 0x2Cu);
-
-    info_out->bus = bus;
-    info_out->slot = slot;
-    info_out->function = function;
-    info_out->vendor_id = (uint16_t)(vendor_device & 0xFFFFu);
-    info_out->device_id = (uint16_t)(vendor_device >> 16);
-    info_out->command = (uint16_t)(command_status_reg & 0xFFFFu);
-    info_out->status = (uint16_t)(command_status_reg >> 16);
-    info_out->revision = (uint8_t)(class_reg & 0xFFu);
-    info_out->prog_if = (uint8_t)((class_reg >> 8) & 0xFFu);
-    info_out->subclass = (uint8_t)((class_reg >> 16) & 0xFFu);
-    info_out->class_code = (uint8_t)(class_reg >> 24);
-    info_out->header_type = (uint8_t)((header_reg >> 16) & 0xFFu);
-    info_out->irq_line = kernel_pci_config_read_u8(bus, slot, function, 0x3Cu);
-    info_out->secondary_bus = 0u;
-    info_out->subsystem_vendor_id = (uint16_t)(subsystem_reg & 0xFFFFu);
-    info_out->subsystem_device_id = (uint16_t)(subsystem_reg >> 16);
-
-    if ((info_out->header_type & 0x7Fu) == 0x01u) {
-        info_out->secondary_bus = kernel_pci_config_read_u8(bus, slot, function, 0x19u);
+    for (int i = 0; i < pci_device_count(); ++i) {
+        pci_device_t *dev = pci_device_get(i);
+        if (dev->bus == bus && dev->slot == slot && dev->function == function) {
+            pci_device_to_info(dev, info_out);
+            return 0;
+        }
     }
 
-    for (int i = 0; i < 6; ++i) {
-        info_out->bars[i] = kernel_pci_config_read_u32(bus, slot, function, (uint8_t)(0x10u + (i * 4u)));
+    {
+        uint32_t command_status_reg;
+        uint32_t class_reg;
+        uint32_t header_reg;
+        uint32_t subsystem_reg;
+
+        command_status_reg = kernel_pci_config_read_u32(bus, slot, function, 0x04u);
+        class_reg = kernel_pci_config_read_u32(bus, slot, function, 0x08u);
+        header_reg = kernel_pci_config_read_u32(bus, slot, function, 0x0Cu);
+        subsystem_reg = kernel_pci_config_read_u32(bus, slot, function, 0x2Cu);
+
+        info_out->bus = bus;
+        info_out->slot = slot;
+        info_out->function = function;
+        info_out->vendor_id = (uint16_t)(vendor_device & 0xFFFFu);
+        info_out->device_id = (uint16_t)(vendor_device >> 16);
+        info_out->command = (uint16_t)(command_status_reg & 0xFFFFu);
+        info_out->status = (uint16_t)(command_status_reg >> 16);
+        info_out->revision = (uint8_t)(class_reg & 0xFFu);
+        info_out->prog_if = (uint8_t)((class_reg >> 8) & 0xFFu);
+        info_out->subclass = (uint8_t)((class_reg >> 16) & 0xFFu);
+        info_out->class_code = (uint8_t)(class_reg >> 24);
+        info_out->header_type = (uint8_t)((header_reg >> 16) & 0xFFu);
+        info_out->irq_line = kernel_pci_config_read_u8(bus, slot, function, 0x3Cu);
+        info_out->secondary_bus = 0u;
+        info_out->subsystem_vendor_id = (uint16_t)(subsystem_reg & 0xFFFFu);
+        info_out->subsystem_device_id = (uint16_t)(subsystem_reg >> 16);
+
+        if ((info_out->header_type & 0x7Fu) == 0x01u) {
+            info_out->secondary_bus = kernel_pci_config_read_u8(bus, slot, function, 0x19u);
+        }
+
+        for (int i = 0; i < 6; ++i) {
+            info_out->bars[i] = kernel_pci_config_read_u32(bus, slot, function, (uint8_t)(0x10u + (i * 4u)));
+        }
     }
 
     return 0;
@@ -90,11 +128,28 @@ int kernel_pci_get_device_info(uint8_t bus,
 
 int kernel_pci_enumerate(kernel_pci_enum_cb cb, void *ctx) {
     struct kernel_pci_device_info info;
+    int total;
+    int found;
 
     if (cb == 0) {
         return -1;
     }
 
+    total = pci_device_count();
+    if (total > 0) {
+        kernel_debug_printf("pci: enumerating %d devices via framework\n", total);
+        for (int i = 0; i < total; ++i) {
+            pci_device_t *dev = pci_device_get(i);
+            pci_device_to_info(dev, &info);
+            if (cb(&info, ctx) != 0) {
+                return 0;
+            }
+        }
+        return 0;
+    }
+
+    kernel_debug_puts("pci: no framework devices, doing manual scan...\n");
+    found = 0;
     for (uint32_t bus = 0; bus < 256u; ++bus) {
         for (uint32_t slot = 0; slot < 32u; ++slot) {
             uint32_t functions = 1u;
@@ -113,6 +168,7 @@ int kernel_pci_enumerate(kernel_pci_enum_cb cb, void *ctx) {
                 if (kernel_pci_get_device_info((uint8_t)bus, (uint8_t)slot, (uint8_t)function, &info) != 0) {
                     continue;
                 }
+                found = 1;
                 if (cb(&info, ctx) != 0) {
                     return 0;
                 }
@@ -120,6 +176,9 @@ int kernel_pci_enumerate(kernel_pci_enum_cb cb, void *ctx) {
         }
     }
 
+    if (!found) {
+        return -1;
+    }
     return 0;
 }
 

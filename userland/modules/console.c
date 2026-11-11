@@ -1,5 +1,6 @@
 #include <userland/modules/include/console.h>
 #include <userland/modules/include/syscalls.h>
+#include <string.h>
 
 /* Output redirection - when set, console_putc writes here instead of syscall */
 static console_output_fn g_console_output_handler = 0;
@@ -45,9 +46,7 @@ void console_write(const char *s) {
     }
 
     if (g_console_output_handler != 0) {
-        while (*s != '\0') {
-            console_putc(*s++);
-        }
+        g_console_output_handler(s, (int)strlen(s));
         return;
     }
 

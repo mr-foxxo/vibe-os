@@ -1,6 +1,6 @@
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
-#include <curl/curl.h>
+#include "../../../../../../headers/curl/curl.h"  /* repo stub: must win over host libcurl headers */
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>

@@ -24,8 +24,11 @@ global irq15_stub
 global syscall_stub
 global yield_stub
 global smp_wakeup_stub
+global smp_timer_stub
 
 global divide_error_stub
+global debug_stub
+global int3_stub
 global invalid_opcode_stub
 global invalid_tss_stub
 global segment_not_present_stub
@@ -40,9 +43,12 @@ extern kernel_mouse_irq_handler
 extern kernel_irq_dispatch
 extern scheduler_schedule_frame
 extern syscall_dispatch_internal
-extern smp_wakeup_ipi_handler
+extern smp_wakeup_ipi_irq_handler
+extern smp_timer_irq_handler
 
 extern divide_error_handler
+extern debug_handler
+extern int3_handler
 extern invalid_opcode_handler
 extern invalid_tss_handler
 extern segment_not_present_handler
@@ -147,11 +153,35 @@ yield_stub:
     popa
     iretd
 
+; Wake/reschedule IPI (vector 0x82). Adendo 45: same frame-swap pattern as
+; smp_timer_stub — the handler may return a DIFFERENT frame (context switch)
+; when a boosted wake lands on a running CPU. Before this change the IPI
+; only broke hlt; a CPU executing a task waited for yield/tick.
 smp_wakeup_stub:
     pusha
     cld
     LOAD_KERNEL_DATA_SEGMENTS
-    call smp_wakeup_ipi_handler
+    mov eax, esp
+    push eax
+    call smp_wakeup_ipi_irq_handler
+    add esp, 4
+    mov esp, eax
+    LOAD_RETURN_DATA_SEGMENTS
+    popa
+    iretd
+
+; Per-CPU LAPIC periodic timer (AP preemption tick): same frame-swap pattern
+; as irq0_stub, but EOI is local-APIC side and the tick does not advance the
+; global PIT tick counter.
+smp_timer_stub:
+    pusha
+    cld
+    LOAD_KERNEL_DATA_SEGMENTS
+    mov eax, esp
+    push eax
+    call smp_timer_irq_handler
+    add esp, 4
+    mov esp, eax
     LOAD_RETURN_DATA_SEGMENTS
     popa
     iretd
@@ -206,6 +236,19 @@ divide_error_stub:
     popa
     iretd
 
+int3_stub:
+    pusha
+    cld
+    LOAD_KERNEL_DATA_SEGMENTS
+    mov eax, [esp + 32]    ; saved EIP (no error code for INT3)
+    mov edx, [esp + 36]    ; saved CS
+    push edx
+    push eax
+    call int3_handler
+    add esp, 8
+    popa
+    iretd
+
 invalid_opcode_stub:
     pusha
     cld
@@ -240,6 +283,7 @@ invalid_opcode_stub:
 EXCEPTION_ERROR_CODE_STUB invalid_tss_stub, invalid_tss_handler
 EXCEPTION_ERROR_CODE_STUB segment_not_present_stub, segment_not_present_handler
 EXCEPTION_ERROR_CODE_STUB stack_fault_stub, stack_fault_handler
+EXCEPTION_ERROR_CODE_STUB debug_stub, debug_handler
 EXCEPTION_ERROR_CODE_STUB general_protection_stub, general_protection_handler
 EXCEPTION_ERROR_CODE_STUB page_fault_stub, page_fault_handler
 EXCEPTION_ERROR_CODE_STUB double_fault_stub, double_fault_handler

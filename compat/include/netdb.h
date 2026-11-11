@@ -91,7 +91,7 @@
 
 #ifndef	_SOCKLEN_T_DEFINED_
 #define	_SOCKLEN_T_DEFINED_
-typedef	__socklen_t	socklen_t;	/* length type for network syscalls */
+typedef unsigned int     socklen_t;
 #endif
 
 #define	_PATH_HEQUIV	"/etc/hosts.equiv"

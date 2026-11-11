@@ -11,7 +11,10 @@
 #include <kernel/hal.h>
 #include <kernel/cpu/cpu.h>
 #include <kernel/apic.h>
+#include <kernel/ioapic.h>
+#include <kernel/acpi.h>
 #include <kernel/smp.h>
+#include <kernel/mtrr.h>
 #include <kernel/drivers/debug/debug.h>
 #include <kernel/drivers/video/video.h>
 #include <kernel/drivers/storage/ata.h>
@@ -19,9 +22,14 @@
 #include <kernel/drivers/usb/usb_host.h>
 #include <kernel/drivers/input/input.h>
 #include <kernel/drivers/network/virtio_net.h>
+#include <kernel/drivers/network/e1000.h>
+#include <kernel/drivers/network/rtl8139.h>
 #include <kernel/drivers/network/wifi_pci.h>
+#include <kernel/drivers/network/wifi_data_plane.h>
+#include <kernel/drivers/storage/nvme.h>
 #include <kernel/microkernel.h>
 #include <kernel/userland.h>
+#include <kernel/pci_bus.h>
 #include <lang/include/vibe_app.h>
 #include <stdint.h>
 
@@ -36,6 +44,15 @@ struct bootdebug_persist {
     uint8_t len;
     uint8_t last;
     char trace[BOOTDEBUG_TRACE_MAX];
+    /* 55..58 belong to stage2 (KEY_HI/KEY_LO/EXT/ACT) — do not alias. */
+    uint8_t stage2_keys[4];
+    uint8_t reserved[5];
+    /* adendo 44: stage1 stashes the crashed window at PLEN@64/PLAST@65/
+     * PREV@66 before re-arming; the kernel reports it once (serial + VGA)
+     * and clears PLEN. Offsets are contractual with boot/stage1.asm. */
+    uint8_t plen;
+    uint8_t plast;
+    char prev[BOOTDEBUG_TRACE_MAX];
 };
 
 static volatile struct bootdebug_persist *const bootdebug_persist =
@@ -80,6 +97,68 @@ static void kernel_bootdebug_append(uint8_t code) {
     bootdebug_persist->trace[bootdebug_persist->len] = '\0';
 }
 
+/*
+ * P0 campaign evidence loop (adendo 44): a hang on real silicon has no HMP
+ * to read 0x1000, and smp_persist_trace_arm() would re-arm (CLEAR) the
+ * window on the next attempt — without this readback, every crash destroys
+ * its own trace. Snapshot the dirty window at kernel start, then reset it so
+ * each boot owns a fresh window; report at the first console point.
+ */
+static char g_bootdebug_prev[BOOTDEBUG_TRACE_MAX + 1u];
+static uint32_t g_bootdebug_prev_len;
+static uint8_t g_bootdebug_prev_last;
+static int g_bootdebug_prev_valid;
+
+static void kernel_bootdebug_capture_prev(void) {
+    uint32_t i;
+
+    /* stage1 re-arms magic/dirty every boot, so the LIVE window is always
+     * this boot's; only the PREV stash identifies a crashed attempt. */
+    if (bootdebug_persist->magic != BOOTDEBUG_MAGIC) {
+        return;
+    }
+    if (bootdebug_persist->plen == 0u) {
+        return;
+    }
+    g_bootdebug_prev_len = bootdebug_persist->plen;
+    if (g_bootdebug_prev_len >= BOOTDEBUG_TRACE_MAX) {
+        g_bootdebug_prev_len = BOOTDEBUG_TRACE_MAX - 1u;
+    }
+    g_bootdebug_prev_last = bootdebug_persist->plast;
+    for (i = 0u; i < g_bootdebug_prev_len; ++i) {
+        g_bootdebug_prev[i] = (char)bootdebug_persist->prev[i];
+    }
+    g_bootdebug_prev[g_bootdebug_prev_len] = '\0';
+    g_bootdebug_prev_valid = 1;
+    bootdebug_persist->plen = 0u; /* report exactly once */
+}
+
+static void kernel_bootdebug_report_prev(void) {
+    char line[80];
+    uint32_t i;
+    uint32_t n;
+
+    if (g_bootdebug_prev_valid == 0 || g_bootdebug_prev_len == 0u) {
+        return;
+    }
+    kernel_debug_printf("bootdebug: PREV-CRASH len=%u last=%c trace=%s\n",
+                        (unsigned int)g_bootdebug_prev_len,
+                        (int)(g_bootdebug_prev_last != 0u ?
+                              g_bootdebug_prev_last : '?'),
+                        g_bootdebug_prev);
+    /* the physical campaign may have no serial cable: mirror to VGA text */
+    n = 0u;
+    line[n++] = 'P'; line[n++] = 'R'; line[n++] = 'E'; line[n++] = 'V';
+    line[n++] = '-'; line[n++] = 'C'; line[n++] = 'R'; line[n++] = 'A';
+    line[n++] = 'S'; line[n++] = 'H'; line[n++] = ':'; line[n++] = ' ';
+    for (i = 0u; i < g_bootdebug_prev_len && n < 76u; ++i) {
+        line[n++] = g_bootdebug_prev[i];
+    }
+    line[n] = '\0';
+    kernel_text_puts(line);
+    kernel_text_puts("\n");
+}
+
 static void kernel_bootdebug_mark_stable(void) {
     if (bootdebug_persist->magic == BOOTDEBUG_MAGIC) {
         bootdebug_persist->dirty = 0u;
@@ -87,6 +166,8 @@ static void kernel_bootdebug_mark_stable(void) {
 }
 
 static inline void kernel_early_post(uint8_t code) {
+    /* 0x80 = dummy POST; 0xE9 = QEMU debugcon (-debugcon file:...
+     * -global isa-debugcon.iobase=0xE9). Silently ignored elsewhere. */
     __asm__ volatile("outb %0, $0x80" : : "a"(code));
     __asm__ volatile("outb %0, $0xE9" : : "a"(code));
 }
@@ -324,11 +405,12 @@ __attribute__((noreturn, section(".entry"))) void kernel_entry(void) {
     uintptr_t app_backing_start = 0u;
     uintptr_t app_backing_end = 0u;
     struct kernel_mem_range usable_range;
-    struct kernel_mem_range reserved_ranges[3];
+    struct kernel_mem_range reserved_ranges[4];
     struct kernel_mem_range heap_range;
     struct kernel_mem_range app_range;
     size_t reserved_count = 0u;
     uint32_t app_pde_snapshot[(APP_ARENA_TOTAL_BYTES / 0x00400000u)];
+    uint32_t boot_seq = 0u;
 
     /* zero kernel BSS */
     extern uint8_t __bss_start[];
@@ -337,6 +419,7 @@ __attribute__((noreturn, section(".entry"))) void kernel_entry(void) {
         *p = 0;
     }
     kernel_early_mark(0x11u, 0x02u);
+    kernel_bootdebug_capture_prev();
     kernel_debug_init(); /* registers debug driver */
     mk_launch_init();
     mk_service_init();
@@ -346,62 +429,119 @@ __attribute__((noreturn, section(".entry"))) void kernel_entry(void) {
     cpu_init();
     kernel_early_mark(0x14u, 0x03u);
     gdt_init();
+    mtrr_init();
     kernel_early_mark(0x15u, 0x05u);
+    /*
+     * Publish the boot LFB aperture BEFORE any rendering exists: the boot
+     * text shim renders from kernel_text_putc immediately, and the capacity
+     * clamp (kernel_video_target_capacity) must know the window then —
+     * waiting for memory_subsystem_init would make early renders refuse to
+     * draw (proven by the nocap budget log on first boot of the clamp).
+     */
+    {
+        uintptr_t win_start = 0u;
+        uintptr_t win_end = 0u;
+        if (kernel_boot_framebuffer_range(&win_start, &win_end)) {
+            kernel_video_set_fb_window(win_start, (size_t)(win_end - win_start));
+        }
+    }
     kernel_video_init(); /* preserve boot LFB when available */
     kernel_early_mark(0x16u, 0x07u);
     kernel_text_init();
     kernel_early_mark(0x17u, 0x0Fu);
+
+    boot_seq++;
+    kernel_early_post(boot_seq);
+    kernel_early_post(boot_seq);
+    kernel_debug_printf("[%u] boot: VIBE OS starting\n", (unsigned int)boot_seq);
     kernel_text_puts("VIBE OS Booting...\n");
+    kernel_bootdebug_report_prev();
+
+    boot_seq++;
+    kernel_early_post(boot_seq);
     if (kernel_cpu_count() > 1u) {
         if (kernel_cpu_is_smp_capable()) {
-            kernel_text_puts("CPU topology: multiprocessor platform verified\n");
-            kernel_debug_puts("CPU topology: multiprocessor platform verified\n");
+            kernel_debug_printf("[%u] cpu: topology multiprocessor verified, count=%u\n",
+                                (unsigned int)boot_seq, (unsigned int)kernel_cpu_count());
+            kernel_text_puts("cpu: multiprocessor\n");
         } else {
-            kernel_text_puts("CPU topology: multiple cores detected, SMP bring-up deferred\n");
-            kernel_debug_puts("CPU topology: multiple cores detected, SMP bring-up deferred\n");
-            kernel_debug_printf("smp: fallback reason=%s cpu_count=%d apic=%d mp=%d\n",
-                                kernel_smp_skip_reason(),
-                                (int)kernel_cpu_count(),
-                                (int)kernel_cpu_topology()->apic_supported,
-                                (int)kernel_cpu_topology()->mp_table_present);
+            kernel_debug_printf("[%u] cpu: multiple cores, smp deferred, reason=%s\n",
+                                (unsigned int)boot_seq, kernel_smp_skip_reason());
+            kernel_text_puts("cpu: multi-core, smp deferred\n");
         }
     } else {
-        kernel_text_puts("CPU topology: single processor\n");
-        kernel_debug_puts("CPU topology: single processor\n");
+        kernel_debug_printf("[%u] cpu: single processor\n", (unsigned int)boot_seq);
+        kernel_text_puts("cpu: single processor\n");
     }
+
+    boot_seq++;
+    kernel_early_post(boot_seq);
     if (kernel_cpu_is_smp_capable() &&
         (kernel_cpu_topology()->mp_table_present ||
          kernel_cpu_topology()->acpi_madt_present)) {
         local_apic_init();
+        kernel_debug_printf("[%u] lapic: initialized\n", (unsigned int)boot_seq);
     } else {
-        kernel_text_puts("LAPIC/SMP deferred on this platform\n");
-        kernel_text_puts("SMP fallback: platform not APIC-ready\n");
-        kernel_debug_puts("LAPIC/SMP deferred on this platform\n");
-        kernel_debug_puts("SMP fallback: platform not APIC-ready\n");
-        kernel_debug_printf("smp: fallback reason=%s\n", kernel_smp_skip_reason());
+        kernel_debug_printf("[%u] lapic: deferred (%s)\n", (unsigned int)boot_seq, kernel_smp_skip_reason());
+        kernel_text_puts("lapic: deferred\n");
     }
-    kernel_text_puts("Video OK\n");
 
-    kernel_text_puts("Setting up interrupts...\n");
+    boot_seq++;
+    kernel_early_post(boot_seq);
+    kernel_debug_printf("[%u] video: backend ready\n", (unsigned int)boot_seq);
+
+    boot_seq++;
+    kernel_early_post(boot_seq);
+    kernel_debug_printf("[%u] interrupt: setting up idt/pic/ioapic/irq\n", (unsigned int)boot_seq);
+    kernel_text_puts("interrupt: setting up...\n");
     kernel_idt_init();
     kernel_pic_init();
-    kernel_text_puts("Interrupts OK\n");
+    ioapic_init();
+    kernel_irq_setup();
+    kernel_debug_printf("[%u] interrupt: done\n", (unsigned int)boot_seq);
+    kernel_text_puts("interrupt: OK\n");
 
-    kernel_text_puts("Starting timers/input...\n");
+    boot_seq++;
+    kernel_early_post(boot_seq);
+    kernel_debug_printf("[%u] timer: init rate=100hz\n", (unsigned int)boot_seq);
+    kernel_text_puts("timer: starting...\n");
     kernel_timer_init(100);
+    kernel_debug_printf("[%u] timer: done\n", (unsigned int)boot_seq);
+
+    boot_seq++;
+    kernel_early_post(boot_seq);
+    kernel_debug_printf("[%u] input: keyboard+mouse init\n", (unsigned int)boot_seq);
+    kernel_text_puts("input: init...\n");
     kernel_keyboard_init();
     kernel_mouse_init();
     kernel_irq_enable();
-    kernel_text_puts("IRQ OK\n");
+    kernel_debug_printf("[%u] input: done, irq enabled\n", (unsigned int)boot_seq);
+    kernel_text_puts("input: OK\n");
 
-    kernel_text_puts("Initializing memory...\n");
+    boot_seq++;
+    kernel_early_post(boot_seq);
+    kernel_debug_printf("[%u] memory: starting subsystem init\n", (unsigned int)boot_seq);
+    kernel_text_puts("memory: initializing...\n");
     memory_subsystem_init();
+    kernel_debug_printf("[%u] memory: heap ok, paging ok, physmem ok\n", (unsigned int)boot_seq);
     if (kernel_boot_framebuffer_range(&fb_start, &fb_end)) {
         physmem_reserve_range(fb_start, (size_t)(fb_end - fb_start));
-        kernel_debug_printf("memory: reserved framebuffer [%x, %x) kb=%u\n",
+        /*
+         * Tell the video module its REAL writable aperture: renderers must
+         * clamp writes by this, not by mode->pitch*height (see
+         * kernel_video_target_capacity + text shim fix, P4 classe #5 face-2).
+         */
+        kernel_video_set_fb_window(fb_start, (size_t)(fb_end - fb_start));
+        kernel_debug_printf("[%u] memory: framebuffer [%x, %x) %u kb\n",
+                            (unsigned int)boot_seq,
                             (uint32_t)fb_start,
                             (uint32_t)fb_end,
                             (unsigned int)((fb_end - fb_start) / 1024u));
+        if (mtrr_set_wc(fb_start, (size_t)(fb_end - fb_start)) == 0) {
+            kernel_debug_printf("[%u] memory: framebuffer wc enabled\n", (unsigned int)boot_seq);
+        } else {
+            kernel_debug_printf("[%u] memory: framebuffer wc unavailable\n", (unsigned int)boot_seq);
+        }
     }
     kernel_end = align_up_uintptr((uintptr_t)__bss_end, 0x1000u);
     usable_base = physmem_usable_base();
@@ -413,6 +553,7 @@ __attribute__((noreturn, section(".entry"))) void kernel_entry(void) {
     kernel_mem_range_clear(&reserved_ranges[0]);
     kernel_mem_range_clear(&reserved_ranges[1]);
     kernel_mem_range_clear(&reserved_ranges[2]);
+    kernel_mem_range_clear(&reserved_ranges[3]);
 
     reserved_ranges[0].start = usable_range.start;
     reserved_ranges[0].end = low_reserved_end;
@@ -420,7 +561,8 @@ __attribute__((noreturn, section(".entry"))) void kernel_entry(void) {
     if (kernel_mem_range_size(&reserved_ranges[0]) != 0u) {
         physmem_reserve_range(reserved_ranges[0].start,
                               (size_t)(reserved_ranges[0].end - reserved_ranges[0].start));
-        kernel_debug_printf("memory: reserved boot/core [%x, %x) kb=%u\n",
+        kernel_debug_printf("[%u] memory: boot/core reserved [%x, %x) %u kb\n",
+                            (unsigned int)boot_seq,
                             (uint32_t)reserved_ranges[0].start,
                             (uint32_t)reserved_ranges[0].end,
                             (unsigned int)((reserved_ranges[0].end - reserved_ranges[0].start) / 1024u));
@@ -436,8 +578,23 @@ __attribute__((noreturn, section(".entry"))) void kernel_entry(void) {
 
     app_range = kernel_mem_find_largest_free_range(usable_range, reserved_ranges, reserved_count);
     if (kernel_mem_range_size(&app_range) >= APP_ARENA_TOTAL_BYTES + APP_BACKING_ALIGN) {
-        app_backing_end = align_down_uintptr(app_range.end, APP_BACKING_ALIGN);
-        app_backing_start = align_down_uintptr(app_backing_end - APP_ARENA_TOTAL_BYTES, APP_BACKING_ALIGN);
+        /*
+         * Prefer backing the arenas with the physical range that matches
+         * their own VA window [VIBE_APP_LOAD_ADDR, VIBE_APP_RESERVED_TOP).
+         * The previous "top of largest free" placement remapped those VAs
+         * to unrelated physical memory while the kernel heap still spanned
+         * them identity: heap blocks at those VAs silently aliased app
+         * arena memory (observed as corrupted process-list nodes under
+         * SMP timing). Backing == window keeps identity intact.
+         */
+        if (app_range.start <= (uintptr_t)VIBE_APP_LOAD_ADDR &&
+            app_range.end >= (uintptr_t)VIBE_APP_RESERVED_TOP) {
+            app_backing_start = (uintptr_t)VIBE_APP_LOAD_ADDR;
+            app_backing_end = (uintptr_t)VIBE_APP_RESERVED_TOP;
+        } else {
+            app_backing_end = align_down_uintptr(app_range.end, APP_BACKING_ALIGN);
+            app_backing_start = align_down_uintptr(app_backing_end - APP_ARENA_TOTAL_BYTES, APP_BACKING_ALIGN);
+        }
         if (app_backing_start >= app_range.start && app_backing_end > app_backing_start) {
             reserved_ranges[2].start = app_backing_start;
             reserved_ranges[2].end = app_backing_end;
@@ -451,7 +608,8 @@ __attribute__((noreturn, section(".entry"))) void kernel_entry(void) {
 
         physmem_reserve_range(reserved_ranges[2].start,
                               (size_t)(reserved_ranges[2].end - reserved_ranges[2].start));
-        kernel_debug_printf("memory: reserved app backing [%x, %x) mb=%u\n",
+        kernel_debug_printf("[%u] memory: app arena [%x, %x) %u mb\n",
+                            (unsigned int)boot_seq,
                             (uint32_t)reserved_ranges[2].start,
                             (uint32_t)reserved_ranges[2].end,
                             (unsigned int)((reserved_ranges[2].end - reserved_ranges[2].start) / (1024u * 1024u)));
@@ -467,7 +625,8 @@ __attribute__((noreturn, section(".entry"))) void kernel_entry(void) {
             paging_set_large_region_user_access(VIBE_APP_LOAD_ADDR,
                                                 APP_ARENA_TOTAL_BYTES,
                                                 1) == 0) {
-            kernel_debug_printf("memory: app arenas mapped v=%x/%x/%x p=%x/%x/%x\n",
+            kernel_debug_printf("[%u] memory: app arenas mapped v=%x/%x/%x p=%x/%x/%x\n",
+                                (unsigned int)boot_seq,
                                 (uint32_t)VIBE_APP_LOAD_ADDR,
                                 (uint32_t)VIBE_APP_DESKTOP_LOAD_ADDR,
                                 (uint32_t)VIBE_APP_BOOT_LOAD_ADDR,
@@ -476,8 +635,30 @@ __attribute__((noreturn, section(".entry"))) void kernel_entry(void) {
                                 (uint32_t)(app_phys + APP_USER_ARENA_BYTES + APP_DESKTOP_ARENA_BYTES));
             reserved_count = 3u;
             mapped = 1;
+            if (app_phys != (uintptr_t)VIBE_APP_LOAD_ADDR) {
+                /*
+                 * Fallback placement: the arena remap shadowed the
+                 * identity VAs [VIBE_APP_LOAD_ADDR, VIBE_APP_RESERVED_TOP).
+                 * Those VAs must never back kernel heap blocks, so reserve
+                 * the window (clipped to usable) from heap selection too.
+                 */
+                uintptr_t shadow_start = (uintptr_t)VIBE_APP_LOAD_ADDR;
+                uintptr_t shadow_end = (uintptr_t)VIBE_APP_RESERVED_TOP;
+                if (shadow_start < usable_range.start) {
+                    shadow_start = usable_range.start;
+                }
+                if (shadow_end > usable_range.end) {
+                    shadow_end = usable_range.end;
+                }
+                reserved_ranges[3].start = shadow_start;
+                reserved_ranges[3].end = shadow_end;
+                kernel_mem_range_normalize(&reserved_ranges[3]);
+                if (kernel_mem_range_size(&reserved_ranges[3]) != 0u) {
+                    reserved_count = 4u;
+                }
+            }
         } else {
-            kernel_debug_puts("memory: app arena remap failed, using identity mapping\n");
+            kernel_debug_printf("[%u] memory: app arena remap failed, identity fallback\n", (unsigned int)boot_seq);
             (void)paging_restore_large_region(VIBE_APP_LOAD_ADDR,
                                               APP_ARENA_TOTAL_BYTES,
                                               app_pde_snapshot,
@@ -497,81 +678,229 @@ __attribute__((noreturn, section(".entry"))) void kernel_entry(void) {
         heap_start = 0x00500000u;
         heap_end = 0x00900000u;
     }
+    /*
+     * The heap's physical pages MUST be reserved in the page allocator.
+     * They were not: physmem happily handed the same frames to app arena
+     * pages / DMA-ish buffers under different VAs, so writes through those
+     * aliases silently destroyed kernel heap contents (the "phantom"
+     * task-list corruption: readers saw garbage at heap VAs that NO
+     * hardware watchpoint on those VAs ever caught being written).
+     */
+    physmem_reserve_range(heap_start, (size_t)(heap_end - heap_start));
     kernel_mm_init(heap_start, heap_end - heap_start);
-    kernel_video_refresh_backend();
+    /*
+     * Class #5 trap: make kernel .text supervisor-read-only + CR0.WP so the
+     * observed PTE-shaped rewrite of running code becomes a #PF naming the
+     * writer (see paging.c). If this faults during boot, a legitimate text
+     * writer exists and the whole premise changes — the #PF eip says so.
+     */
+    if (paging_protect_kernel_text() != 0) {
+        kernel_debug_printf("[%u] memory: kernel text protection FAILED (text still writable)\n",
+                            (unsigned int)boot_seq);
+    }
+    kernel_early_post(0xA0); kernel_video_refresh_backend(); kernel_early_post(0xA1);
     mk_transfer_init();
-    kernel_text_puts("Memory OK\n");
+    kernel_debug_printf("[%u] memory: done heap=[%x, %x)\n",
+                        (unsigned int)boot_seq,
+                        (uint32_t)heap_start,
+                        (uint32_t)heap_end);
+    kernel_text_puts("memory: OK\n");
     kernel_bootdebug_mark_stable();
 
-    kernel_text_puts("Initializing storage...\n");
-    kernel_storage_init();
-           kernel_virtio_net_init(); /* registers virtio-net with driver manager */
-           kernel_wifi_pci_init();   /* registers wi-fi pci detector with driver manager */
-    kernel_text_puts(kernel_storage_ready() ? "Storage OK\n" : "Storage unavailable\n");
+    boot_seq++;
+    kernel_early_post(boot_seq);
+    kernel_debug_printf("[%u] pci: initializing...\n", (unsigned int)boot_seq);
+    kernel_text_puts("pci: init...\n");
+    pci_bus_init();
+    pci_log_devices();
+    kernel_debug_printf("[%u] pci: done\n", (unsigned int)boot_seq);
+    kernel_text_puts("pci: OK\n");
 
-    kernel_text_puts("Initializing scheduler/driver manager...\n");
-    scheduler_init();
-    driver_manager_init(); /* second call to debug init performs HW setup */
-    kernel_usb_host_init();
-    if (!kernel_storage_ready()) {
-        kernel_text_puts("Reprobing storage after USB...\n");
-        kernel_storage_init();
-        if (kernel_storage_ready()) {
-            kernel_text_puts("USB Storage OK\n");
-        }
-    }
-    kernel_text_puts("Scheduler OK\n");
-
-    if (kernel_cpu_is_smp_capable() &&
-        (kernel_cpu_topology()->mp_table_present ||
-         kernel_cpu_topology()->acpi_madt_present) &&
-        local_apic_enabled()) {
-        kernel_text_puts("SMP bring-up...\n");
-        smp_persist_trace_arm();
-        smp_persist_trace_mark('B');
-        smp_init();
-        smp_persist_trace_mark('R');
-        if (smp_started_cpu_count() > 1u) {
-            kernel_text_puts("SMP OK\n");
-            kernel_debug_puts("SMP OK\n");
-            smp_persist_trace_disarm();
-        } else {
-            kernel_text_puts("SMP partial\n");
-            kernel_debug_puts("SMP partial\n");
-        }
+    boot_seq++;
+    kernel_early_post(boot_seq);
+    kernel_debug_printf("[%u] acpi: initializing...\n", (unsigned int)boot_seq);
+    kernel_text_puts("acpi: init...\n");
+    kernel_early_post(0xC0); if (acpi_init() == 0) { kernel_early_post(0xC1);
+        kernel_debug_printf("[%u] acpi: done\n", (unsigned int)boot_seq);
+        kernel_text_puts("acpi: OK\n");
     } else {
-        kernel_text_puts("SMP skipped\n");
-        kernel_debug_puts("SMP skipped\n");
-        kernel_debug_printf("smp: skip reason=%s started=%d total=%d\n",
-                            kernel_smp_skip_reason(),
-                            (int)smp_started_cpu_count(),
-                            (int)kernel_cpu_count());
+        kernel_debug_printf("[%u] acpi: unavailable\n", (unsigned int)boot_seq);
+        kernel_text_puts("acpi: FAILED (unavailable)\n");
     }
 
-    kernel_text_puts("Initializing VFS...\n");
-    kernel_text_puts("  vfs\n");
+    boot_seq++;
+    kernel_early_post(boot_seq);
+    kernel_debug_printf("[step=%x] storage: probing ata\n", boot_seq);
+    kernel_text_puts("storage: init...\n");
+    kernel_early_post(0xD0); kernel_storage_init(); kernel_early_post(0xD1);
+    kernel_debug_printf("[step=%x] storage: init returned\n", boot_seq);
+           kernel_virtio_net_init();
+           kernel_e1000_init();
+           kernel_rtl8139_init();
+           kernel_wifi_pci_init();
+           kernel_wifi_data_plane_init();
+    kernel_debug_printf("[step=%x] storage: regs done\n", boot_seq);
+    if (kernel_storage_ready()) {
+        kernel_debug_printf("[step=%x] storage: OK\n", boot_seq);
+        kernel_text_puts("storage: OK\n");
+    } else {
+        kernel_debug_printf("[step=%x] storage: not found\n", boot_seq);
+        kernel_text_puts("storage: none\n");
+    }
+
+    boot_seq++;
+    kernel_early_post(boot_seq);
+    kernel_debug_printf("[%u] scheduler: starting\n", (unsigned int)boot_seq);
+    kernel_text_puts("scheduler: init...\n");
+    scheduler_init();
+    kernel_debug_printf("[%u] scheduler: done\n", (unsigned int)boot_seq);
+
+    boot_seq++;
+    kernel_early_post(boot_seq);
+    kernel_debug_printf("[%u] drivers: driver manager init\n", (unsigned int)boot_seq);
+    kernel_text_puts("drivers: init...\n");
+    driver_manager_init();
+    kernel_debug_printf("[%u] drivers: done\n", (unsigned int)boot_seq);
+    kernel_text_puts("drivers: OK\n");
+
+    boot_seq++;
+    kernel_early_post(boot_seq);
+    kernel_debug_printf("[%u] usb: starting host init\n", (unsigned int)boot_seq);
+    kernel_text_puts("usb: init...\n");
+    /* USB init must not block boot. If the hardware doesn't respond,
+       skip USB and continue. USB storage can be re-probed later. */
+    {
+        kernel_early_post(0xE0); kernel_usb_host_init(); kernel_early_post(0xE1);
+        if (kernel_usb_host_controller_count() > 0u) {
+            kernel_debug_printf("[%u] usb: init complete (%u controllers, %u devices)\n",
+                                (unsigned int)boot_seq,
+                                (unsigned int)kernel_usb_host_controller_count(),
+                                (unsigned int)kernel_usb_device_count());
+            kernel_text_puts("usb: OK\n");
+        } else {
+            kernel_debug_printf("[%u] usb: no controllers found\n", (unsigned int)boot_seq);
+            kernel_text_puts("usb: not found\n");
+        }
+    }
+    if (!kernel_storage_ready()) {
+        kernel_debug_printf("[%u] storage: probing extra (usb/nvme/ahci)\n", (unsigned int)boot_seq);
+        kernel_text_puts("storage: probing extra...\n");
+        kernel_storage_probe_extra();
+        if (kernel_storage_ready()) {
+            kernel_debug_printf("[%u] storage: extra storage found\n", (unsigned int)boot_seq);
+            kernel_text_puts("storage: extra OK\n");
+        }
+    }
+
+    boot_seq++;
+    kernel_early_post(boot_seq);
+    kernel_debug_printf("[%u] scheduler: ready\n", (unsigned int)boot_seq);
+    kernel_text_puts("scheduler: OK\n");
+
+    boot_seq++;
+    kernel_early_post(boot_seq);
+    {
+        const volatile struct bootinfo *bi =
+            (const volatile struct bootinfo *)(uintptr_t)BOOTINFO_ADDR;
+        int smp_experiment =
+            (bi->flags & BOOTINFO_FLAG_EXPERIMENTAL_SMP) != 0u;
+
+        if (smp_experiment &&
+            kernel_cpu_is_smp_capable() &&
+            (kernel_cpu_topology()->mp_table_present ||
+             kernel_cpu_topology()->acpi_madt_present) &&
+            local_apic_enabled()) {
+            kernel_debug_printf("[%u] smp: bring-up starting\n", (unsigned int)boot_seq);
+            kernel_text_puts("smp: bring-up...\n");
+            smp_persist_trace_arm();
+            smp_persist_trace_mark('B');
+            smp_init();
+            smp_persist_trace_mark('R');
+            if (smp_started_cpu_count() > 1u) {
+                kernel_debug_printf("[%u] smp: done, %u cpus online\n",
+                                    (unsigned int)boot_seq,
+                                    (unsigned int)smp_started_cpu_count());
+                kernel_text_puts("smp: OK\n");
+                smp_persist_trace_disarm();
+            } else {
+                kernel_debug_printf("[%u] smp: partial (%u/%u)\n",
+                                    (unsigned int)boot_seq,
+                                    (unsigned int)smp_started_cpu_count(),
+                                    (unsigned int)kernel_cpu_count());
+                kernel_text_puts("smp: partial\n");
+            }
+        } else if (!smp_experiment) {
+            kernel_debug_printf("[%u] smp: skipped (experimental flag off)\n",
+                                (unsigned int)boot_seq);
+            kernel_text_puts("smp: skipped\n");
+        } else {
+            kernel_debug_printf("[%u] smp: skipped (%s)\n", (unsigned int)boot_seq, kernel_smp_skip_reason());
+            kernel_text_puts("smp: skipped\n");
+        }
+    }
+
+    boot_seq++;
+    kernel_early_post(boot_seq);
+    kernel_debug_printf("[%u] vfs: initializing\n", (unsigned int)boot_seq);
+    kernel_text_puts("vfs: init...\n");
     vfs_init();
-    kernel_text_puts("  storage svc\n");
+    kernel_debug_printf("[%u] vfs: ramfs ready\n", (unsigned int)boot_seq);
+
+    kernel_debug_printf("[%u] services: starting storage\n", (unsigned int)boot_seq);
+    kernel_text_puts("  storage\n");
     mk_storage_service_init();
-    kernel_text_puts("  video svc\n");
+
+    kernel_debug_printf("[%u] services: starting video\n", (unsigned int)boot_seq);
+    kernel_text_puts("  video\n");
     mk_video_service_init();
-    kernel_text_puts("  audio svc\n");
+
+    kernel_debug_printf("[%u] services: starting audio\n", (unsigned int)boot_seq);
+    kernel_text_puts("  audio\n");
     mk_audio_service_init();
-    kernel_text_puts("  filesystem svc\n");
+
+    kernel_debug_printf("[%u] services: starting filesystem\n", (unsigned int)boot_seq);
+    kernel_text_puts("  filesystem\n");
     mk_filesystem_service_init();
-    kernel_text_puts("  input svc\n");
+
+    kernel_debug_printf("[%u] services: starting input\n", (unsigned int)boot_seq);
+    kernel_text_puts("  input\n");
     mk_input_service_init();
-    kernel_text_puts("  console svc\n");
+
+    kernel_debug_printf("[%u] services: starting console\n", (unsigned int)boot_seq);
+    kernel_text_puts("  console\n");
     mk_console_service_init();
-    kernel_text_puts("  network svc\n");
+
+    kernel_debug_printf("[%u] services: starting network\n", (unsigned int)boot_seq);
+    kernel_text_puts("  network\n");
     mk_network_service_init();
-    kernel_text_puts("VFS OK\n");
 
-    kernel_text_puts("Initializing syscalls...\n");
+    kernel_debug_printf("[%u] services: storage, video, audio, input, network, console, filesystem\n",
+                        (unsigned int)boot_seq);
+    kernel_text_puts("services: OK\n");
+
+    boot_seq++;
+    kernel_early_post(boot_seq);
+    kernel_debug_printf("[%u] syscalls: registering\n", (unsigned int)boot_seq);
+    kernel_text_puts("syscalls: init...\n");
     syscall_init();
-    kernel_text_puts("Syscalls OK\n");
+    kernel_debug_printf("[%u] syscalls: 230 registered\n", (unsigned int)boot_seq);
+    kernel_text_puts("syscalls: OK\n");
 
-    kernel_text_puts("Starting userland...\n");
+    boot_seq++;
+    kernel_early_post(boot_seq);
+    {
+        const volatile struct bootinfo *bi =
+            (const volatile struct bootinfo *)(uintptr_t)BOOTINFO_ADDR;
+
+        if ((bi->flags & BOOTINFO_FLAG_EXPERIMENTAL_SMP) != 0u &&
+            smp_started_cpu_count() > 1u) {
+            kernel_debug_printf("[%u] smp: arming per-cpu scheduler\n",
+                                (unsigned int)boot_seq);
+            smp_scheduler_enable();
+        }
+    }
+    kernel_debug_printf("[%u] userland: launching init\n", (unsigned int)boot_seq);
+    kernel_text_puts("userland: launching...\n");
     userland_run();
 
     for (;;) {

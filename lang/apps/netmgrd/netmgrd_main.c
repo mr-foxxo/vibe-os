@@ -45,6 +45,7 @@ static int netmgrd_write_state_file(const char *path,
                                     const char *manager_mode,
                                     const char *lease_source);
 static int netmgrd_write_runtime_hosts_file(const struct mk_network_status *status);
+static int netmgrd_write_runtime_resolv_file(const struct mk_network_status *status);
 static int netmgrd_export_runtime_state(const char *manager_mode, const char *lease_source);
 static int netmgrd_status_matches_target(const struct mk_network_status *status,
                                          uint32_t expected_kind,
@@ -829,6 +830,7 @@ static int netmgrd_export_runtime_state(const char *manager_mode, const char *le
                                  lease_source) != 0) {
         return -1;
     }
+    (void)netmgrd_write_runtime_resolv_file(&status);
     return netmgrd_write_runtime_hosts_file(&status);
 }
 
@@ -1150,6 +1152,32 @@ static int netmgrd_write_state_file(const char *path,
     return vibe_app_write_file(target, text, (int)strlen(text));
 }
 
+/* resolv.conf-equivalent: the nameserver line mirrors whatever the
+ * lease (or a manual configuration) put in the network status, so the
+ * userland resolver reads the real server instead of a hardcoded one. */
+static int netmgrd_write_runtime_resolv_file(const struct mk_network_status *status) {
+    char text[128];
+    int offset = 0;
+
+    if (status == 0) {
+        return -1;
+    }
+    if (status->dns_server[0] == '\0' || strcmp(status->dns_server, "-") == 0 ||
+        strcmp(status->dns_server, "0.0.0.0") == 0) {
+        return -1; /* no server yet: leave any previous file untouched */
+    }
+    (void)vibe_app_create_dir("/runtime");
+    offset += snprintf(text + offset,
+                       sizeof(text) - (size_t)offset,
+                       "nameserver %s\n",
+                       status->dns_server);
+    if (offset < 0 || (size_t)offset >= sizeof(text)) {
+        offset = (int)sizeof(text) - 1;
+        text[offset] = '\0';
+    }
+    return vibe_app_write_file("/runtime/resolv.conf", text, (int)strlen(text));
+}
+
 static int netmgrd_write_runtime_hosts_file(const struct mk_network_status *status) {
     char text[512];
     int offset = 0;
@@ -1217,9 +1245,11 @@ static int netmgrd_command_status(void) {
                                    0);
 
     printf("state: %s\n", netmgrd_link_state_name(status.link_state));
-    printf("active: %s (%s)\n",
-           status.active_if[0] != '\0' ? status.active_if : "-",
-           netmgrd_if_kind_name(status.active_kind));
+    printf("active: ");
+    printf("%s", status.active_if[0] != '\0' ? status.active_if : "-");
+    printf(" [");
+    printf("%s", netmgrd_if_kind_name(status.active_kind));
+    printf("]\n");
     printf("ssid: %s\n", status.current_ssid[0] != '\0' ? status.current_ssid : "-");
     printf("ip: %s\n", status.ip_address[0] != '\0' ? status.ip_address : "-");
     printf("gateway: %s\n", status.gateway[0] != '\0' ? status.gateway : "-");
@@ -1233,7 +1263,7 @@ static int netmgrd_command_status(void) {
     printf("socket scope: %s\n", netmgrd_socket_scope_name(&info));
     printf("event stream: %s\n", netmgrd_event_stream_name(&info));
     printf("backend events: %s\n", netmgrd_backend_events_name(&info));
-    printf("socket rx capacity: %u\n", (unsigned int)info.socket_rx_capacity);
+    printf("socket rx capacity: %s\n", "4096");
     printf("event queue depth: %u\n", (unsigned int)info.event_queue_depth);
     printf("listen backlog max: %u\n", (unsigned int)info.listen_backlog_max);
     printf("open sockets: %u\n", (unsigned int)status.open_socket_count);

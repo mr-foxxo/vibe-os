@@ -2,6 +2,7 @@
 #define UTILS_H
 
 #include <include/userland_api.h>
+#include <stddef.h>
 
 /* simple rectangle type used by various UI routines */
 struct rect {

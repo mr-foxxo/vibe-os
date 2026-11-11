@@ -2,12 +2,15 @@
 #include <kernel/drivers/debug/debug.h>
 #include <kernel/hal/io.h>
 #include <kernel/interrupt.h>
+#include <kernel/lock.h>
 #include <include/userland_api.h>
 #include <headers/kernel/keymap.h>
 #include <include/string.h>
 
 #define PS2_STATUS_PORT 0x64u
 #define PS2_DATA_PORT 0x60u
+extern volatile unsigned int g_input_scancodes_read;
+
 #define PS2_STATUS_OUTPUT_FULL 0x01u
 #define PS2_STATUS_INPUT_FULL 0x02u
 #define PS2_STATUS_AUX_OUTPUT_FULL 0x20u
@@ -314,36 +317,56 @@ int kernel_keyboard_read(void) {
     return value;
 }
 
-void kernel_keyboard_irq_handler(void) {
-    const uint8_t status = inb(PS2_STATUS_PORT);
-    uint8_t scancode;
+/* P4 adendo 47: PS2_STATUS/DATA are ONE physical port shared by keyboard and
+ * mouse ISRs and by the service-thread polls. Local irq_save cannot serialize
+ * across CPUs, so with IRQ1/12 affinity-routed to an AP (smp), every
+ * port-touching path must hold this global lock. Lock order: ps2 only. */
+spinlock_t g_ps2_port_lock;
 
-    if ((status & PS2_STATUS_OUTPUT_FULL) == 0u ||
-        (status & PS2_STATUS_AUX_OUTPUT_FULL) != 0u) {
-        kernel_irq_complete(1);
-        return;
+void kernel_keyboard_irq_handler(void) {
+    uint32_t lflags = spinlock_lock_irqsave(&g_ps2_port_lock);
+
+    /*
+     * Drain ALL pending bytes, not just one (bug #19 item 0.12, 01/11).
+     * The 8042 output buffer is one byte deep and QEMU holds the rest of
+     * a burst in its own queue; a byte that lands while IRQs are masked
+     * (e.g. during the serial dump of one census line) latches a single
+     * edge, and a one-byte ISR leaves the backlog waiting for an IRQ
+     * that may never re-fire — measured with the interactive mailbox
+     * wait active: `netmgrd status` lost its `status` suffix between the
+     * space and Enter (gate run 19_ns10 `key-cons`/`rk` traces). Same
+     * lock and same drain shape as kernel_keyboard_poll(), so the two
+     * paths cannot interleave.
+     */
+    while ((inb(PS2_STATUS_PORT) & (PS2_STATUS_OUTPUT_FULL | PS2_STATUS_AUX_OUTPUT_FULL)) ==
+           PS2_STATUS_OUTPUT_FULL) {
+        uint8_t scancode = inb(PS2_DATA_PORT);
+
+        g_input_scancodes_read++;
+        kernel_keyboard_process_scancode(scancode);
     }
 
-    scancode = inb(PS2_DATA_PORT);
-    kernel_keyboard_process_scancode(scancode);
     kernel_irq_complete(1);
+    spinlock_unlock_irqrestore(&g_ps2_port_lock, lflags);
 }
 
 void kernel_keyboard_poll(void) {
-    uint32_t flags = kernel_irq_save();
+    uint32_t flags = spinlock_lock_irqsave(&g_ps2_port_lock);
 
     while ((inb(PS2_STATUS_PORT) & (PS2_STATUS_OUTPUT_FULL | PS2_STATUS_AUX_OUTPUT_FULL)) ==
            PS2_STATUS_OUTPUT_FULL) {
         uint8_t scancode = inb(PS2_DATA_PORT);
+        g_input_scancodes_read++;
         kernel_keyboard_process_scancode(scancode);
     }
 
-    kernel_irq_restore(flags);
+    spinlock_unlock_irqrestore(&g_ps2_port_lock, flags);
 }
 
 void kernel_keyboard_init(void) {
     uint8_t config;
 
+    spinlock_init(&g_ps2_port_lock);
     g_kernel_kbd_shift_left = 0u;
     g_kernel_kbd_shift_right = 0u;
     g_kernel_kbd_ctrl_left = 0u;
@@ -403,10 +426,10 @@ void kernel_keyboard_init(void) {
 }
 
 void kernel_keyboard_prepare_for_graphics(void) {
-    uint32_t flags = kernel_irq_save();
+    uint32_t flags = spinlock_lock_irqsave(&g_ps2_port_lock);
 
     g_kernel_kbd_extended = 0u;
     ps2_drain_output();
 
-    kernel_irq_restore(flags);
+    spinlock_unlock_irqrestore(&g_ps2_port_lock, flags);
 }

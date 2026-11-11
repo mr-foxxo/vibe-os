@@ -79,6 +79,20 @@
 #define _DIAGASSERT(x)
 #endif
 
+#if !defined(__only_inline)
+#define __only_inline extern inline
+#endif
+
+#ifndef __POSIX_VISIBLE
+#define __POSIX_VISIBLE 200809L
+#endif
+#ifndef __BSD_VISIBLE
+#define __BSD_VISIBLE 1
+#endif
+#ifndef __XPG_VISIBLE
+#define __XPG_VISIBLE 700
+#endif
+
 #ifndef __VA_LIST_DEFINED
 #define __VA_LIST_DEFINED
 typedef char *__va_list;
@@ -92,3 +106,4 @@ typedef int __wchar_t;
 
 
 #endif /* _SYS_CDEFS_H_ */
+#define __returns_twice __attribute__((returns_twice))

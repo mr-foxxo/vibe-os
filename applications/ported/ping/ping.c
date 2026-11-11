@@ -42,21 +42,6 @@ int vibe_app_main(int argc, char **argv) {
     memset(&address, 0, sizeof(address));
     address.sin_len = (uint8_t)sizeof(address);
     address.sin_family = AF_INET;
-    if (netdiag_resolve_name_local(target,
-                                   0,
-                                   address.sin_addr,
-                                   canonical,
-                                   sizeof(canonical),
-                                   &resolved_source) == 0 &&
-        netdiag_is_loopback_target(canonical[0] != '\0' ? canonical : target)) {
-        printf("PING %s (127.0.0.1): 56 data bytes\n", target);
-        printf("64 bytes from 127.0.0.1: icmp_seq=0 ttl=255 time=0.0 ms\n");
-        printf("\n--- %s ping statistics ---\n", target);
-        printf("1 packets transmitted, 1 packets received, 0.0%% packet loss\n");
-        printf("ping: loopback-ok target=%s\n", target);
-        netdiag_debugf("ping: loopback-ok target=%s\n", target);
-        return 0;
-    }
 
     if (netdiag_load_snapshot("ping", &info, &status) != 0) {
         return 1;
@@ -74,8 +59,15 @@ int vibe_app_main(int argc, char **argv) {
         return 1;
     }
     netdiag_format_ipv4(target_addr, sizeof(target_addr), address.sin_addr);
-    if (netdiag_require_real_packet_path("ping", "icmp echo", &info, &status) != 0) {
-        return 1;
+    /*
+     * 127/8 is answered by the kernel's IPv4 loopback — it never touches a
+     * NIC, so it must NOT be gated on the real packet datapath. Anything
+     * else is a wire echo and needs the datapath.
+     */
+    if (address.sin_addr[0] != 127u) {
+        if (netdiag_require_real_packet_path("ping", "icmp echo", &info, &status) != 0) {
+            return 1;
+        }
     }
 
     handle = vibe_app_network_socket(AF_INET, SOCK_DGRAM, VIBE_IPPROTO_ICMP);

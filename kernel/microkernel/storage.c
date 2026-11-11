@@ -1,5 +1,7 @@
 #include <kernel/drivers/storage/ata.h>
+#include <kernel/telemetry.h>
 #include <kernel/drivers/storage/block_device.h>
+#include <kernel/drivers/debug/debug.h>
 #include <kernel/kernel_string.h>
 #include <kernel/microkernel/launch.h>
 #include <kernel/microkernel/message.h>
@@ -7,11 +9,42 @@
 #include <kernel/microkernel/storage.h>
 #include <kernel/microkernel/transfer.h>
 #include <kernel/scheduler.h>
+#include <kernel/cpu/cpu.h>
+#include <kernel/smp.h>
 #include <kernel/userland_service.h>
 
 static struct mk_message g_last_storage_request;
 static struct mk_message g_last_storage_reply;
 #define MK_STORAGE_PERSIST_IO_CHUNK_SECTORS 64u
+
+/*
+ * Sector-count ceiling (COMPLETION_ACTION_PLAN P4, class #3). Message
+ * payloads carry an UNTRUSTED uint32 sector_count; byte_count is
+ * sector_count * 512 in uint32 arithmetic, so sector_count >= 0x800000
+ * wraps the product toward 0 and can sail through the
+ * "mk_transfer_size(...) < byte_count" checks — the ATA loop then
+ * streams gigabytes of disk data into a small heap buffer, overwriting
+ * whatever follows (observed real-time smp2 signature: task frames
+ * holding data-byte registers, e.g. cs=0x454430 / eip=0x213 — ASCII
+ * bytes as selector/eip — and DISPATCH-BAD-FORENSICS proving the frame
+ * was intact AT dispatch, i.e. the write lands DURING execution).
+ * 65536 sectors = 32 MiB per request: far above any legitimate path
+ * (persist I/O chunks at 64 sectors; assets load in small pieces) and
+ * small enough that sector_count * 512 can never wrap a 32-bit product.
+ */
+#define MK_STORAGE_MAX_SECTORS_PER_REQUEST 65536u
+
+static uint32_t g_storage_sector_ceiling_trace_budget = VIBE_TRACE_BUDGET(8u);
+
+static void mk_storage_reject_ceiling(const char *what, uint32_t sector_count) {
+    if (g_storage_sector_ceiling_trace_budget == 0u) {
+        return;
+    }
+    g_storage_sector_ceiling_trace_budget--;
+    kernel_debug_printf("storage: REJECT %s sector_count=%u > ceiling %u\n",
+                        what, (unsigned int)sector_count,
+                        (unsigned int)MK_STORAGE_MAX_SECTORS_PER_REQUEST);
+}
 
 static uint32_t mk_storage_current_pid(void) {
     return scheduler_current_pid();
@@ -98,6 +131,12 @@ static int mk_storage_local_handler(const struct mk_message *request,
 
     switch (request->type) {
     case MK_MSG_BLOCK_READ: {
+        static uint32_t g_hostbr_budget = VIBE_TRACE_BUDGET(4u);
+        if (g_hostbr_budget != 0u) {
+            g_hostbr_budget--;
+            kernel_debug_printf("storage: HOST-BREAD sz=%u\n",
+                                (unsigned int)request->payload_size);
+        }
         if (request->payload_size == sizeof(struct mk_storage_sectors_request)) {
             const struct mk_storage_sectors_request *payload;
             uint32_t byte_count;
@@ -105,14 +144,24 @@ static int mk_storage_local_handler(const struct mk_message *request,
             int rc;
 
             payload = (const struct mk_storage_sectors_request *)request->payload;
+            if (payload->sector_count == 0u ||
+                payload->sector_count > MK_STORAGE_MAX_SECTORS_PER_REQUEST) {
+                mk_storage_reject_ceiling("BLOCK_READ", payload->sector_count);
+                return -1;
+            }
             byte_count = payload->sector_count * KERNEL_PERSIST_SECTOR_SIZE;
             buffer = mk_transfer_data_write(payload->transfer_id);
-            if (buffer == 0 || mk_transfer_size(payload->transfer_id) < byte_count) {
+            if (buffer == 0) {
+                return -1;
+            }
+            if (mk_transfer_size(payload->transfer_id) < byte_count) {
+                mk_transfer_release(payload->transfer_id);
                 return -1;
             }
             rc = kernel_storage_read_sectors(payload->lba,
                                              buffer,
                                              payload->sector_count);
+            mk_transfer_release(payload->transfer_id);
             return mk_storage_reply_result(reply, rc);
         }
 
@@ -123,10 +172,15 @@ static int mk_storage_local_handler(const struct mk_message *request,
 
             payload = (const struct mk_storage_persist_request *)request->payload;
             buffer = mk_transfer_data_write(payload->transfer_id);
-            if (buffer == 0 || mk_transfer_size(payload->transfer_id) < payload->size) {
+            if (buffer == 0) {
+                return -1;
+            }
+            if (mk_transfer_size(payload->transfer_id) < payload->size) {
+                mk_transfer_release(payload->transfer_id);
                 return -1;
             }
             rc = kernel_storage_load(buffer, payload->size);
+            mk_transfer_release(payload->transfer_id);
             return mk_storage_reply_result(reply, rc);
         }
 
@@ -140,14 +194,24 @@ static int mk_storage_local_handler(const struct mk_message *request,
             int rc;
 
             payload = (const struct mk_storage_sectors_request *)request->payload;
+            if (payload->sector_count == 0u ||
+                payload->sector_count > MK_STORAGE_MAX_SECTORS_PER_REQUEST) {
+                mk_storage_reject_ceiling("BLOCK_WRITE", payload->sector_count);
+                return -1;
+            }
             byte_count = payload->sector_count * KERNEL_PERSIST_SECTOR_SIZE;
             buffer = (void *)mk_transfer_data_read(payload->transfer_id);
-            if (buffer == 0 || mk_transfer_size(payload->transfer_id) < byte_count) {
+            if (buffer == 0) {
+                return -1;
+            }
+            if (mk_transfer_size(payload->transfer_id) < byte_count) {
+                mk_transfer_release(payload->transfer_id);
                 return -1;
             }
             rc = kernel_storage_write_sectors(payload->lba,
                                               buffer,
                                               payload->sector_count);
+            mk_transfer_release(payload->transfer_id);
             return mk_storage_reply_result(reply, rc);
         }
 
@@ -158,10 +222,15 @@ static int mk_storage_local_handler(const struct mk_message *request,
 
             persist = (const struct mk_storage_persist_request *)request->payload;
             buffer = (void *)mk_transfer_data_read(persist->transfer_id);
-            if (buffer == 0 || mk_transfer_size(persist->transfer_id) < persist->size) {
+            if (buffer == 0) {
+                return -1;
+            }
+            if (mk_transfer_size(persist->transfer_id) < persist->size) {
+                mk_transfer_release(persist->transfer_id);
                 return -1;
             }
             rc = kernel_storage_save(buffer, persist->size);
+            mk_transfer_release(persist->transfer_id);
             return mk_storage_reply_result(reply, rc);
         }
 
@@ -206,7 +275,7 @@ void mk_storage_service_init(void) {
                                      mk_storage_local_handler,
                                      0,
                                      userland_storage_service_entry,
-                                     8192u,
+                                     32768u,
                                      MK_LAUNCH_FLAG_BOOTSTRAP |
                                      MK_LAUNCH_FLAG_BUILTIN |
                                      MK_LAUNCH_FLAG_CRITICAL);
@@ -230,9 +299,28 @@ int mk_storage_service_read_sectors(uint32_t lba, void *dst, uint32_t sector_cou
     }
     if (mk_storage_current_process_is_service_worker() ||
         mk_storage_current_prefers_kernel_hot_path()) {
-        return kernel_storage_read_sectors(lba, dst, sector_count);
+        /* The boot loader (init/lang tasks have NO mk_launch_context, so
+         * context==0 selects THIS branch) reads app images here, NOT through
+         * the host round-trip. Adendo 43 measurement lives on this side:
+         * per-chunk host cost in ticks, 6 prints. */
+        static uint32_t g_hot_dur_budget = VIBE_TRACE_BUDGET(6u);
+        uint32_t hcpu = kernel_cpu_index();
+        uint32_t ht0 = smp_tick_count(hcpu);
+        int hrc = kernel_storage_read_sectors(lba, dst, sector_count);
+        if (g_hot_dur_budget != 0u && sector_count > 1u) {
+            g_hot_dur_budget -= 1u;
+            kernel_debug_printf("storage: hot n=%u dur=%u cpu=%u\n",
+                                (unsigned int)sector_count,
+                                (unsigned int)(smp_tick_count(hcpu) - ht0),
+                                (unsigned int)hcpu);
+        }
+        return hrc;
     }
 
+    if (sector_count > MK_STORAGE_MAX_SECTORS_PER_REQUEST) {
+        mk_storage_reject_ceiling("client_read", sector_count);
+        return -1;
+    }
     byte_count = sector_count * KERNEL_PERSIST_SECTOR_SIZE;
     if (mk_transfer_create(mk_storage_current_pid(), byte_count, &transfer_id) != 0) {
         return -1;
@@ -280,6 +368,10 @@ int mk_storage_service_write_sectors(uint32_t lba, const void *src, uint32_t sec
         return kernel_storage_write_sectors(lba, src, sector_count);
     }
 
+    if (sector_count > MK_STORAGE_MAX_SECTORS_PER_REQUEST) {
+        mk_storage_reject_ceiling("client_write", sector_count);
+        return -1;
+    }
     byte_count = sector_count * KERNEL_PERSIST_SECTOR_SIZE;
     if (mk_transfer_create(mk_storage_current_pid(), byte_count, &transfer_id) != 0) {
         return -1;

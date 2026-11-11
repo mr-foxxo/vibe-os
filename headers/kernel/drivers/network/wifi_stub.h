@@ -9,15 +9,17 @@
 struct wifi_stub_ap {
     char ssid[WIFI_STUB_SSID_MAX_LEN + 1u];
     uint8_t bssid[6];
-    int8_t rssi;          /* signal strength in dBm */
+    int8_t rssi;
     uint8_t channel;
-    uint8_t encrypted;    /* 1 = secured, 0 = open */
+    uint8_t encrypted;
 };
 
 void     kernel_wifi_stub_init(void);
 int      kernel_wifi_stub_present(void);
 void     kernel_wifi_stub_scan(void);
+int      kernel_wifi_stub_scan_tick(void);
 uint32_t kernel_wifi_stub_scan_count(void);
 int      kernel_wifi_stub_scan_result(uint32_t index, struct wifi_stub_ap *out);
+int      kernel_wifi_stub_scan_busy(void);
 
 #endif

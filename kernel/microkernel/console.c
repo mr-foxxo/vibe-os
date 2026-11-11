@@ -72,10 +72,16 @@ static int mk_console_validate_text_transfer(uint32_t transfer_id,
     }
 
     text = (char *)mk_transfer_data_read(transfer_id);
-    if (text == 0 || mk_transfer_size(transfer_id) < length + 1u) {
+    if (text == 0) {
+        return -1;
+    }
+    /* data_read pinned the transfer; release on failure, caller owns on success. */
+    if (mk_transfer_size(transfer_id) < length + 1u) {
+        mk_transfer_release(transfer_id);
         return -1;
     }
     if (text[length] != '\0') {
+        mk_transfer_release(transfer_id);
         return -1;
     }
 
@@ -108,6 +114,7 @@ static int mk_console_local_handler(const struct mk_message *request,
             return -1;
         }
         kernel_debug_puts(text);
+        mk_transfer_release(payload->transfer_id);
         return mk_console_reply_result(reply, 0);
     }
     case MK_MSG_CONSOLE_TEXT_CLEAR:
@@ -138,6 +145,7 @@ static int mk_console_local_handler(const struct mk_message *request,
             return -1;
         }
         kernel_text_puts(text);
+        mk_transfer_release(payload->transfer_id);
         return mk_console_reply_result(reply, 0);
     }
     case MK_MSG_CONSOLE_CURSOR_MOVE: {
@@ -161,7 +169,7 @@ static int mk_console_service_launch_deferred(void) {
                                   mk_console_local_handler,
                                   0,
                                   userland_console_service_entry,
-                                  8192u,
+                                  32768u,
                                   MK_LAUNCH_FLAG_BOOTSTRAP |
                                   MK_LAUNCH_FLAG_BUILTIN |
                                   MK_LAUNCH_FLAG_CRITICAL);

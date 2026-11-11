@@ -657,7 +657,7 @@ build/app_runtime_$(2).o: $$(APP_RUNTIME) | build
 	@mkdir -p $$(dir $$@)
 	$$(CC) $$(CFLAGS) $$(INCLUDES) -c $$< -o $$@
 
-build/ported/$(2)/%.o: applications/ported/$(2)/%.c $$(COMPAT_LIB) | build
+build/ported/$(2)/%.o: applications/ported/$(2)/%.c $$(COMPAT_LIB) $$(wildcard applications/ported/include/*.h) | build
 	@mkdir -p $$(dir $$@)
 	$$(CC) $$(CFLAGS) $$(INCLUDES) -c $$< -o $$@
 
@@ -766,3 +766,6 @@ ported-all: $(PORTED_APP_TARGETS)
 ported-clean: ported-echo-clean ported-cat-clean ported-wc-clean ported-pwd-clean ported-head-clean ported-sleep-clean ported-rmdir-clean ported-tail-clean ported-grep-clean ported-sed-clean ported-loadkeys-clean ported-mkdir-clean ported-true-clean ported-false-clean ported-printf-clean $(EXTRA_PORTED_CLEAN_TARGETS)
 
 .PHONY: ported-all ported-echo ported-cat ported-wc ported-pwd ported-head ported-sleep ported-rmdir ported-tail ported-grep ported-sed ported-loadkeys ported-mkdir ported-true ported-false ported-printf ported-clean ported-echo-clean ported-cat-clean ported-wc-clean ported-pwd-clean ported-head-clean ported-sleep-clean ported-rmdir-clean ported-tail-clean ported-grep-clean ported-sed-clean ported-loadkeys-clean ported-mkdir-clean ported-true-clean ported-false-clean ported-printf-clean $(EXTRA_PORTED_PHONY_TARGETS)
+
+
+

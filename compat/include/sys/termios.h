@@ -2,7 +2,7 @@
 #define COMPAT_SYS_TERMIOS_H
 
 #include <compat/posix/errno.h>
-#include <sys/types.h>
+#include <compat_defs.h>
 
 #define VEOF    0
 #define VEOL    1

@@ -114,6 +114,72 @@ int ipc_send(process_t *dest, const void *data, size_t len) {
     return 0;
 }
 
+/*
+ * P4 wake-loss instrumentation (read-only; never blocks beyond the queue's
+ * own spinlock): queue depth + waitable counters. The service timeout trace
+ * uses this to localize the storage stall by measurement instead of theory:
+ * host queue depth>0 while host state RUNNING = host loop not draining;
+ * client reply depth==0 = reply never produced; pending_signals>0 with
+ * waiters==0 = signal landed before the wait; wake/timeout counters show
+ * which side of the handshake is actually firing.
+ */
+void ipc_queue_stats(process_t *p, int *depth_out, uint32_t *pending_out,
+                     uint32_t *wake_out, uint32_t *timeout_out,
+                     int *waiters_out) {
+    struct ipc_queue *q;
+    uint32_t flags;
+
+    if (depth_out) {
+        *depth_out = -1;
+    }
+    if (pending_out) {
+        *pending_out = 0u;
+    }
+    if (wake_out) {
+        *wake_out = 0u;
+    }
+    if (timeout_out) {
+        *timeout_out = 0u;
+    }
+    if (waiters_out) {
+        *waiters_out = -1;
+    }
+    if (p == NULL) {
+        return;
+    }
+    q = ensure_queue(p);
+    if (q == NULL) {
+        return;
+    }
+    flags = spinlock_lock_irqsave(&q->lock);
+    if (depth_out) {
+        *depth_out = q->count;
+    }
+    spinlock_unlock_irqrestore(&q->lock, flags);
+
+    flags = spinlock_lock_irqsave(&q->waitable.lock);
+    if (pending_out) {
+        *pending_out = q->waitable.pending_signals;
+    }
+    if (wake_out) {
+        *wake_out = q->waitable.wake_count;
+    }
+    if (timeout_out) {
+        *timeout_out = q->waitable.timeout_count;
+    }
+    if (waiters_out) {
+        int n = 0;
+        process_t *w = (process_t *)q->waitable.wait_head;
+
+        while (w != NULL && n < 64) {
+            n++;
+            w = (process_t *)w->wait_next;
+        }
+        *waiters_out = n;
+    }
+    spinlock_unlock_irqrestore(&q->waitable.lock, flags);
+}
+
 int ipc_receive(process_t *self, void *buf, size_t bufsize) {
     struct ipc_queue *q;
     ipc_msg_t *m;

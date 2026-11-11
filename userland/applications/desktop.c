@@ -5756,6 +5756,7 @@ static int alloc_window(enum app_type type) {
                 if (idx < 0) return -1;
                 instance = idx;
                 rect = g_terms[idx].window;
+                terminal_init_ksh(&g_terms[idx]);
             } break;
             case APP_CLOCK: {
                 int idx = alloc_clock();
@@ -9703,6 +9704,7 @@ void desktop_main(void) {
     file_dialog_reset(&file_dialog);
     sound_applet_load_settings();
     network_applet_load_settings();
+    g_launch_terminal_pending = 0;
     desktop_queue_startup_background_tasks();
     desktop_startup_task_gate_tick = 0u;
 
@@ -9748,6 +9750,10 @@ void desktop_main(void) {
         memset(&app_action_queue, 0, sizeof(app_action_queue));
         fs_tick();
         dirty |= desktop_process_pending_launches(&focused);
+        for (int ti = 0; ti < MAX_TERMINALS; ti++) {
+            if (g_term_used[ti] && g_terms[ti].ksh_pid >= 0)
+                terminal_read_output(&g_terms[ti]);
+        }
         uint32_t ticks = sys_ticks();
         dirty |= desktop_process_app_cycle(&focused, ticks);
         dirty |= desktop_process_drag_stress(&focused, ticks);
@@ -10644,48 +10650,65 @@ void desktop_main(void) {
 
             if (g_windows[focused].type == APP_TERMINAL) {
                 struct terminal_state *term = &g_terms[g_windows[focused].instance];
-                if (key == '\b' || key == 127) {
-                    terminal_backspace(term);
-                    dirty = 1;
-                    continue;
-                }
-                if (key == KEY_DELETE) {
-                    terminal_delete_char(term);
-                    dirty = 1;
-                    continue;
-                }
-                if (key == KEY_ARROW_LEFT) {
-                    terminal_move_cursor_left(term);
-                    dirty = 1;
-                    continue;
-                }
-                if (key == KEY_ARROW_RIGHT) {
-                    terminal_move_cursor_right(term);
-                    dirty = 1;
-                    continue;
-                }
-                if (key == KEY_ARROW_UP) {
-                    terminal_history_prev(term);
-                    dirty = 1;
-                    continue;
-                }
-                if (key == KEY_ARROW_DOWN) {
-                    terminal_history_next(term);
-                    dirty = 1;
-                    continue;
-                }
-                if (key == '\n') {
-                    if (terminal_execute_command(term)) {
-                        desktop_window_action_queue_push(&window_action_queue,
-                                                         DESKTOP_WINDOW_ACTION_CLOSE,
-                                                         focused, 0, 0);
+                if (term->ksh_pid >= 0) {
+                    if (key == '\b' || key == 127) {
+                        terminal_send_input(term, '\b');
+                        dirty = 1;
+                        continue;
                     }
-                    dirty = 1;
-                    continue;
-                }
-                if (key >= 32 && key <= 126) {
-                    terminal_add_input_char(term, (char)key);
-                    dirty = 1;
+                    if (key == '\n') {
+                        terminal_send_input(term, '\n');
+                        dirty = 1;
+                        continue;
+                    }
+                    if (key >= 32 && key <= 126) {
+                        terminal_send_input(term, (char)key);
+                        dirty = 1;
+                    }
+                } else {
+                    if (key == '\b' || key == 127) {
+                        terminal_backspace(term);
+                        dirty = 1;
+                        continue;
+                    }
+                    if (key == KEY_DELETE) {
+                        terminal_delete_char(term);
+                        dirty = 1;
+                        continue;
+                    }
+                    if (key == KEY_ARROW_LEFT) {
+                        terminal_move_cursor_left(term);
+                        dirty = 1;
+                        continue;
+                    }
+                    if (key == KEY_ARROW_RIGHT) {
+                        terminal_move_cursor_right(term);
+                        dirty = 1;
+                        continue;
+                    }
+                    if (key == KEY_ARROW_UP) {
+                        terminal_history_prev(term);
+                        dirty = 1;
+                        continue;
+                    }
+                    if (key == KEY_ARROW_DOWN) {
+                        terminal_history_next(term);
+                        dirty = 1;
+                        continue;
+                    }
+                    if (key == '\n') {
+                        if (terminal_execute_command(term)) {
+                            desktop_window_action_queue_push(&window_action_queue,
+                                                             DESKTOP_WINDOW_ACTION_CLOSE,
+                                                             focused, 0, 0);
+                        }
+                        dirty = 1;
+                        continue;
+                    }
+                    if (key >= 32 && key <= 126) {
+                        terminal_add_input_char(term, (char)key);
+                        dirty = 1;
+                    }
                 }
             } else if (g_windows[focused].type == APP_EDITOR) {
                 struct editor_state *ed = &g_editors[g_windows[focused].instance];

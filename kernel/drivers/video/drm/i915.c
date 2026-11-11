@@ -4,7 +4,7 @@
 #include <kernel/bootinfo.h>
 
 #ifndef INTEL_I915_EXPERIMENTAL_COMMIT
-#define INTEL_I915_EXPERIMENTAL_COMMIT 0
+#define INTEL_I915_EXPERIMENTAL_COMMIT 1
 #endif
 
 static int g_kernel_drm_i915_last_commit_valid = 0;
@@ -12,6 +12,8 @@ static struct kernel_drm_candidate g_kernel_drm_i915_last_commit_candidate;
 static struct kernel_drm_i915_stage_result g_kernel_drm_i915_last_commit_stage;
 static struct bootinfo_vesa g_kernel_drm_i915_last_commit_boot_vesa;
 static uint32_t g_kernel_drm_i915_last_commit_boot_flags = 0u;
+static int g_kernel_drm_i915_modeset_active = 1;
+static struct kernel_drm_candidate g_kernel_drm_i915_active_candidate = {0};
 
 static uint32_t kernel_drm_i915_primary_stride_bytes(uint32_t width) {
     return (width + 63u) & ~63u;
@@ -38,7 +40,50 @@ static void kernel_drm_i915_clear_mode_out(struct video_mode *mode_out) {
     *mode_out = (struct video_mode){0};
 }
 
+static void kernel_drm_i915_delay_loop(void) {
+    uint32_t i;
+    for (i = 0u; i < 100000u; ++i) {
+        __asm__ __volatile__ ("pause");
+    }
+}
+
 static void kernel_drm_i915_prepare_for_bios_modeset(void) {
+    uint32_t val;
+
+    if (g_kernel_drm_i915_active_candidate.mmio_base == (uintptr_t)0) {
+        kernel_debug_puts("i915: prepare skipped no candidate\n");
+        return;
+    }
+
+    kernel_debug_puts("i915: prepare for bios modeset\n");
+
+    val = kernel_drm_i915_mmio_read32(&g_kernel_drm_i915_active_candidate,
+                                       INTEL_I915_MMIO_DSPCNTR_A);
+    val &= ~INTEL_I915_DSPCNTR_ENABLE;
+    kernel_drm_i915_mmio_write32(&g_kernel_drm_i915_active_candidate,
+                                  INTEL_I915_MMIO_DSPCNTR_A, val);
+
+    kernel_drm_i915_delay_loop();
+
+    val = kernel_drm_i915_mmio_read32(&g_kernel_drm_i915_active_candidate,
+                                       INTEL_I915_MMIO_PIPECONF_A);
+    val &= ~INTEL_I915_PIPECONF_ENABLE;
+    kernel_drm_i915_mmio_write32(&g_kernel_drm_i915_active_candidate,
+                                  INTEL_I915_MMIO_PIPECONF_A, val);
+
+    val = kernel_drm_i915_mmio_read32(&g_kernel_drm_i915_active_candidate,
+                                       INTEL_I915_MMIO_TRANS_CONF_A);
+    val &= ~INTEL_I915_TRANS_CONF_ENABLE;
+    kernel_drm_i915_mmio_write32(&g_kernel_drm_i915_active_candidate,
+                                  INTEL_I915_MMIO_TRANS_CONF_A, val);
+
+    val = kernel_drm_i915_mmio_read32(&g_kernel_drm_i915_active_candidate,
+                                       INTEL_I915_MMIO_DPLL_A);
+    val &= ~INTEL_I915_DPLL_VCO_ENABLE;
+    kernel_drm_i915_mmio_write32(&g_kernel_drm_i915_active_candidate,
+                                  INTEL_I915_MMIO_DPLL_A, val);
+
+    kernel_debug_puts("i915: prepare done\n");
 }
 
 static size_t kernel_drm_i915_required_frame_bytes(uint32_t width, uint32_t height) {
@@ -60,6 +105,9 @@ static int kernel_drm_i915_commit_enabled(void) {
     if (INTEL_I915_EXPERIMENTAL_COMMIT != 0) {
         return 1;
     }
+    if (g_kernel_drm_i915_modeset_active) {
+        return 1;
+    }
     if (bootinfo->magic != BOOTINFO_MAGIC || bootinfo->version != BOOTINFO_VERSION) {
         return 0;
     }
@@ -72,6 +120,9 @@ static const char *kernel_drm_i915_commit_enable_source(void) {
 
     if (INTEL_I915_EXPERIMENTAL_COMMIT != 0) {
         return "build";
+    }
+    if (g_kernel_drm_i915_modeset_active) {
+        return "runtime";
     }
     if (bootinfo->magic == BOOTINFO_MAGIC &&
         bootinfo->version == BOOTINFO_VERSION &&
@@ -382,6 +433,11 @@ void kernel_drm_i915_forget_last_commit(void) {
     g_kernel_drm_i915_last_commit_boot_flags = 0u;
 }
 
+void kernel_drm_i915_enable_modeset(void) {
+    g_kernel_drm_i915_modeset_active = 1;
+    kernel_debug_puts("i915: modeset active (runtime flag)\n");
+}
+
 static int kernel_drm_i915_probe(const struct kernel_drm_candidate *candidate) {
     struct kernel_drm_i915_probe_info probe;
     struct kernel_drm_i915_mmio_snapshot mmio;
@@ -392,6 +448,8 @@ static int kernel_drm_i915_probe(const struct kernel_drm_candidate *candidate) {
     if (candidate == 0) {
         return -1;
     }
+    g_kernel_drm_i915_active_candidate = *candidate;
+
     if (!kernel_drm_i915_is_supported_device(candidate->pci.device_id)) {
         kernel_debug_printf("i915: unsupported device id=%x\n",
                             candidate->pci.device_id);
@@ -464,6 +522,7 @@ static int kernel_drm_i915_probe(const struct kernel_drm_candidate *candidate) {
                             display.disp_arb_ctl2,
                             display.skl_dfsm);
     }
+    kernel_drm_i915_enable_modeset();
     return 0;
 }
 
@@ -537,7 +596,7 @@ static int kernel_drm_i915_set_mode(const struct kernel_drm_candidate *candidate
                                                    &previous_boot_flags) != 0) {
             return -1;
         }
-        if (kernel_drm_i915_commit_mode_plan(candidate, &plan, &stage) != 0) {
+        if (kernel_drm_i915_full_commit_mode_plan(candidate, &plan, &stage) != 0) {
             kernel_drm_i915_log_display_transition("modeset-commit reject",
                                                    &stage.before,
                                                    &stage.after);
@@ -592,7 +651,7 @@ static int kernel_drm_i915_set_mode(const struct kernel_drm_candidate *candidate
     kernel_drm_i915_log_display_transition("stage ok", &stage.before, &stage.after);
     kernel_drm_i915_log_restore_status("modeset-stage", &stage);
     kernel_drm_i915_clear_mode_out(mode_out);
-    kernel_debug_puts("i915: timing + primary plane stage/restore ok; set INTEL_I915_EXPERIMENTAL_COMMIT=1 to try persistent handoff\n");
+    kernel_debug_puts("i915: timing + primary plane stage/restore ok; enable modeset to try persistent handoff\n");
     return -1;
 }
 

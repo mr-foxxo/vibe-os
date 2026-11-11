@@ -369,7 +369,6 @@ void make_sphere(float *data, float r, int detail) {
         {0, 0}, {0, 0.5},
         {0, 1}, {0, 0.5}
     };
-    int total = 0;
     for (int i = 0; i < 8; i++) {
         int n = _make_sphere(
             data, r, detail,
@@ -379,6 +378,6 @@ void make_sphere(float *data, float r, int detail) {
             uvs[indices[i][0]],
             uvs[indices[i][1]],
             uvs[indices[i][2]]);
-        total += n; data += n * 24;
+        data += n * 24;
     }
 }

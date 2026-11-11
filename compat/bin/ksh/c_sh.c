@@ -822,9 +822,8 @@ timex_hook(struct op *t, char **volatile *app)
 }
 
 /* exec with no args - args case is taken care of in comexec() */
-int
-c_exec(char **wp)
-{
+int c_exec(char **wp)
+{	(void)wp;
 	int i;
 
 	/* make sure redirects stay in place */
@@ -867,9 +866,8 @@ c_suspend(char **wp)
 }
 
 /* dummy function, special case in comexec() */
-int
-c_builtin(char **wp)
-{
+int c_builtin(char **wp)
+{	(void)wp;
 	return 0;
 }
 

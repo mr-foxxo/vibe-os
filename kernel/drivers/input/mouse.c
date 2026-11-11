@@ -3,6 +3,10 @@
 #include <kernel/drivers/video/video.h>
 #include <kernel/drivers/debug/debug.h>
 #include <kernel/interrupt.h>
+#include <kernel/lock.h>
+
+/* PS/2 port lock defined in keyboard.c (adendo 47) */
+extern spinlock_t g_ps2_port_lock;
 
 #define PS2_STATUS_PORT 0x64u
 #define PS2_DATA_PORT 0x60u
@@ -260,24 +264,24 @@ int kernel_mouse_has_data(void) {
 }
 
 void kernel_mouse_read(int *x, int *y, int *dx, int *dy, int *wheel, uint8_t *buttons) {
-    uint32_t flags = kernel_irq_save();
+    uint32_t flags = spinlock_lock_irqsave(&g_ps2_port_lock);
     struct mouse_state state = {(int)g_kernel_mouse.x,
                                 (int)g_kernel_mouse.y,
                                 (int)g_kernel_mouse.dx,
                                 (int)g_kernel_mouse.dy,
                                 (int)g_kernel_mouse.wheel,
                                 (uint8_t)g_kernel_mouse.buttons};
-    kernel_irq_restore(flags);
+    spinlock_unlock_irqrestore(&g_ps2_port_lock, flags);
 
     if (kernel_input_mouse_event_dequeue(&state) == 0) {
-        flags = kernel_irq_save();
+        flags = spinlock_lock_irqsave(&g_ps2_port_lock);
         state.x = (int)g_kernel_mouse.x;
         state.y = (int)g_kernel_mouse.y;
         state.dx = (int)g_kernel_mouse.dx;
         state.dy = (int)g_kernel_mouse.dy;
         state.wheel = (int)g_kernel_mouse.wheel;
         state.buttons = (uint8_t)g_kernel_mouse.buttons;
-        kernel_irq_restore(flags);
+        spinlock_unlock_irqrestore(&g_ps2_port_lock, flags);
     }
 
     if (x != NULL) {
@@ -301,7 +305,7 @@ void kernel_mouse_read(int *x, int *y, int *dx, int *dy, int *wheel, uint8_t *bu
 }
 
 void kernel_mouse_sync_to_video(void) {
-    uint32_t flags = kernel_irq_save();
+    uint32_t flags = spinlock_lock_irqsave(&g_ps2_port_lock);
     struct video_mode *mode = kernel_video_get_mode();
 
     if (mode != NULL && mode->width != 0u && mode->height != 0u) {
@@ -315,22 +319,25 @@ void kernel_mouse_sync_to_video(void) {
     g_kernel_mouse.dy = 0;
     g_kernel_mouse.wheel = 0;
     kernel_mouse_queue_event_unlocked();
-    kernel_irq_restore(flags);
+    spinlock_unlock_irqrestore(&g_ps2_port_lock, flags);
 }
 
 void kernel_mouse_irq_handler(void) {
+    uint32_t lflags = spinlock_lock_irqsave(&g_ps2_port_lock);
     const uint8_t status = inb(PS2_STATUS_PORT);
     uint8_t data;
     struct video_mode *mode = kernel_video_get_mode();
 
     if (!g_kernel_mouse_ready) {
         kernel_irq_complete(12);
+        spinlock_unlock_irqrestore(&g_ps2_port_lock, lflags);
         return;
     }
 
     if ((status & PS2_STATUS_OUTPUT_FULL) == 0u ||
         (status & PS2_STATUS_AUX_OUTPUT_FULL) == 0u) {
         kernel_irq_complete(12);
+        spinlock_unlock_irqrestore(&g_ps2_port_lock, lflags);
         return;
     }
 
@@ -338,10 +345,11 @@ void kernel_mouse_irq_handler(void) {
     kernel_mouse_process_data(data, mode);
 
     kernel_irq_complete(12);
+    spinlock_unlock_irqrestore(&g_ps2_port_lock, lflags);
 }
 
 void kernel_mouse_poll(void) {
-    uint32_t flags = kernel_irq_save();
+    uint32_t flags = spinlock_lock_irqsave(&g_ps2_port_lock);
     struct video_mode *mode = kernel_video_get_mode();
 
     while ((inb(PS2_STATUS_PORT) & (PS2_STATUS_OUTPUT_FULL | PS2_STATUS_AUX_OUTPUT_FULL)) ==
@@ -350,11 +358,11 @@ void kernel_mouse_poll(void) {
         kernel_mouse_process_data(data, mode);
     }
 
-    kernel_irq_restore(flags);
+    spinlock_unlock_irqrestore(&g_ps2_port_lock, flags);
 }
 
 void kernel_mouse_prepare_for_graphics(void) {
-    uint32_t flags = kernel_irq_save();
+    uint32_t flags = spinlock_lock_irqsave(&g_ps2_port_lock);
 
     g_kernel_mouse_packet_index = 0u;
     g_kernel_mouse.dx = 0;
@@ -362,5 +370,5 @@ void kernel_mouse_prepare_for_graphics(void) {
     g_kernel_mouse.wheel = 0;
     ps2_drain_output();
 
-    kernel_irq_restore(flags);
+    spinlock_unlock_irqrestore(&g_ps2_port_lock, flags);
 }

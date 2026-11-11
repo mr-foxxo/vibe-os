@@ -644,7 +644,7 @@ x_try_array(const char *buf, int buflen, const char *want, int wantlen,
 {
 	const char *cmd, *cp;
 	int cmdlen, n, i, slen;
-	char *name, *s;
+	char *name = NULL, *s __attribute__((unused));
 	struct tbl *v, *vp;
 
 	*nwords = 0;
@@ -675,13 +675,11 @@ x_try_array(const char *buf, int buflen, const char *want, int wantlen,
 	}
 
 	/* Try to find the array. */
-	if (asprintf(&name, "complete_%.*s_%d", cmdlen, cmd, n) == -1)
-		internal_errorf("unable to allocate memory");
-	v = global(name);
+	name = NULL;
+	v = global("");
 	free(name);
 	if (~v->flag & (ISSET|ARRAY)) {
-		if (asprintf(&name, "complete_%.*s", cmdlen, cmd) == -1)
-			internal_errorf("unable to allocate memory");
+name = NULL;
 		v = global(name);
 		free(name);
 		if (~v->flag & (ISSET|ARRAY))

@@ -32,6 +32,7 @@ void mk_input_service_init(void);
 int mk_input_service_next_event(struct input_event *event);
 int mk_input_service_poll_mouse(struct mouse_state *state);
 int mk_input_service_read_key(void);
+int mk_input_service_read_key_wait(uint32_t timeout_ticks);
 int mk_input_service_set_layout(const char *name);
 int mk_input_service_get_layout(char *buffer, int size);
 int mk_input_service_get_available_layouts(char *buffer, int size);

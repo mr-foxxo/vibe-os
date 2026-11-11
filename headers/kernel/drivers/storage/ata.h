@@ -14,5 +14,6 @@
 
 int kernel_ata_init(void);
 void kernel_storage_init(void);
+void kernel_storage_probe_extra(void);
 
 #endif

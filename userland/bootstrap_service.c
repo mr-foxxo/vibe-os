@@ -15,6 +15,11 @@
 #define INPUT_SERVICE_LAYOUT_NAME_MAX 64u
 #define INPUT_SERVICE_LAYOUTS_TEXT_MAX 256u
 #define CONSOLE_SERVICE_TEXT_MAX 4096u
+#define CONSOLE_SERVICE_VT_COUNT 4u
+#define CONSOLE_SERVICE_VT_ROWS 25u
+#define CONSOLE_SERVICE_VT_COLS 80u
+#define CONSOLE_SERVICE_VT_CELLS (CONSOLE_SERVICE_VT_ROWS * CONSOLE_SERVICE_VT_COLS)
+#define CONSOLE_SERVICE_SCREEN_BUF_SIZE (CONSOLE_SERVICE_VT_CELLS * 2u)
 #define STORAGE_SERVICE_BUFFER_MAX (1024u * 1024u)
 #define FILESYSTEM_SERVICE_BUFFER_MAX (1024u * 1024u)
 #define VIDEO_SERVICE_TEXT_MAX 4096u
@@ -42,6 +47,17 @@ struct network_service_socket {
 
 static struct network_service_socket g_network_service_sockets[NETWORK_SERVICE_MAX_SOCKETS];
 static uint32_t g_network_service_socket_count = 0;
+
+struct console_vt_state {
+    uint8_t screen[CONSOLE_SERVICE_SCREEN_BUF_SIZE];
+    uint8_t dirty;
+    uint8_t cursor_x;
+    uint8_t cursor_y;
+};
+
+static struct console_vt_state g_console_vt[CONSOLE_SERVICE_VT_COUNT];
+static uint32_t g_console_active_vt = 0;
+static uint8_t g_console_vt_initialized = 0;
 
 static char g_console_service_text_buffer[CONSOLE_SERVICE_TEXT_MAX];
 static uint8_t g_storage_service_buffer[STORAGE_SERVICE_BUFFER_MAX];
@@ -152,6 +168,52 @@ static int console_service_load_text(uint32_t transfer_id,
     return 0;
 }
 
+static void console_vt_init(void) {
+    if (g_console_vt_initialized) return;
+    for (uint32_t i = 0; i < CONSOLE_SERVICE_VT_COUNT; ++i) {
+        memset(g_console_vt[i].screen, 0, CONSOLE_SERVICE_SCREEN_BUF_SIZE);
+        g_console_vt[i].dirty = 0;
+        g_console_vt[i].cursor_x = 0;
+        g_console_vt[i].cursor_y = 0;
+    }
+    g_console_active_vt = 0;
+    g_console_vt_initialized = 1;
+}
+
+static void console_vt_switch_to(uint32_t vt) {
+    struct console_vt_state *old_vt;
+    struct console_vt_state *new_vt;
+    uint32_t old_active;
+
+    if (vt >= CONSOLE_SERVICE_VT_COUNT || vt == g_console_active_vt) return;
+    old_active = g_console_active_vt;
+    old_vt = &g_console_vt[old_active];
+    new_vt = &g_console_vt[vt];
+    old_vt->dirty = 1;
+    g_console_active_vt = vt;
+    new_vt->dirty = 1;
+    sys_text_clear();
+    sys_text_move_cursor(0);
+    {
+        char buf[16];
+        int len = 0;
+        buf[len++] = '\r';
+        for (uint32_t r = 0; r < CONSOLE_SERVICE_VT_ROWS && len < 14; ++r) {
+            for (uint32_t c = 0; c < CONSOLE_SERVICE_VT_COLS && len < 14; ++c) {
+                uint32_t off = (r * CONSOLE_SERVICE_VT_COLS + c) * 2;
+                uint8_t ch = new_vt->screen[off];
+                if (ch == 0) ch = ' ';
+                buf[len++] = (char)ch;
+            }
+            if (r < CONSOLE_SERVICE_VT_ROWS - 1 && len < 14) {
+                buf[len++] = '\n';
+            }
+        }
+        buf[len] = '\0';
+        sys_text_write(buf);
+    }
+}
+
 static int console_service_handle_request(const struct mk_message *request,
                                           struct mk_message *reply,
                                           uint32_t source_pid) {
@@ -160,6 +222,15 @@ static int console_service_handle_request(const struct mk_message *request,
     }
 
     switch (request->type) {
+    case MK_MSG_CONSOLE_VT_SWITCH: {
+        const struct mk_console_vt_switch_request *payload;
+        if (request->payload_size != sizeof(*payload)) {
+            return -1;
+        }
+        payload = (const struct mk_console_vt_switch_request *)request->payload;
+        console_vt_switch_to(payload->vt);
+        return console_service_reply_result(reply, request, source_pid, 0);
+    }
     case MK_MSG_CONSOLE_WRITE_DEBUG:
     case MK_MSG_CONSOLE_TEXT_WRITE: {
         const struct mk_console_text_request *payload;
@@ -259,6 +330,22 @@ static int network_service_handle_request(const struct mk_message *request,
         }
         service_prepare_reply(reply, request, source_pid);
         return service_set_payload(reply, &status, sizeof(status));
+    }
+    case MK_MSG_NET_SOCKET_LIST: {
+        struct mk_network_socket_list_request list_request;
+        struct mk_network_socket_list_entry entry;
+
+        if (request->payload_size != sizeof(list_request)) {
+            return -1;
+        }
+        memcpy(&list_request, request->payload, sizeof(list_request));
+        memset(&entry, 0, sizeof(entry));
+        if (sys_network_socket_list(list_request.index, &entry) != 0) {
+            service_prepare_reply(reply, request, source_pid);
+            return service_set_payload(reply, 0, 0u);
+        }
+        service_prepare_reply(reply, request, source_pid);
+        return service_set_payload(reply, &entry, sizeof(entry));
     }
     case MK_MSG_NET_SCAN: {
         struct mk_network_scan_request scan_request;
@@ -888,6 +975,20 @@ static int input_service_handle_request(const struct mk_message *request,
             return -1;
         }
         return input_service_reply_result(reply, request, source_pid, sys_poll_key());
+    case MK_MSG_INPUT_KEY_READ_WAIT: {
+        /* Bug #19 item 0.12 (01/11): blocking key read. This runs in the
+         * INPUT host, so the syscall's service-worker branch waits on the
+         * driver mailbox here and the host stays the only consumer of key
+         * events. sys_poll_key_wait(timeout) returns the key or -1. */
+        uint32_t timeout_ticks;
+
+        if (request->payload_size != sizeof(timeout_ticks)) {
+            return -1;
+        }
+        memcpy(&timeout_ticks, request->payload, sizeof(timeout_ticks));
+        return input_service_reply_result(reply, request, source_pid,
+                                          sys_poll_key_wait(timeout_ticks));
+    }
     case MK_MSG_INPUT_SET_LAYOUT: {
         struct mk_input_layout_set_request payload;
         char name[INPUT_SERVICE_LAYOUT_NAME_MAX];
@@ -1588,7 +1689,7 @@ static int video_service_handle_request(const struct mk_message *request,
             return -1;
         }
         payload = (const struct mk_video_mode_request *)request->payload;
-        rc = sys_gfx_set_mode(payload->width, payload->height);
+        rc = sys_gfx_set_mode(payload->width, payload->height, 8);
         return video_service_reply_result(reply, request, source_pid, rc);
     }
     case MK_MSG_VIDEO_SET_PALETTE: {
@@ -1726,6 +1827,7 @@ __attribute__((section(".entry"))) void userland_console_service_entry(void) {
     source_pid = (uint32_t)info.pid;
     service_log_online(&info);
     service_log_mode(info.name);
+    console_vt_init();
 
     for (;;) {
         if (sys_service_receive(&request) != (int)sizeof(request)) {

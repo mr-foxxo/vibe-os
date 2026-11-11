@@ -79,8 +79,27 @@ static int local_apic_wait_icr_idle(void) {
 static void local_apic_wait_ticks(uint32_t ticks) {
     uint32_t start = kernel_timer_get_ticks();
     uint32_t deadline = start + ticks;
+    uint32_t spins = 50000000u;
 
-    while ((int32_t)(kernel_timer_get_ticks() - deadline) < 0) {
+    /*
+     * The PIT tick only advances while interrupts are enabled. SMP bring-up
+     * can run with IF=0, where the old 50M-spin budget degraded into
+     * minutes of port I/O per wait (observed as a "hung" BSP between INIT
+     * and SIPI). When ticks are not advancing, cap the busy wait at a
+     * spin budget that still covers the requested delay on QEMU TCG.
+     */
+    if (start == kernel_timer_get_ticks()) {
+        uint32_t probe = kernel_timer_get_ticks();
+        uint32_t probe_spins = 20000u;
+        while (probe_spins-- > 0u && kernel_timer_get_ticks() == probe) {
+            io_wait();
+        }
+        if (kernel_timer_get_ticks() == probe) {
+            spins = 100000u * (ticks > 0u ? ticks : 1u);
+        }
+    }
+
+    while (spins-- > 0u && (int32_t)(kernel_timer_get_ticks() - deadline) < 0) {
         io_wait();
         __asm__ volatile("pause");
     }
@@ -216,4 +235,66 @@ int local_apic_broadcast_ipi(uint8_t vector) {
     local_apic_write(LAPIC_ICRHI_REG, 0u);
     local_apic_write(LAPIC_ICRLO_REG, LAPIC_DM_FIXED | LAPIC_DEST_ALL_EXCLUDING_SELF | (uint32_t)vector);
     return local_apic_wait_icr_idle();
+}
+
+/* ---- per-CPU LAPIC timer ------------------------------------------------ */
+
+#define LAPIC_TIMER_DIVIDE_REG 0x3E0u
+#define LAPIC_TIMER_LVT_REG 0x320u
+#define LAPIC_TIMER_INITIAL_REG 0x380u
+#define LAPIC_TIMER_CURRENT_REG 0x390u
+#define LAPIC_TIMER_MODE_PERIODIC 0x20000u
+#define LAPIC_TIMER_MASKED 0x10000u
+#define LAPIC_TIMER_DIVIDE_128 0x3u
+#define LAPIC_TIMER_MAX_CALIBRATION_SPINS 5000000u
+
+/*
+ * Calibrate the local APIC timer against the system tick source (PIT at
+ * 100 Hz) and run it in periodic mode on this CPU. Measuring one full tick
+ * gives the bus-cycle decrement per tick, which becomes the initial count.
+ */
+int local_apic_timer_start_tick_rate(uint8_t vector) {
+    uint32_t start_ticks;
+    uint32_t now;
+    uint32_t start_count;
+    uint32_t end_count;
+    uint32_t elapsed;
+    uint32_t spins = LAPIC_TIMER_MAX_CALIBRATION_SPINS;
+
+    if (!g_local_apic_enabled) {
+        return -1;
+    }
+
+    local_apic_write(LAPIC_TIMER_DIVIDE_REG, LAPIC_TIMER_DIVIDE_128);
+    local_apic_write(LAPIC_TIMER_LVT_REG,
+                     (uint32_t)vector | LAPIC_TIMER_MASKED);
+    local_apic_write(LAPIC_TIMER_INITIAL_REG, 0xFFFFFFFFu);
+
+    start_ticks = kernel_timer_get_ticks();
+    start_count = local_apic_read(LAPIC_TIMER_CURRENT_REG);
+    now = start_ticks;
+    while (now == start_ticks && spins > 0u) {
+        io_wait();
+        now = kernel_timer_get_ticks();
+        spins--;
+    }
+
+    if (spins == 0u || now == start_ticks) {
+        local_apic_write(LAPIC_TIMER_LVT_REG,
+                         (uint32_t)vector | LAPIC_TIMER_MASKED);
+        return -1;
+    }
+
+    end_count = local_apic_read(LAPIC_TIMER_CURRENT_REG);
+    elapsed = start_count - end_count;
+    if (elapsed < 0x100u || elapsed > 0xF0000000u) {
+        local_apic_write(LAPIC_TIMER_LVT_REG,
+                         (uint32_t)vector | LAPIC_TIMER_MASKED);
+        return -1;
+    }
+
+    local_apic_write(LAPIC_TIMER_INITIAL_REG, elapsed);
+    local_apic_write(LAPIC_TIMER_LVT_REG,
+                     (uint32_t)vector | LAPIC_TIMER_MODE_PERIODIC);
+    return 0;
 }

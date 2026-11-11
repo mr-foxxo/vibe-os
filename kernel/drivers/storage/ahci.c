@@ -1,16 +1,15 @@
+#include <kernel/driver_manager.h>
 #include <kernel/drivers/debug/debug.h>
 #include <kernel/drivers/pci/pci.h>
+#include <kernel/pci_bus.h>
 #include <kernel/drivers/storage/ahci.h>
 #include <kernel/drivers/storage/ata.h>
 #include <kernel/drivers/storage/block_device.h>
 #include <kernel/hal/io.h>
 #include <kernel/kernel_string.h>
 #include <kernel/lock.h>
+#include <stddef.h>
 #include <stdint.h>
-
-#define PCI_CLASS_MASS_STORAGE 0x01u
-#define PCI_SUBCLASS_SATA 0x06u
-#define PCI_PROGIF_AHCI 0x01u
 
 #define AHCI_MAX_PORTS 32u
 #define AHCI_HBA_GHC_AE (1u << 31)
@@ -121,6 +120,8 @@ struct kernel_ahci_port {
 static volatile uint32_t *g_ahci_hba = 0;
 static struct kernel_ahci_port g_ahci_ports[AHCI_MAX_PORTS];
 static struct kernel_ahci_port *g_ahci_primary_port = 0;
+static int g_ahci_registered = 0;
+static int g_ahci_initialized = 0;
 
 static uint8_t g_ahci_cmd_lists[AHCI_MAX_PORTS][1024] __attribute__((aligned(1024)));
 static uint8_t g_ahci_rfis[AHCI_MAX_PORTS][256] __attribute__((aligned(256)));
@@ -128,81 +129,14 @@ static struct ahci_cmd_table g_ahci_cmd_tables[AHCI_MAX_PORTS] __attribute__((al
 static uint8_t g_ahci_dma_buffers[AHCI_MAX_PORTS][KERNEL_PERSIST_SECTOR_SIZE] __attribute__((aligned(512)));
 static spinlock_t g_ahci_lock;
 
-static int ahci_find_controller(uint8_t *bus_out,
-                                uint8_t *slot_out,
-                                uint8_t *function_out,
-                                uintptr_t *abar_out) {
-    for (uint32_t bus = 0; bus < 256u; ++bus) {
-        for (uint32_t slot = 0; slot < 32u; ++slot) {
-            uint32_t functions = 1u;
-            uint32_t header = kernel_pci_config_read_u32((uint8_t)bus, (uint8_t)slot, 0u, 0x0Cu);
-            if (((header >> 16) & 0x80u) != 0u) {
-                functions = 8u;
-            }
-
-            for (uint32_t function = 0; function < functions; ++function) {
-                uint32_t vendor_device = kernel_pci_config_read_u32((uint8_t)bus,
-                                                                    (uint8_t)slot,
-                                                                    (uint8_t)function,
-                                                                    0x00u);
-                uint32_t class_reg;
-                uint32_t bar5;
-                uint8_t class_code;
-                uint8_t subclass;
-                uint8_t prog_if;
-                uintptr_t abar;
-
-                if ((vendor_device & 0xFFFFu) == 0xFFFFu) {
-                    continue;
-                }
-
-                class_reg = kernel_pci_config_read_u32((uint8_t)bus,
-                                                       (uint8_t)slot,
-                                                       (uint8_t)function,
-                                                       0x08u);
-                class_code = (uint8_t)(class_reg >> 24);
-                subclass = (uint8_t)((class_reg >> 16) & 0xFFu);
-                prog_if = (uint8_t)((class_reg >> 8) & 0xFFu);
-                if (class_code != PCI_CLASS_MASS_STORAGE ||
-                    subclass != PCI_SUBCLASS_SATA ||
-                    prog_if != PCI_PROGIF_AHCI) {
-                    continue;
-                }
-
-                bar5 = kernel_pci_config_read_u32((uint8_t)bus,
-                                                  (uint8_t)slot,
-                                                  (uint8_t)function,
-                                                  0x24u);
-                if ((bar5 & 0x1u) != 0u) {
-                    continue;
-                }
-                abar = (uintptr_t)(bar5 & 0xFFFFFFF0u);
-                if (abar == 0u) {
-                    continue;
-                }
-
-                *bus_out = (uint8_t)bus;
-                *slot_out = (uint8_t)slot;
-                *function_out = (uint8_t)function;
-                *abar_out = abar;
-                return 0;
-            }
-        }
-    }
-
-    return -1;
+static pci_device_t *ahci_find_controller(void) {
+    return pci_find_by_class_prog_if(PCI_CLASS_MASS_STORAGE, PCI_SUBCLASS_SATA, PCI_PROGIF_AHCI);
 }
 
-static void ahci_enable_pci_controller(uint8_t bus, uint8_t slot, uint8_t function) {
-    uint32_t command_status = kernel_pci_config_read_u32(bus, slot, function, 0x04u);
-    uint32_t command = command_status & 0xFFFFu;
-
-    command |= PCI_COMMAND_MEMORY_SPACE | PCI_COMMAND_BUS_MASTER;
-    kernel_pci_config_write_u32(bus,
-                                slot,
-                                function,
-                                0x04u,
-                                (command_status & 0xFFFF0000u) | command);
+static void ahci_enable_pci(pci_device_t *dev) {
+    uint32_t cmd_status = kernel_pci_config_read_u32(dev->bus, dev->slot, dev->function, 0x04u);
+    cmd_status |= (PCI_COMMAND_MEMORY_SPACE | PCI_COMMAND_BUS_MASTER);
+    kernel_pci_config_write_u32(dev->bus, dev->slot, dev->function, 0x04u, cmd_status);
 }
 
 static int ahci_port_wait_idle(volatile struct ahci_port_regs *regs) {
@@ -480,32 +414,70 @@ static int ahci_write_logical(void *context, uint32_t lba, const uint8_t *buf) {
     return ahci_write_raw(port, port->partition_start_lba + lba, buf);
 }
 
+int kernel_ahci_present(void) {
+    return g_ahci_initialized && g_ahci_primary_port != 0;
+}
+
+int kernel_ahci_ioctl(int cmd, void *arg, size_t arg_size) {
+    (void)arg_size;
+    switch (cmd) {
+    case DRV_IOCTL_GET_STATUS: {
+        struct drv_device_status *st = (struct drv_device_status *)arg;
+        if (!st) return -1;
+        memset(st, 0, sizeof(*st));
+        st->present = (uint32_t)(g_ahci_initialized && g_ahci_primary_port != 0);
+        st->active = (uint32_t)(g_ahci_initialized && g_ahci_primary_port != 0);
+        return 0;
+    }
+    case STOR_IOCTL_GET_INFO: {
+        struct drv_storage_info *info = (struct drv_storage_info *)arg;
+        if (!info || !g_ahci_primary_port) return -1;
+        info->sectors = g_ahci_primary_port->total_sectors;
+        info->sector_size = KERNEL_PERSIST_SECTOR_SIZE;
+        return 0;
+    }
+    default:
+        return -1;
+    }
+}
+
 int kernel_ahci_init(void) {
-    uint8_t bus;
-    uint8_t slot;
-    uint8_t function;
+    pci_device_t *ahci_dev;
     uintptr_t abar;
     uint32_t implemented_ports;
+
+    if (!g_ahci_registered) {
+        register_driver("ahci", "storage", (void (*)(void))kernel_ahci_init);
+        g_ahci_registered = 1;
+    }
+    if (g_ahci_initialized) {
+        return 0;
+    }
 
     memset(g_ahci_ports, 0, sizeof(g_ahci_ports));
     g_ahci_hba = 0;
     g_ahci_primary_port = 0;
     spinlock_init(&g_ahci_lock);
 
-    if (ahci_find_controller(&bus, &slot, &function, &abar) != 0) {
+    ahci_dev = ahci_find_controller();
+    if (ahci_dev == 0) {
         return -1;
     }
 
-    ahci_enable_pci_controller(bus, slot, function);
+    ahci_enable_pci(ahci_dev);
+    abar = pci_bar_addr(ahci_dev, 5);
+    if (abar == 0u) {
+        return -1;
+    }
     g_ahci_hba = (volatile uint32_t *)abar;
     g_ahci_hba[1] |= AHCI_HBA_GHC_AE;
     g_ahci_hba[2] = 0xFFFFFFFFu;
     implemented_ports = g_ahci_hba[3];
 
     kernel_debug_printf("ahci: controller %d:%d.%d pi=%x\n",
-                        (int)bus,
-                        (int)slot,
-                        (int)function,
+                        (int)ahci_dev->bus,
+                        (int)ahci_dev->slot,
+                        (int)ahci_dev->function,
                         (unsigned int)implemented_ports);
 
     for (uint32_t i = 0; i < AHCI_MAX_PORTS; ++i) {
@@ -563,5 +535,6 @@ int kernel_ahci_init(void) {
         return -1;
     }
 
+    g_ahci_initialized = 1;
     return 0;
 }

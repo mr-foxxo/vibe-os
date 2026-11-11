@@ -55,8 +55,8 @@
 
 __BEGIN_DECLS
 #if __BSD_VISIBLE
-extern const char *const sys_signame[_NSIG];
-extern const char *const sys_siglist[_NSIG];
+extern const char *sys_signame[_NSIG];
+extern const char *sys_siglist[_NSIG];
 #endif
 
 int	raise(int);
@@ -67,11 +67,13 @@ void	(*bsd_signal(int, void (*)(int)))(int);
 int	kill(pid_t, int);
 int	sigaction(int, const struct sigaction *__restrict,
 	    struct sigaction *__restrict);
+#if defined(_ANSI_LIBRARY)
 int	sigaddset(sigset_t *, int);
 int	sigdelset(sigset_t *, int);
 int	sigemptyset(sigset_t *);
 int	sigfillset(sigset_t *);
 int	sigismember(const sigset_t *, int);
+#endif
 int	sigpending(sigset_t *);
 int	sigprocmask(int, const sigset_t *__restrict, sigset_t *__restrict);
 #if __POSIX_VISIBLE >= 199506
@@ -80,51 +82,8 @@ int	pthread_sigmask(int, const sigset_t *__restrict, sigset_t *__restrict);
 int	sigsuspend(const sigset_t *);
 
 #if !defined(_ANSI_LIBRARY)
-
 extern int *__errno(void);
-
-__only_inline int sigaddset(sigset_t *__set, int __signo)
-{
-	if (__signo <= 0 || __signo >= _NSIG) {
-		*__errno() = 22;		/* EINVAL */
-		return -1;
-	}
-	*__set |= (1U << ((__signo)-1));	/* sigmask(__signo) */
-	return (0);
-}
-
-__only_inline int sigdelset(sigset_t *__set, int __signo)
-{
-	if (__signo <= 0 || __signo >= _NSIG) {
-		*__errno() = 22;		/* EINVAL */
-		return -1;
-	}
-	*__set &= ~(1U << ((__signo)-1));	/* sigmask(__signo) */
-	return (0);
-}
-
-__only_inline int sigismember(const sigset_t *__set, int __signo)
-{
-	if (__signo <= 0 || __signo >= _NSIG) {
-		*__errno() = 22;		/* EINVAL */
-		return -1;
-	}
-	return ((*__set & (1U << ((__signo)-1))) != 0);
-}
-
-__only_inline int sigemptyset(sigset_t *__set)
-{
-	*__set = 0;
-	return (0);
-}
-
-__only_inline int sigfillset(sigset_t *__set)
-{
-	*__set = ~(sigset_t)0;
-	return (0);
-}
-
-#endif /* !_ANSI_LIBRARY */
+#endif
 
 #if __BSD_VISIBLE || __XPG_VISIBLE >= 420
 int	killpg(pid_t, int);
@@ -132,6 +91,7 @@ int	siginterrupt(int, int);
 int	sigaltstack(const struct sigaltstack *__restrict,
 	    struct sigaltstack *__restrict);
 #if __BSD_VISIBLE
+struct sigvec;
 int	sigblock(int);
 /* This is the traditional BSD sigpause() and not the XPG/POSIX sigpause(). */
 int	sigpause(int);

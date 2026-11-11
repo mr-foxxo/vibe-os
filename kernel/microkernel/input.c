@@ -88,10 +88,16 @@ static int mk_input_validate_string_transfer(uint32_t transfer_id,
         return -1;
     }
     text = (char *)mk_transfer_data_read(transfer_id);
-    if (text == 0 || mk_transfer_size(transfer_id) < length + 1u) {
+    if (text == 0) {
+        return -1;
+    }
+    /* data_read pinned the transfer; release on failure, caller owns on success. */
+    if (mk_transfer_size(transfer_id) < length + 1u) {
+        mk_transfer_release(transfer_id);
         return -1;
     }
     if (text[length] != '\0') {
+        mk_transfer_release(transfer_id);
         return -1;
     }
     *text_out = text;
@@ -221,6 +227,22 @@ static int mk_input_local_handler(const struct mk_message *request,
             }
         }
         return mk_input_reply_result(reply, -1);
+    case MK_MSG_INPUT_KEY_READ_WAIT: {
+        /* Bug #19 item 0.12: blocking variant served by the host context
+         * (this local handler runs inside the INPUT host task), so the
+         * mailbox keeps exactly one consumer. */
+        uint32_t timeout_ticks;
+        int key = -1;
+
+        if (request->payload_size != sizeof(timeout_ticks)) {
+            return -1;
+        }
+        memcpy(&timeout_ticks, request->payload, sizeof(timeout_ticks));
+        if (kernel_input_key_event_wait_timeout(&key, timeout_ticks) != 0 && key > 0) {
+            return mk_input_reply_result(reply, key);
+        }
+        return mk_input_reply_result(reply, -1);
+    }
     case MK_MSG_INPUT_SET_LAYOUT: {
         const struct mk_input_layout_set_request *payload;
         char *name;
@@ -232,7 +254,11 @@ static int mk_input_local_handler(const struct mk_message *request,
         if (mk_input_validate_string_transfer(payload->transfer_id, payload->name_length, &name) != 0) {
             return -1;
         }
-        return mk_input_reply_result(reply, kernel_keyboard_set_layout(name));
+        {
+            int rc = kernel_keyboard_set_layout(name);
+            mk_transfer_release(payload->transfer_id);
+            return mk_input_reply_result(reply, rc);
+        }
     }
     case MK_MSG_INPUT_GET_LAYOUT: {
         const struct mk_input_transfer_request *payload;
@@ -262,10 +288,15 @@ static int mk_input_local_handler(const struct mk_message *request,
         }
         payload = (const struct mk_input_transfer_request *)request->payload;
         buffer = (char *)mk_transfer_data_write(payload->transfer_id);
-        if (buffer == 0 || mk_transfer_size(payload->transfer_id) < payload->buffer_size) {
+        if (buffer == 0) {
+            return -1;
+        }
+        if (mk_transfer_size(payload->transfer_id) < payload->buffer_size) {
+            mk_transfer_release(payload->transfer_id);
             return -1;
         }
         kernel_keyboard_get_available_layouts(buffer, (int)payload->buffer_size);
+        mk_transfer_release(payload->transfer_id);
         return mk_input_reply_result(reply, 0);
     }
     default:
@@ -279,7 +310,7 @@ static int mk_input_service_launch_deferred(void) {
                                   mk_input_local_handler,
                                   0,
                                   userland_input_service_entry,
-                                  8192u,
+                                  32768u,
                                   MK_LAUNCH_FLAG_BOOTSTRAP |
                                   MK_LAUNCH_FLAG_BUILTIN |
                                   MK_LAUNCH_FLAG_CRITICAL);
@@ -400,6 +431,60 @@ int mk_input_service_read_key(void) {
     }
     g_input_service_transport_degraded = 0;
     return mk_input_decode_result(&reply);
+}
+
+/*
+ * Bug #19 item 0.12 (01/11): blocking key read for interactive readers.
+ *
+ * SINGLE-CONSUMER RULE for the driver key mailbox: the INPUT host serves
+ * MK_MSG_INPUT_KEY_READ_WAIT (payload uint32 timeout ticks) by waiting
+ * on the mailbox itself and replying with the key. A client (shell, app
+ * read_line) only sends that request; it never dequeues directly. The
+ * mixed model — shell waiting on the mailbox while the host's KEY_READ
+ * poll path ALSO dequeues for requests whose clients already gave up —
+ * lost keys: gate 19_ns9 trace `key-cons pid=6/pid=11` showed the shell
+ * receiving `netmgrd ` + Enter while the host consumed the `status`
+ * suffix into abandoned replies (argc=1 -> `usage: netmgrd ...`).
+ *
+ * The host-side wait must stay under the client's reply budget: the
+ * shell waits 100 ticks vs the 128-tick control budget (fix F), and a
+ * stale reply still lands in the deferred-replies queue, so an early
+ * timeout is merely a lost poll cycle, never a lost key... unless the
+ * host already dequeued it. The timeout margin is therefore part of the
+ * contract; document any change alongside fix F's constant.
+ *
+ * Service-worker context (the host itself, and any worker whose
+ * transport is down) waits the mailbox directly — it IS the consumer.
+ * timeout_ticks==0 waits indefinitely. Returns the key (>0) or -1.
+ * Additive: SYSCALL_INPUT_KEY (5) and MK_MSG_INPUT_KEY_READ (69) are
+ * unchanged for every existing caller.
+ */
+int mk_input_service_read_key_wait(uint32_t timeout_ticks) {
+    struct mk_message request;
+    struct mk_message reply;
+    int key = -1;
+
+    if (mk_input_current_process_is_service_worker()) {
+        if (kernel_input_key_event_wait_timeout(&key, timeout_ticks) != 0 && key > 0) {
+            return key;
+        }
+        return -1;
+    }
+
+    if (mk_input_prepare_request(&request, MK_MSG_INPUT_KEY_READ_WAIT,
+                                 &timeout_ticks, sizeof(timeout_ticks)) != 0) {
+        /* No host registered: direct wait is lossless because there is
+         * no second consumer alive to race it. */
+        if (kernel_input_key_event_wait_timeout(&key, timeout_ticks) != 0 && key > 0) {
+            return key;
+        }
+        return -1;
+    }
+    if (mk_service_request(MK_SERVICE_INPUT, &request, &reply) != 0) {
+        return -1;
+    }
+    key = mk_input_decode_result(&reply);
+    return key > 0 ? key : -1;
 }
 
 int mk_input_service_set_layout(const char *name) {

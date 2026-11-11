@@ -30,7 +30,7 @@ static int	tnamecmp(const void *, const void *);
 
 
 unsigned int
-hash(const char *n)
+strhash(const char *n)
 {
 	unsigned int h = 0;
 

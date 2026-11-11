@@ -110,8 +110,6 @@
 
 #include <sys/limits.h>
 
-#if __POSIX_VISIBLE
 #include <sys/syslimits.h>
-#endif
 
 #endif /* !_LIMITS_H_ */

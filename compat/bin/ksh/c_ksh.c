@@ -23,7 +23,7 @@ c_cd(char **wp)
 	int rval;
 	struct tbl *pwd_s, *oldpwd_s;
 	XString xs;
-	char *xp;
+	__attribute__((unused)) char *xp;
 	char *dir, *try, *pwd;
 	int phys_path;
 	char *cdpath;
@@ -214,7 +214,7 @@ c_print(char **wp)
 	char *s;
 	const char *emsg;
 	XString xs;
-	char *xp;
+	__attribute__((unused)) char *xp;
 
 	if (wp[0][0] == 'e') {	/* echo command */
 		int nflags = flags;

@@ -47,7 +47,7 @@ int vibe_app_main(int argc, char **argv) {
 }
 #else
 __attribute__((section(".entry"))) void userland_entry(void) {
-    shell_start(); /* blocks until exit */
+    shell_start();
     for (;;)
         __asm__ volatile("hlt");
 }

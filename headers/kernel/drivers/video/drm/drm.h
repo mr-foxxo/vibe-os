@@ -69,5 +69,8 @@ int kernel_drm_i915_revert_last_commit(void);
 void kernel_drm_i915_forget_last_commit(void);
 int kernel_drm_radeon_revert_last_commit(void);
 void kernel_drm_radeon_forget_last_commit(void);
+void kernel_drm_radeon_enable_modeset(void);
+
+int kernel_drm_ioctl(int cmd, void *arg, size_t arg_size);
 
 #endif

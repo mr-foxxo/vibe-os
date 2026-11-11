@@ -1,5 +1,7 @@
 #include <kernel/bootinfo.h>
+#include <kernel/telemetry.h>
 #include <kernel/kernel_string.h>
+#include <kernel/drivers/debug/debug.h>
 #include <kernel/microkernel/launch.h>
 #include <kernel/microkernel/service.h>
 #include <kernel/process.h>
@@ -110,6 +112,30 @@ static struct mk_launch_record *mk_launch_alloc_record(void) {
     return 0;
 }
 
+/*
+ * Failure-naming for the launch bootstrap (contract: an unsupported/failed
+ * path must emit an explicit diagnostic, never a silent -1 that userland can
+ * only report as "launch failed"). Budgeted so it cannot flood the serial.
+ */
+static volatile uint32_t g_launch_fail_budget = VIBE_TRACE_BUDGET(16u);
+
+static void mk_launch_fail(const char *why, const struct mk_launch_descriptor *d) {
+    if (g_launch_fail_budget == 0u) {
+        return;
+    }
+    g_launch_fail_budget--;
+    if (d == 0) {
+        kernel_debug_printf("launch: FAIL %s descriptor=0\n", why);
+        return;
+    }
+    kernel_debug_printf("launch: FAIL %s kind=%d svc=%d flags=%x abi=%d entry=%x stack=%u class=%d name0=%c\n",
+                        why, (int)d->kind, (int)d->service_type,
+                        (unsigned int)d->flags, (int)d->abi_version,
+                        (unsigned int)(uintptr_t)d->entry,
+                        (unsigned int)d->stack_size, (int)d->task_class,
+                        d->name[0] != '\0' ? d->name[0] : '0');
+}
+
 static void mk_launch_fill_context(struct mk_launch_context *context,
                                    const struct mk_launch_descriptor *descriptor,
                                    const struct process *process) {
@@ -145,11 +171,13 @@ int mk_launch_bootstrap(const struct mk_launch_descriptor *descriptor) {
     enum process_kind process_kind;
 
     if (mk_launch_validate_descriptor(descriptor) != 0) {
+        mk_launch_fail("validate", descriptor);
         return -1;
     }
 
     record = mk_launch_alloc_record();
     if (record == 0) {
+        mk_launch_fail("no-record-slot", descriptor);
         return -1;
     }
 
@@ -165,11 +193,13 @@ int mk_launch_bootstrap(const struct mk_launch_descriptor *descriptor) {
                                             ? MK_LAUNCH_STACK_SIZE_DEFAULT
                                             : descriptor->stack_size);
     if (process == 0) {
+        mk_launch_fail("create-failed", descriptor);
         return -1;
     }
 
     if (descriptor->kind == MK_LAUNCH_KIND_SERVICE &&
         mk_service_register(descriptor->service_type, descriptor->name, process) != 0) {
+        mk_launch_fail("register-failed", descriptor);
         process_destroy(process);
         return -1;
     }

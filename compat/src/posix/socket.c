@@ -9,6 +9,8 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <include/userland_api.h>
 
 #define COMPAT_SOCKET_STATE_BOUND     0x01
@@ -61,10 +63,6 @@ static int compat_socket_validate_msghdr(const struct msghdr *msg, int allow_nam
 
     if (msg == 0 || msg->msg_iov == 0 || msg->msg_iovlen < 0) {
         errno = EINVAL;
-        return -1;
-    }
-    if (msg->msg_control != 0 || msg->msg_controllen != 0u) {
-        errno = EOPNOTSUPP;
         return -1;
     }
     if (!allow_name && msg->msg_name != 0 && msg->msg_namelen != 0u) {
@@ -388,6 +386,82 @@ ssize_t recv(int sockfd, void *buf, size_t len, int flags) {
     return (ssize_t)rc;
 }
 
+ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
+               const struct sockaddr *dest_addr, socklen_t addrlen) {
+    struct compat_fd_entry *entry;
+    int rc;
+
+    (void)flags;
+    if (buf == 0 && len != 0u) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (len == 0u) {
+        return 0;
+    }
+    if (compat_socket_validate_fd(sockfd, &entry) != 0) {
+        return -1;
+    }
+
+    rc = compat_syscall5(SYSCALL_NETWORK_SENDTO,
+                         entry->host_fd,
+                         (int)(uintptr_t)buf,
+                         (int)len,
+                         (int)(uintptr_t)dest_addr,
+                         (int)addrlen);
+    if (rc < 0) {
+        entry->socket_error = EPIPE;
+        errno = EPIPE;
+        return -1;
+    }
+    compat_fd_socket_update_ready_by_host(entry->host_fd, COMPAT_SOCKET_READY_SEND, 0);
+    entry->socket_error = 0;
+    return (ssize_t)rc;
+}
+
+ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags,
+                 struct sockaddr *src_addr, socklen_t *addrlen) {
+    struct compat_fd_entry *entry;
+    int rc;
+
+    (void)flags;
+    if (buf == 0 && len != 0u) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (len == 0u) {
+        return 0;
+    }
+    if (compat_socket_validate_fd(sockfd, &entry) != 0) {
+        return -1;
+    }
+
+    for (;;) {
+        rc = compat_syscall5(SYSCALL_NETWORK_RECVFROM,
+                             entry->host_fd,
+                             (int)(uintptr_t)buf,
+                             (int)len,
+                             (int)(uintptr_t)src_addr,
+                             (int)(uintptr_t)addrlen);
+        if (rc > 0) {
+            break;
+        }
+        compat_fd_socket_update_ready_by_host(entry->host_fd, 0, COMPAT_SOCKET_READY_RECV);
+        entry->socket_error = EAGAIN;
+        if (compat_socket_is_nonblocking(entry, flags)) {
+            errno = EAGAIN;
+            return -1;
+        }
+        if (compat_socket_wait_ready(sockfd, POLLIN) < 0) {
+            errno = EINTR;
+            return -1;
+        }
+    }
+    compat_fd_socket_update_ready_by_host(entry->host_fd, 0, COMPAT_SOCKET_READY_RECV);
+    entry->socket_error = 0;
+    return (ssize_t)rc;
+}
+
 ssize_t sendmsg(int sockfd, const struct msghdr *msg, int flags) {
     struct compat_fd_entry *entry;
     void *buffer = 0;
@@ -466,48 +540,101 @@ int setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t
     if (compat_socket_validate_fd(sockfd, &entry) != 0) {
         return -1;
     }
-    if (level != SOL_SOCKET) {
-        errno = ENOPROTOOPT;
-        return -1;
-    }
     if (optval == 0 || optlen < sizeof(int)) {
         errno = EINVAL;
         return -1;
     }
 
     value = *(const int *)optval;
-    switch (optname) {
-    case SO_REUSEADDR:
-    case SO_KEEPALIVE:
-    case SO_BROADCAST:
-    case SO_OOBINLINE:
-        if (value != 0) {
-            entry->socket_options |= optname;
-        } else {
-            entry->socket_options &= ~optname;
-        }
-        entry->socket_error = 0;
-        return 0;
-    case SO_SNDBUF:
-        if (value <= 0) {
-            errno = EINVAL;
+
+    if (level == SOL_SOCKET) {
+        switch (optname) {
+        case SO_REUSEADDR:
+        case SO_KEEPALIVE:
+        case SO_BROADCAST:
+        case SO_OOBINLINE:
+            if (value != 0) {
+                entry->socket_options |= optname;
+            } else {
+                entry->socket_options &= ~optname;
+            }
+            entry->socket_error = 0;
+            return 0;
+        case SO_SNDBUF:
+            if (value <= 0) {
+                errno = EINVAL;
+                return -1;
+            }
+            entry->socket_sndbuf = value;
+            entry->socket_error = 0;
+            return 0;
+        case SO_RCVBUF:
+            if (value <= 0) {
+                errno = EINVAL;
+                return -1;
+            }
+            entry->socket_rcvbuf = value;
+            entry->socket_error = 0;
+            return 0;
+        case SO_LINGER:
+            if (optlen < (socklen_t)sizeof(struct linger)) {
+                errno = EINVAL;
+                return -1;
+            }
+            {
+                const struct linger *l = (const struct linger *)optval;
+                if (l->l_onoff) {
+                    entry->socket_options |= SO_LINGER;
+                } else {
+                    entry->socket_options &= ~SO_LINGER;
+                }
+            }
+            entry->socket_error = 0;
+            return 0;
+        case SO_SNDTIMEO:
+        case SO_RCVTIMEO:
+            entry->socket_error = 0;
+            return 0;
+        case SO_DEBUG:
+        case SO_DONTROUTE:
+        case SO_REUSEPORT:
+            entry->socket_error = 0;
+            return 0;
+        default:
+            errno = ENOPROTOOPT;
             return -1;
         }
-        entry->socket_sndbuf = value;
-        entry->socket_error = 0;
-        return 0;
-    case SO_RCVBUF:
-        if (value <= 0) {
-            errno = EINVAL;
-            return -1;
-        }
-        entry->socket_rcvbuf = value;
-        entry->socket_error = 0;
-        return 0;
-    default:
-        errno = ENOPROTOOPT;
-        return -1;
     }
+
+    if (level == IPPROTO_TCP) {
+        switch (optname) {
+        case TCP_NODELAY:
+        case TCP_KEEPIDLE:
+        case TCP_KEEPINTVL:
+        case TCP_KEEPCNT:
+            entry->socket_error = 0;
+            return 0;
+        default:
+            errno = ENOPROTOOPT;
+            return -1;
+        }
+    }
+
+    if (level == IPPROTO_IP) {
+        switch (optname) {
+        case IP_TTL:
+        case IP_MULTICAST_TTL:
+        case IP_MULTICAST_LOOP:
+            entry->socket_error = 0;
+            return 0;
+        default:
+            errno = ENOPROTOOPT;
+            return -1;
+        }
+    }
+
+    errno = ENOPROTOOPT;
+    return -1;
 }
 
 int getsockopt(int sockfd, int level, int optname, void *optval, socklen_t *optlen) {
@@ -517,52 +644,97 @@ int getsockopt(int sockfd, int level, int optname, void *optval, socklen_t *optl
     if (compat_socket_validate_fd(sockfd, &entry) != 0) {
         return -1;
     }
-    if (level != SOL_SOCKET) {
-        errno = ENOPROTOOPT;
-        return -1;
-    }
     if (optval == 0 || optlen == 0 || *optlen < sizeof(int)) {
         errno = EINVAL;
         return -1;
     }
 
-    switch (optname) {
-    case SO_TYPE:
-        value = entry->socket_type & ~(SOCK_NONBLOCK | SOCK_CLOEXEC);
-        break;
-    case SO_DOMAIN:
-        value = entry->socket_domain;
-        break;
-    case SO_PROTOCOL:
-        value = entry->socket_protocol;
-        break;
-    case SO_ERROR:
-        value = entry->socket_error;
-        entry->socket_error = 0;
-        break;
-    case SO_ACCEPTCONN:
-        value = (entry->socket_state_flags & COMPAT_SOCKET_STATE_LISTENING) != 0 ? 1 : 0;
-        break;
-    case SO_REUSEADDR:
-    case SO_KEEPALIVE:
-    case SO_BROADCAST:
-    case SO_OOBINLINE:
-        value = (entry->socket_options & optname) != 0 ? 1 : 0;
-        break;
-    case SO_SNDBUF:
-        value = entry->socket_sndbuf;
-        break;
-    case SO_RCVBUF:
-        value = entry->socket_rcvbuf;
-        break;
-    default:
-        errno = ENOPROTOOPT;
-        return -1;
+    if (level == SOL_SOCKET) {
+        switch (optname) {
+        case SO_TYPE:
+            value = entry->socket_type & ~(SOCK_NONBLOCK | SOCK_CLOEXEC);
+            break;
+        case SO_DOMAIN:
+            value = entry->socket_domain;
+            break;
+        case SO_PROTOCOL:
+            value = entry->socket_protocol;
+            break;
+        case SO_ERROR:
+            value = entry->socket_error;
+            entry->socket_error = 0;
+            break;
+        case SO_ACCEPTCONN:
+            value = (entry->socket_state_flags & COMPAT_SOCKET_STATE_LISTENING) != 0 ? 1 : 0;
+            break;
+        case SO_REUSEADDR:
+        case SO_KEEPALIVE:
+        case SO_BROADCAST:
+        case SO_OOBINLINE:
+        case SO_LINGER:
+            value = (entry->socket_options & optname) != 0 ? 1 : 0;
+            break;
+        case SO_SNDBUF:
+            value = entry->socket_sndbuf;
+            break;
+        case SO_RCVBUF:
+            value = entry->socket_rcvbuf;
+            break;
+        case SO_SNDTIMEO:
+        case SO_RCVTIMEO:
+            value = 0;
+            break;
+        case SO_DEBUG:
+        case SO_DONTROUTE:
+        case SO_REUSEPORT:
+            value = 0;
+            break;
+        default:
+            errno = ENOPROTOOPT;
+            return -1;
+        }
+        *(int *)optval = value;
+        *optlen = (socklen_t)sizeof(int);
+        return 0;
     }
 
-    *(int *)optval = value;
-    *optlen = (socklen_t)sizeof(int);
-    return 0;
+    if (level == IPPROTO_TCP) {
+        switch (optname) {
+        case TCP_NODELAY:
+        case TCP_KEEPIDLE:
+        case TCP_KEEPINTVL:
+        case TCP_KEEPCNT:
+            *(int *)optval = 0;
+            *optlen = (socklen_t)sizeof(int);
+            return 0;
+        default:
+            errno = ENOPROTOOPT;
+            return -1;
+        }
+    }
+
+    if (level == IPPROTO_IP) {
+        switch (optname) {
+        case IP_TTL:
+            *(int *)optval = 64;
+            *optlen = (socklen_t)sizeof(int);
+            return 0;
+        case IP_MULTICAST_TTL:
+            *(int *)optval = 1;
+            *optlen = (socklen_t)sizeof(int);
+            return 0;
+        case IP_MULTICAST_LOOP:
+            *(int *)optval = 1;
+            *optlen = (socklen_t)sizeof(int);
+            return 0;
+        default:
+            errno = ENOPROTOOPT;
+            return -1;
+        }
+    }
+
+    errno = ENOPROTOOPT;
+    return -1;
 }
 
 int shutdown(int sockfd, int how) {
@@ -579,4 +751,14 @@ int shutdown(int sockfd, int how) {
     entry->socket_state_flags &= ~COMPAT_SOCKET_STATE_CONNECTED;
     entry->socket_error = 0;
     return 0;
+}
+
+int sockatmark(int sockfd) {
+    struct compat_fd_entry *entry;
+
+    if (compat_socket_validate_fd(sockfd, &entry) != 0) {
+        return -1;
+    }
+    errno = EINVAL;
+    return -1;
 }

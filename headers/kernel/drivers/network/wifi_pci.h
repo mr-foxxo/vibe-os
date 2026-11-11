@@ -11,5 +11,6 @@ uint16_t kernel_wifi_pci_device_id(void);
 const char *kernel_wifi_pci_chip_name(void);
 void kernel_wifi_pci_get_chip_name(uint16_t vendor_id, uint16_t device_id,
                                    char *buffer, uint32_t buffer_size);
+int kernel_wifi_pci_ioctl(int cmd, void *arg, size_t arg_size);
 
 #endif

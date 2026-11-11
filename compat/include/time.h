@@ -46,6 +46,8 @@
 #include <sys/_types.h>
 #include <sys/_time.h>
 
+struct sigevent;
+
 #ifndef	_CLOCK_T_DEFINED_
 #define	_CLOCK_T_DEFINED_
 typedef	__clock_t	clock_t;
@@ -146,10 +148,18 @@ void tzset(void);
 #endif
 
 #if __POSIX_VISIBLE >= 199309
+#define CLOCK_REALTIME      0
+#define CLOCK_MONOTONIC     1
+#define CLOCK_PROCESS_CPUTIME_ID 2
+#define CLOCK_THREAD_CPUTIME_ID  3
 int clock_getres(clockid_t, struct timespec *);
 int clock_gettime(clockid_t, struct timespec *);
 int clock_settime(clockid_t, const struct timespec *);
 int nanosleep(const struct timespec *, struct timespec *);
+int timer_create(clockid_t, struct sigevent *, timer_t *);
+int timer_settime(timer_t, int, const struct itimerspec *, struct itimerspec *);
+int timer_gettime(timer_t, struct itimerspec *);
+int timer_delete(timer_t);
 #endif
 
 #if __POSIX_VISIBLE >= 200112

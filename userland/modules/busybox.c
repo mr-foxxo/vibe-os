@@ -575,6 +575,30 @@ static void busybox_reset_task_exit_subscription(void) {
     }
 }
 
+static void busybox_debug_exit_return(uint32_t pid, uint32_t via) {
+    char msg[48];
+    static int budget = 8;
+
+    /* item 0.6 probe (03/11): the marker `shell: command exit ...` is
+     * printed by the SHELL (busybox) right after busybox_wait_for_task_exit
+     * returns; the host_wait_for_task_exit witness added on 02/11 lives in
+     * the session-host path, which the interactive command never reaches.
+     * Rare-event only (per wait return), budgeted. via: 1=stashed hit,
+     * 2=TERMINATED received, 3=liveness after received event, 4=liveness
+     * after timed-out receive, 5=alive-claim after receive failure. */
+    if (budget == 0) {
+        return;
+    }
+    budget--;
+    msg[0] = '\0';
+    str_append(msg, "bb-wait: pid=", (int)sizeof(msg));
+    append_uint(msg, pid, (int)sizeof(msg));
+    str_append(msg, " via=", (int)sizeof(msg));
+    append_uint(msg, via, (int)sizeof(msg));
+    str_append(msg, "\n", (int)sizeof(msg));
+    sys_write_debug(msg);
+}
+
 static int busybox_wait_for_task_exit(uint32_t pid) {
     struct mk_task_event event;
 
@@ -582,6 +606,7 @@ static int busybox_wait_for_task_exit(uint32_t pid) {
         return -1;
     }
     if (busybox_take_stashed_task_exit(pid, &event) == 0) {
+        busybox_debug_exit_return(pid, 1u);
         return 0;
     }
 
@@ -589,16 +614,29 @@ static int busybox_wait_for_task_exit(uint32_t pid) {
         if (sys_task_event_receive(&event, BUSYBOX_TASK_EXIT_POLL_TICKS) == 0) {
             if (event.pid == pid &&
                 event.event_type == MK_TASK_EVENT_TERMINATED) {
+                busybox_debug_exit_return(pid, 2u);
                 return 0;
             }
             busybox_stash_task_event(&event);
             if (!busybox_task_pid_alive(pid)) {
+                busybox_debug_exit_return(pid, 3u);
                 return 0;
             }
             continue;
         }
         if (!busybox_task_pid_alive(pid)) {
+            busybox_debug_exit_return(pid, 4u);
             return 0;
+        } else {
+            /* item 0.6 probe (03/11): poll returned non-zero (timeout or
+             * nosub) while the child is still claimed alive. Budget 2 —
+             * the first two occurrences name the state; a stream of these
+             * would mean receive never sees the delivered event. */
+            static int poll_budget = 2;
+            if (poll_budget != 0) {
+                poll_budget--;
+                busybox_debug_exit_return(pid, 5u);
+            }
         }
     }
 }
@@ -976,8 +1014,10 @@ static int cmd_cd(int argc, char **argv) {
     }
     int idx = fs_resolve(argv[1]);
     if (idx < 0 || !g_fs_nodes[idx].is_dir) {
+        /* Real failure gets a real status (item 6.1 made the shell survive
+         * non-zero rc; the honest rc is what makes that path observable). */
         console_write("error: invalid directory\n");
-        return 0;
+        return 1;
     }
     g_fs_cwd = idx;
     return 0;
@@ -1063,9 +1103,24 @@ static int cmd_uname(int argc, char **argv) {
     return 0;
 }
 
+/* Session-exit request, set by `exit` and consumed by the shell loop.
+ * The shell NO LONGER treats a command's non-zero rc as "quit the session"
+ * (item 6.1): a failing command must not kill the rescue shell. Exit is an
+ * explicit request, so the channel must be separate from the rc. */
+static int g_busybox_exit_requested;
+
+int busybox_exit_requested(void) {
+    return g_busybox_exit_requested;
+}
+
+void busybox_clear_exit_request(void) {
+    g_busybox_exit_requested = 0;
+}
+
 static int cmd_exit(int argc, char **argv) {
     (void)argc; (void)argv;
-    return 1; /* signal shell to quit */
+    g_busybox_exit_requested = 1;
+    return 0;
 }
 
 static int cmd_shutdown(int argc, char **argv) {
@@ -1183,7 +1238,7 @@ static int cmd_vidmodes(int argc, char **argv) {
         int rc;
 
         debug_line("vidmodes: try ", width, "x", height, "");
-        rc = sys_gfx_set_mode(width, height);
+        rc = sys_gfx_set_mode(width, height, 8);
         if (rc != 0) {
             fail_count += 1u;
             debug_line("vidmodes: mode failed ", width, "x", height, "");
@@ -1221,7 +1276,7 @@ static int cmd_vidmodes(int argc, char **argv) {
     }
 
     if (!restore_leave_graphics && original_width != 0u && original_height != 0u) {
-        (void)sys_gfx_set_mode(original_width, original_height);
+        (void)sys_gfx_set_mode(original_width, original_height, 8);
         sys_clear(0u);
         sys_present_full();
         if (sys_gfx_info(&mode) == 0 &&
@@ -1856,7 +1911,7 @@ static int cmd_vidstress(int argc, char **argv) {
             if (width == original_mode.width && height == original_mode.height) {
                 continue;
             }
-            if (sys_gfx_set_mode(width, height) != 0) {
+            if (sys_gfx_set_mode(width, height, 8) != 0) {
                 continue;
             }
             if (palette_switched) {
@@ -1877,7 +1932,7 @@ static int cmd_vidstress(int argc, char **argv) {
     }
 
     if (have_original_mode) {
-        (void)sys_gfx_set_mode(original_mode.width, original_mode.height);
+        (void)sys_gfx_set_mode(original_mode.width, original_mode.height, 8);
         (void)sys_gfx_info(&active_mode);
     }
     if (palette_saved && palette_switched) {
@@ -3933,7 +3988,7 @@ static int cmd_vidsweep(int argc, char **argv) {
             if (width == 0u || height == 0u) {
                 continue;
             }
-            if (sys_gfx_set_mode(width, height) != 0) {
+            if (sys_gfx_set_mode(width, height, 8) != 0) {
                 continue;
             }
             if (sys_gfx_info(&active_mode) != 0) {
@@ -3992,7 +4047,7 @@ static int cmd_vidsweep(int argc, char **argv) {
     }
 
     if (have_original_mode) {
-        (void)sys_gfx_set_mode(original_mode.width, original_mode.height);
+        (void)sys_gfx_set_mode(original_mode.width, original_mode.height, 8);
     }
     (void)sys_gfx_set_present_copy_override(VIDEO_PRESENT_COPY_OVERRIDE_AUTO);
     (void)sys_gfx_set_present_policy(VIDEO_PRESENT_POLICY_DESKTOP);

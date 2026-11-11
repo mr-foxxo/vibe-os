@@ -77,10 +77,19 @@ static int mk_fs_validate_path_transfer(uint32_t transfer_id,
         return -1;
     }
     path = (char *)mk_transfer_data_read(transfer_id);
-    if (path == 0 || mk_transfer_size(transfer_id) < path_length + 1u) {
+    if (path == 0) {
+        return -1;
+    }
+    /*
+     * data_read pinned the transfer; every failure from here must release,
+     * and the success caller owns the reference and must release after use.
+     */
+    if (mk_transfer_size(transfer_id) < path_length + 1u) {
+        mk_transfer_release(transfer_id);
         return -1;
     }
     if (path[path_length] != '\0') {
+        mk_transfer_release(transfer_id);
         return -1;
     }
     *path_out = path;
@@ -111,7 +120,11 @@ static int mk_fs_local_handler(const struct mk_message *request,
         if (mk_fs_validate_path_transfer(payload->path_transfer_id, payload->path_length, &path) != 0) {
             return -1;
         }
-        return mk_fs_reply_result(reply, open(path, (int)payload->flags));
+        {
+            int rc = open(path, (int)payload->flags);
+            mk_transfer_release(payload->path_transfer_id);
+            return mk_fs_reply_result(reply, rc);
+        }
     }
     case MK_MSG_FS_READ: {
         const struct mk_fs_io_request *payload;
@@ -123,10 +136,15 @@ static int mk_fs_local_handler(const struct mk_message *request,
         }
         payload = (const struct mk_fs_io_request *)request->payload;
         buffer = mk_transfer_data_write(payload->transfer_id);
-        if (buffer == 0 || mk_transfer_size(payload->transfer_id) < payload->size) {
+        if (buffer == 0) {
+            return -1;
+        }
+        if (mk_transfer_size(payload->transfer_id) < payload->size) {
+            mk_transfer_release(payload->transfer_id);
             return -1;
         }
         rc = read(payload->fd, buffer, payload->size);
+        mk_transfer_release(payload->transfer_id);
         return mk_fs_reply_result(reply, rc);
     }
     case MK_MSG_FS_WRITE: {
@@ -139,10 +157,15 @@ static int mk_fs_local_handler(const struct mk_message *request,
         }
         payload = (const struct mk_fs_io_request *)request->payload;
         buffer = (void *)mk_transfer_data_read(payload->transfer_id);
-        if (buffer == 0 || mk_transfer_size(payload->transfer_id) < payload->size) {
+        if (buffer == 0) {
+            return -1;
+        }
+        if (mk_transfer_size(payload->transfer_id) < payload->size) {
+            mk_transfer_release(payload->transfer_id);
             return -1;
         }
         rc = write(payload->fd, buffer, payload->size);
+        mk_transfer_release(payload->transfer_id);
         return mk_fs_reply_result(reply, rc);
     }
     case MK_MSG_FS_CLOSE: {
@@ -171,6 +194,7 @@ static int mk_fs_local_handler(const struct mk_message *request,
         struct stat st;
         char *path;
         int rc;
+        int copy_err = 0;
 
         if (request->payload_size != sizeof(*payload)) {
             return -1;
@@ -180,10 +204,15 @@ static int mk_fs_local_handler(const struct mk_message *request,
             return -1;
         }
         if (mk_transfer_size(payload->stat_transfer_id) < sizeof(st)) {
+            mk_transfer_release(payload->path_transfer_id);
             return -1;
         }
         rc = stat(path, &st);
+        mk_transfer_release(payload->path_transfer_id);
         if (rc == 0 && mk_transfer_copy_from(payload->stat_transfer_id, &st, sizeof(st)) != 0) {
+            copy_err = 1;
+        }
+        if (copy_err) {
             return -1;
         }
         return mk_fs_reply_result(reply, rc);
@@ -217,7 +246,7 @@ static int mk_filesystem_service_launch_deferred(void) {
                                   mk_fs_local_handler,
                                   0,
                                   userland_filesystem_service_entry,
-                                  8192u,
+                                  32768u,
                                   MK_LAUNCH_FLAG_BOOTSTRAP |
                                   MK_LAUNCH_FLAG_BUILTIN |
                                   MK_LAUNCH_FLAG_CRITICAL);
