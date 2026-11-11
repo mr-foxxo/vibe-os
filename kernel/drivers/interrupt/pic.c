@@ -131,6 +131,16 @@ void kernel_irq_dispatch(uint8_t irq_line) {
                 g_kernel_irq_handlers[irq_line][i]();
             }
         }
+        /* Line 196 (shared INTx): EXACTLY ONE EOI per dispatch, after every
+         * chained handler has acked its own device. Per-handler EOI was the
+         * old single-owner assumption leaking through: on a shared line the
+         * second EOI clears a deeper ISR bit (PIC: can drop the cascade's
+         * in-service entry; IOAPIC: EOI without a set ISR is undefined-ish
+         * and risks re-arming rules). If another device still asserts the
+         * level line after the single EOI, the IRR re-latches and the chain
+         * runs again - which is precisely how shared lines are supposed to
+         * behave. */
+        kernel_irq_complete(irq_line);
         return;
     }
 

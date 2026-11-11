@@ -1,6 +1,6 @@
 # Plano de Fechamento Definitivo — VibeOS (Revisão 4)
 
-last: 2026-11-10 (3) — 1.5 FEITA (live socket-table export aditivo 232/110 + netstat tabela real + ifconfig flags/contadores; probe_netcfg `rows=3 listen=1 estab=2` na serial). Antes no dia: 1.2 timers RFC6298+ring backlog+self-test loopback, 1.1 RX-IRQ+IOAPIC mapping (#21), 1.10 wifi sem fachada, 6.1 shell, 0.3 knob, 1.3/1.4 DNS.
+last: 2026-11-11 — 3.2 FEITA (linha 196): INTx compartilhado sem corromper EOI — chain de 4 handlers/linha + UM EOI por dispatch apos ack de cada device (audio/virtio perderam o EOI proprio); coexistencia medida UHCI+virtio na linha 11 sem storm; audio-stack teve a janela de boot endurecida (45s era ambiente: medido 105s) e segue na familia de wall 0.15. Antes: 1.2/1.6 HTTP fim-a-fim, 1.5 tabela viva, 1.1 RX-IRQ+IOAPIC (#21), 6.1 shell, 0.3 knob.
 doing: backlog definitivo consolidado (v4) — ondas 0-9, um estado terminal por item, prova obrigatoria por linha
 next: Onda 0 — 0.15 fecha com 22x PASS em host ocioso e 0.16 coleta a matriz de latencia; Onda 1: 1.2/1.5/1.6(curl) FEITOS; restam wget (1.6 parcial), 1.7 (HTTP via links2), 1.8 [!] e Wi-Fi 86-87; linha 92 parcialmente servida pelo probe_http (HTTP GET real; links2 pendente)
 state: active
@@ -248,7 +248,7 @@ Fonte: `NETWORK_AUDIO_PANEL_PLAN.md` (áudio), `AUDIO_HARDWARE_VALIDATION_MATRIX
 | # | Item | Estado | DoD | Prova | Bloqueio |
 | --- | --- | --- | --- | --- | --- |
 | 3.1 | HDA captura (input stream + BDL) | azalia só playback | record real | `validate-audio-stack-roundtrip` | — |
-| 3.2 | IRQ compartilhado INTx em HDA/AC97 | `audio.c:5363` assume handler único | handler compartilhado | boot sem IRQ storm | — |
+| 3.2 | IRQ compartilhado INTx em HDA/AC97 | ✅ FEITO (11/11): chain de handlers (4/linha) + UM EOI por dispatch após todos ackarem; handlers de áudio/virtio sem EOI próprio; teclado/mouse/timer em stubs dedicados inalterados. Coexistência real na linha 11 (UHCI-BSD + virtio-net) sem storm | handler compartilhado | boot sem IRQ storm: phase6 6/6 + boot-smoke 6/6 + datapath PASS + smp baseline; áudio-gate endurecido (janela 105s medida → env 180s), segue wall de digitação 0.15 | — |
 | 3.3 | Fechar `compat-azalia` | ~35 sub-itens abertos | rota canônica estável, sem re-probe agressivo | `validate-audio-hda-*` | — |
 | 3.4 | `compat-uaudio` (USB audio) MVP | MVP UHCI-only | playback USB real | `validate-audio-stack` com USB | dep 0/2 |
 | 3.5 | Gargalo PCM (chiado; DMA stale + start/stop) | aberto | playback limpo | gravação + inspeção | dep 3.3 |

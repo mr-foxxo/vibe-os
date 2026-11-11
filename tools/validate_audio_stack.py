@@ -3,6 +3,7 @@ import argparse
 import json
 import re
 import shutil
+import os
 import socket
 import subprocess
 import sys
@@ -664,10 +665,17 @@ def run_audio_capture_smoke(qemu_binary: str,
                     ],
                     timeout=20.0,
                 )
+            # Boot-window hardening (same lesson as the network-surface gate):
+            # on the slow 2-core TCG host a full desktop boot measured 105s to
+            # `desktop: session start` (2026-11-11, AC97 profile) while the
+            # kernel itself was healthy - a 45s wall was an environment budget,
+            # not an assertion. The marker set is unchanged; only the window is
+            # configurable now (env VIBE_AUDIO_BOOT_TIMEOUT, default 180s).
+            boot_wait = float(os.environ.get("VIBE_AUDIO_BOOT_TIMEOUT", "180"))
             wait_for_any_marker(session,
                                 ["desktop.app: launch startx", "host: startx start", "host: desktop session launched"],
-                                timeout=45.0)
-            session.wait_for_all(["desktop: session start"], timeout=45.0)
+                                timeout=boot_wait)
+            session.wait_for_all(["desktop: session start"], timeout=boot_wait)
             if require_desktop_startup_sound:
                 session.wait_for_all(
                     [

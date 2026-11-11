@@ -4353,7 +4353,7 @@ static __attribute__((unused)) void mk_audio_compat_irq_handler(void) {
     uint16_t input_status;
 
     if (g_audio_state.compat_aud_base == 0u) {
-        kernel_irq_complete(g_audio_state.pci.irq_line);
+        /* EOI is the dispatcher's job now (single per dispatch, line 196). */
         return;
     }
 
@@ -4384,7 +4384,7 @@ static __attribute__((unused)) void mk_audio_compat_irq_handler(void) {
 
     mk_audio_compat_update_output_progress();
     mk_audio_compat_update_input_progress();
-    kernel_irq_complete(g_audio_state.pci.irq_line);
+    /* EOI is the dispatcher's job now (single per dispatch, line 196). */
 }
 
 static void __attribute__((unused)) mk_audio_azalia_irq_handler(void) {
@@ -4397,7 +4397,7 @@ static void __attribute__((unused)) mk_audio_azalia_irq_handler(void) {
     uint8_t rirb_status;
 
     if (g_audio_state.azalia_base == 0u) {
-        kernel_irq_complete(g_audio_state.pci.irq_line);
+        /* EOI is the dispatcher's job now (single per dispatch, line 196). */
         return;
     }
 
@@ -4441,7 +4441,7 @@ static void __attribute__((unused)) mk_audio_azalia_irq_handler(void) {
         }
         mk_audio_azalia_update_output_progress();
     }
-    kernel_irq_complete(g_audio_state.pci.irq_line);
+    /* EOI is the dispatcher's job now (single per dispatch, line 196). */
 }
 
 static void mk_audio_azalia_set_irq_enabled(uint8_t enabled) {

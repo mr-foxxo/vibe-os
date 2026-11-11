@@ -2541,16 +2541,11 @@ static void mk_network_virtio_irq_handler(void) {
         }
         mk_network_virtio_poll_queues(probe);
     }
-    /* EOI THIS LINE on every dispatch - measured the hard way: the generic
-     * IRQ_STUB does not acknowledge, and per-handler EOI is the convention
-     * (pit/keyboard/audio do it). Without it the IOAPIC ISR bit for vector
-     * 0x2B stayed set after the first RX, the PIT vector 0x20 (lower
-     * priority) was never delivered again, and DHCP froze between OFFER and
-     * REQUEST. Reading ISR above already deasserted our INTx, so the EOI is
-     * always safe here; on a shared line it stands in for a chained handler
-     * that has no EOI of its own (the old UHCI glue never acks). */
+    /* No EOI here: the dispatcher acknowledges the line exactly once after
+     * the whole chained handler list ran (line 196). Reading ISR above is
+     * the device ack; forgetting it (the pre-chaining bug measured in the
+     * RX-IRQ round) pinned the IOAPIC ISR and froze the PIT vector. */
     (void)line;
-    kernel_irq_complete(g_virtio_irq_line);
 }
 
 static void mk_network_virtio_irq_arm(struct mk_network_pci_probe_state *probe) {
