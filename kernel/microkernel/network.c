@@ -1942,6 +1942,7 @@ static int mk_network_tcp_output(struct mk_network_socket_state *sock,
             /* Previously the inline sites just skipped the send silently;
              * returning -1 keeps that behavior while making it visible to
              * the retransmission timer (the segment stays pending). */
+
             return -1;
         }
         return mk_network_virtio_send_tcp_segment(&g_network_state.pci_probe,
@@ -1967,6 +1968,7 @@ static int mk_network_tcp_input(uint32_t source_ipv4, uint32_t destination_ipv4,
     if (src_port == 0u || dest_port == 0u) {
         return -1;
     }
+
 
     /* Phase 1: match connected/connecting sockets by 4-tuple */
     for (tcp_index = 0u; tcp_index < MK_NETWORK_SOCKET_MAX; ++tcp_index) {
@@ -2147,6 +2149,7 @@ static int mk_network_tcp_input(uint32_t source_ipv4, uint32_t destination_ipv4,
             return 0;
         }
     }
+
 
     /* Send RST for unmatched SYN or data segments */
     if (!(tcp_flags & MK_TCP_FLAG_RST) && g_network_state.local_ipv4 != 0u &&
@@ -3623,6 +3626,171 @@ static void mk_network_tcp_loopback_smoke(void) {
 }
 
 /*
+ * TCP WIRE probe (item 1.6 diagnostic). Drives the same socket state machine
+ * against a real host-side HTTP server that tools/probe_http.py binds behind
+ * slirp's 10.0.2.2 -> host-loopback redirection. Unlike the loopback
+ * self-test, EVERY step logs seq/ack/len: it answers, once and for all,
+ * where the response dies when it does. Runs only when the lease names the
+ * QEMU slirp gateway (same gate as the responder self-test), fires exactly
+ * once, and logs an informational line on give-up so boots without a bound
+ * server do not look red.
+ */
+#define MK_TCP_WIRE_PROBE_PORT 8099u
+static int g_wire_probe_state; /* 0 idle, 1 syn, 2 get, 3 drain, 9 done */
+static uint32_t g_wire_probe_deadline;
+static int g_wire_probe_handle;
+static uint8_t g_wire_probe_total[16];
+static uint32_t g_wire_probe_got;
+
+static void mk_network_tcp_wire_probe(void) {
+    static const char req[] = "GET / HTTP/1.0\r\nHost: vibe\r\n\r\n";
+
+    if (g_wire_probe_state == 9) {
+        return;
+    }
+
+    if (g_wire_probe_state == 0) {
+        int h = -1;
+        struct mk_network_socket_state *c;
+
+        if (g_network_state.local_ipv4 == 0u ||
+            g_network_state.gateway_ipv4 != MK_NETWORK_IPV4_DEFAULT_GATEWAY) {
+            return;
+        }
+        c = mk_network_socket_allocate(0u, AF_INET, SOCK_STREAM,
+                                       MK_NETWORK_IPPROTO_TCP, &h);
+        if (c == 0) {
+            kernel_debug_puts("network: tcp wire probe SKIP (no socket slot)\n");
+            g_wire_probe_state = 9;
+            return;
+        }
+        c->bound = 1;
+        c->local_port = (uint16_t)(20000u + (uint16_t)(kernel_timer_get_ticks() & 0x1fffu));
+        c->remote_ipv4 = MK_NETWORK_IPV4_DEFAULT_GATEWAY;
+        c->remote_port = MK_TCP_WIRE_PROBE_PORT;
+        c->tcp_snd_nxt = kernel_timer_get_ticks() ^ (uint32_t)(uintptr_t)c;
+        if (c->tcp_snd_nxt == 0u) c->tcp_snd_nxt = 1u;
+        c->tcp_rcv_nxt = 0u;
+        c->tcp_snd_una = c->tcp_snd_nxt;
+        c->tcp_rto = (int)MK_TCP_RTO_INITIAL;
+        c->tcp_retry_ticks = c->tcp_rto;
+        c->tcp_retries = 0;
+        c->connected = 2;
+
+        if (mk_network_tcp_output(c, MK_TCP_FLAG_SYN, c->tcp_snd_nxt, 0u, 0, 0u) != 0) {
+            kernel_debug_puts("network: tcp wire probe: SYN could not leave (ARP?)\n");
+            memset(c, 0, sizeof(*c));
+            g_wire_probe_state = 9;
+            return;
+        }
+        c->tcp_snd_nxt += 1u;
+        g_wire_probe_handle = h;
+        g_wire_probe_deadline = kernel_timer_get_ticks() + 400u;
+        g_wire_probe_state = 1;
+        kernel_debug_printf("network: tcp wire probe start gw=10.0.2.2 port=%u\n",
+                            (unsigned int)MK_TCP_WIRE_PROBE_PORT);
+        return;
+    }
+
+    if ((int32_t)(kernel_timer_get_ticks() - g_wire_probe_deadline) >= 0) {
+        struct mk_network_socket_state *c = mk_network_socket_by_handle(g_wire_probe_handle);
+
+        kernel_debug_printf("network: tcp wire probe: state=%d gave up (con=%d una=%u nxt=%u rcv=%u retries=%d rto=%d)\n",
+                            g_wire_probe_state,
+                            c != 0 ? c->connected : -1,
+                            c != 0 ? (unsigned int)c->tcp_snd_una : 0,
+                            c != 0 ? (unsigned int)c->tcp_snd_nxt : 0,
+                            c != 0 ? (unsigned int)c->tcp_rcv_nxt : 0,
+                            c != 0 ? c->tcp_retries : -1,
+                            c != 0 ? (int)c->tcp_rto : -1);
+        if (c != 0) {
+            memset(c, 0, sizeof(*c));
+        }
+        g_wire_probe_state = 9;
+        return;
+    }
+
+    if (g_wire_probe_state == 1) {
+        struct mk_network_socket_state *c = mk_network_socket_by_handle(g_wire_probe_handle);
+        uint32_t reqlen;
+
+        if (c == 0 || c->connected != 3) {
+            return;
+        }
+        reqlen = (uint32_t)(sizeof(req) - 1u);
+        c->tcp_tx_pending_len = reqlen;
+        memcpy(c->tcp_tx_pending_data, req, reqlen);
+        if (mk_network_tcp_output(c, (uint8_t)(MK_TCP_FLAG_PSH | MK_TCP_FLAG_ACK),
+                                  c->tcp_snd_nxt, c->tcp_rcv_nxt,
+                                  (const uint8_t *)req, reqlen) != 0) {
+            kernel_debug_puts("network: tcp wire probe: GET send failed\n");
+            memset(c, 0, sizeof(*c));
+            g_wire_probe_state = 9;
+            return;
+        }
+        c->tcp_snd_nxt += reqlen;
+        c->tcp_retry_ticks = c->tcp_rto;
+        g_wire_probe_deadline = kernel_timer_get_ticks() + 400u;
+        g_wire_probe_state = 2;
+        return;
+    }
+
+    if (g_wire_probe_state == 2) {
+        uint8_t chunk[64];
+        uint32_t got = 0u;
+        int rc = network_queue_rx_dequeue(chunk, (uint32_t)sizeof(chunk),
+                                          g_wire_probe_handle, &got, NULL);
+
+        if (rc > 0 && got > 0u) {
+            uint32_t copy = got < 16u ? got : 16u;
+            uint32_t i;
+
+            for (i = 0u; i < copy; ++i) {
+                if (g_wire_probe_got < 16u) {
+                    g_wire_probe_total[g_wire_probe_got++] = chunk[i];
+                }
+            }
+            {
+                char hex[64];
+                int o = 0;
+
+                for (i = 0u; i < g_wire_probe_got && o < 60; ++i) {
+                    static const char d[] = "0123456789abcdef";
+                    hex[o++] = d[(g_wire_probe_total[i] >> 4) & 0xFu];
+                    hex[o++] = d[g_wire_probe_total[i] & 0xFu];
+                    hex[o++] = ' ';
+                }
+                hex[o] = '\0';
+                kernel_debug_printf("network: tcp wire probe OK first=%u bytes hex=%s\n",
+                                    (unsigned int)got, hex);
+            }
+            g_wire_probe_state = 3; /* keep draining below */
+        }
+        return;
+    }
+
+    if (g_wire_probe_state == 3) {
+        uint8_t chunk[256];
+        uint32_t got = 0u;
+
+        while (network_queue_rx_dequeue(chunk, (uint32_t)sizeof(chunk),
+                                        g_wire_probe_handle, &got, NULL) > 0 && got > 0u) {
+            /* drain fully (HTTP response is small) */
+        }
+        {
+            struct mk_network_socket_state *c = mk_network_socket_by_handle(g_wire_probe_handle);
+
+            if (c != 0) {
+                memset(c, 0, sizeof(*c));
+            }
+        }
+        g_wire_probe_state = 9;
+        return;
+    }
+}
+
+
+/*
  * Inbound-responder self-test, restricted to the QEMU user-net.
  *
  * slirp never ARPs for nor pings the guest, so the reachability responders
@@ -3773,6 +3941,7 @@ static void mk_network_progress_state(void) {
     mk_dhcp_apply_lease_if_bound();
     mk_network_loopback_smoke();
     mk_network_tcp_loopback_smoke();
+    mk_network_tcp_wire_probe();
     mk_network_icmp_probe_tick();
     mk_network_responder_selftest();
     mk_network_tcp_retry();

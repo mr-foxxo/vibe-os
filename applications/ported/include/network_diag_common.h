@@ -95,7 +95,7 @@ static void netdiag_debugf(const char *fmt, ...) {
     netdiag_write_debug(line);
 }
 
-static int netdiag_load_snapshot(const char *tool,
+static __attribute__((unused)) int netdiag_load_snapshot(const char *tool,
                                  struct mk_network_info *info,
                                  struct mk_network_status *status) {
     if (info == 0 || status == 0) {
@@ -329,7 +329,7 @@ static __attribute__((unused)) void netdiag_print_status_summary(
     printf("socket scope: %s\n", netdiag_socket_scope_name(info));
 }
 
-static int netdiag_require_real_packet_path(const char *tool,
+static __attribute__((unused)) int netdiag_require_real_packet_path(const char *tool,
                                             const char *subject,
                                             const struct mk_network_info *info,
                                             const struct mk_network_status *status) {

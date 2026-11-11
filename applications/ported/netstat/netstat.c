@@ -71,8 +71,6 @@ int vibe_app_main(int argc, char **argv) {
     struct mk_network_info info;
     struct mk_network_status status;
     const char *active_if;
-    const char *dns;
-    const char *gateway;
 
     (void)argv;
     if (argc != 1) {
@@ -108,8 +106,6 @@ int vibe_app_main(int argc, char **argv) {
         ip_local = 0u;
     }
     active_if = status.active_if[0] != '\0' ? status.active_if : "lo0";
-    gateway = status.gateway[0] != '\0' ? status.gateway : "-";
-    dns = status.dns_server[0] != '\0' ? status.dns_server : "-";
 
     printf("netstat: state=%s active=%s lease=%s\n",
            netstat_link_state_name(status.link_state),

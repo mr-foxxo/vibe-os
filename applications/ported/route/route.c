@@ -10,6 +10,7 @@ int vibe_app_main(int argc, char **argv) {
     struct mk_network_status status;
     const char *if_name;
 
+    (void)argv;
     if (argc != 1) {
         route_usage();
         return 1;
