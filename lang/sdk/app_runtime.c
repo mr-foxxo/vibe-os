@@ -25,6 +25,7 @@
 #define VIBE_APP_SYSCALL_NETWORK_SCAN 57
 #define VIBE_APP_SYSCALL_NETWORK_CONNECT_WIFI 58
 #define VIBE_APP_SYSCALL_NETWORK_DISCONNECT 59
+#define VIBE_APP_SYSCALL_NETWORK_SOCKET_LIST 232
 #define VIBE_APP_SYSCALL_NETWORK_SOCKET 65
 #define VIBE_APP_SYSCALL_NETWORK_BIND 66
 #define VIBE_APP_SYSCALL_NETWORK_CONNECT 67
@@ -1021,6 +1022,14 @@ int vibe_app_network_get_info(struct mk_network_info *info) {
                              0,
                              0,
                              0);
+}
+
+int vibe_app_network_socket_list(uint32_t index,
+                                 struct mk_network_socket_list_entry *entry) {
+    return vibe_app_syscall5(VIBE_APP_SYSCALL_NETWORK_SOCKET_LIST,
+                             (int)index,
+                             (int)(uintptr_t)entry,
+                             0, 0, 0);
 }
 
 int vibe_app_network_get_status(struct mk_network_status *status) {

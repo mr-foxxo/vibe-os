@@ -413,6 +413,8 @@ static int mk_network_tcp_output(struct mk_network_socket_state *sock,
                                  uint8_t flags, uint32_t seq, uint32_t ack,
                                  const uint8_t *data, uint32_t len);
 static void mk_network_tcp_loopback_smoke(void);
+static int mk_network_export_socket_entry(uint32_t index,
+                                          struct mk_network_socket_list_entry *entry);
 static void mk_network_tcp_rtt_start(struct mk_network_socket_state *sock);
 static void mk_network_tcp_rtt_ack(struct mk_network_socket_state *sock, uint32_t ack_number);
 
@@ -3957,6 +3959,28 @@ static int mk_network_local_handler(const struct mk_message *request,
             g_last_network_reply = *reply;
             return 0;
         }
+    case MK_MSG_NET_SOCKET_LIST: {
+        struct mk_network_socket_list_request list_request;
+        struct mk_network_socket_list_entry entry;
+
+        if (request->payload_size != sizeof(list_request)) {
+            return -1;
+        }
+        memcpy(&list_request, request->payload, sizeof(list_request));
+        if (mk_network_export_socket_entry(list_request.index, &entry) != 0) {
+            /* Past the end: empty payload is the "no more rows" reply. */
+            if (mk_message_set_payload(reply, 0, 0u) != 0) {
+                return -1;
+            }
+            g_last_network_reply = *reply;
+            return 0;
+        }
+        if (mk_message_set_payload(reply, &entry, sizeof(entry)) != 0) {
+            return -1;
+        }
+        g_last_network_reply = *reply;
+        return 0;
+    }
     case MK_MSG_NET_CONNECT_WIFI:
         if (request->payload_size != sizeof(struct mk_network_connect_request)) {
             return -1;
@@ -4206,6 +4230,100 @@ int mk_network_service_get_status(struct mk_network_status *status) {
         return -1;
     }
     memcpy(status, reply.payload, sizeof(*status));
+    return 0;
+}
+
+/*
+ * Live socket-table export (item 1.5). Direct reader for the service
+ * worker context; the public entry below mirrors the SCAN request/reply
+ * shape (index -> k-th exported socket, -1 past the end) so userland can
+ * iterate without ever seeing the socket array layout.
+ */
+static int mk_network_export_socket_entry(uint32_t index,
+                                          struct mk_network_socket_list_entry *entry) {
+    uint32_t seen = 0u;
+    uint32_t i;
+
+    if (entry == 0) {
+        return -1;
+    }
+    for (i = 0u; i < MK_NETWORK_SOCKET_MAX; ++i) {
+        const struct mk_network_socket_state *sock = &g_network_state.sockets[i];
+        uint32_t proto = 0u;
+        uint32_t state = 0u;
+
+        if (!sock->used) {
+            continue;
+        }
+        if (mk_network_socket_is_inet_tcp(sock)) {
+            proto = MK_NETWORK_LIST_PROTO_TCP;
+        } else if (mk_network_socket_is_inet_udp(sock)) {
+            proto = MK_NETWORK_LIST_PROTO_UDP;
+        } else if (mk_network_socket_is_inet_icmp(sock)) {
+            proto = MK_NETWORK_LIST_PROTO_ICMP;
+        } else if (sock->domain == AF_UNIX) {
+            proto = MK_NETWORK_LIST_PROTO_UNIX;
+        } else {
+            continue;
+        }
+        if (sock->listening) {
+            state = MK_NETWORK_LIST_STATE_LISTEN;
+        } else if (sock->connected == 3) {
+            state = MK_NETWORK_LIST_STATE_ESTABLISHED;
+        } else if (sock->connected == 2) {
+            state = MK_NETWORK_LIST_STATE_CONNECTING;
+        } else if (sock->connected == 1) {
+            state = MK_NETWORK_LIST_STATE_LOOPBACK_CONNECTED;
+        } else if (sock->bound) {
+            state = MK_NETWORK_LIST_STATE_BOUND;
+        } else {
+            continue;
+        }
+        if (seen == index) {
+            memset(entry, 0, sizeof(*entry));
+            entry->proto = proto;
+            entry->state = state;
+            entry->recv_ready = network_queue_get_socket_readiness((int32_t)i + 1) &
+                                NETWORK_SOCKET_READY_RECV;
+            entry->local_port = sock->local_port;
+            entry->remote_ipv4 = sock->remote_ipv4;
+            entry->remote_port = sock->remote_port;
+            entry->owner_pid = sock->owner_pid;
+            return 0;
+        }
+        seen++;
+    }
+    return -1;
+}
+
+int mk_network_service_socket_list(uint32_t index,
+                                   struct mk_network_socket_list_entry *entry) {
+    struct mk_message request;
+    struct mk_message reply;
+    struct mk_network_socket_list_request list_request;
+
+    if (entry == 0) {
+        return -1;
+    }
+    if (mk_network_current_process_is_service_worker()) {
+        return mk_network_export_socket_entry(index, entry);
+    }
+
+    list_request.index = index;
+    if (mk_network_prepare_request(&request, MK_MSG_NET_SOCKET_LIST,
+                                   &list_request, sizeof(list_request)) != 0) {
+        return -1;
+    }
+    if (mk_service_request(MK_SERVICE_NETWORK, &request, &reply) != 0) {
+        return -1;
+    }
+    if (reply.payload_size == 0u) {
+        return -1; /* past the end */
+    }
+    if (reply.payload_size != sizeof(*entry)) {
+        return -1;
+    }
+    memcpy(entry, reply.payload, sizeof(*entry));
     return 0;
 }
 

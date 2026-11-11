@@ -36,7 +36,7 @@ struct itimerspec {
    legacy stage2 dispatch is still compiled into the image; eventually we
    will migrate completely to this table-driven approach. */
 
-#define MAX_SYSCALLS 232
+#define MAX_SYSCALLS 233
 typedef uint32_t (*syscall_fn)(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
 static syscall_fn syscall_table[MAX_SYSCALLS];
 static uint8_t g_audio_boot_trace_launch_info = 0u;
@@ -1202,6 +1202,20 @@ static uint32_t sys_network_scan(uint32_t index, uint32_t out_ptr, uint32_t c,
     }
     return (uint32_t)mk_network_service_get_scan(index,
                                                  (struct mk_network_scan_info *)(uintptr_t)out_ptr);
+}
+
+static uint32_t sys_network_socket_list(uint32_t index, uint32_t out_ptr, uint32_t c,
+                                        uint32_t d, uint32_t e) {
+    (void)c; (void)d; (void)e;
+    if (out_ptr == 0u) {
+        return (uint32_t)-1;
+    }
+    if (!sys_user_ptr_ok((uintptr_t)out_ptr,
+                         sizeof(struct mk_network_socket_list_entry))) {
+        return (uint32_t)-1;
+    }
+    return (uint32_t)mk_network_service_socket_list(
+        index, (struct mk_network_socket_list_entry *)(uintptr_t)out_ptr);
 }
 
 static uint32_t sys_network_connect_wifi(uint32_t request_ptr, uint32_t b, uint32_t c,
@@ -4482,6 +4496,7 @@ void syscall_init(void) {
     syscall_table[SYSCALL_NETWORK_GETINFO] = sys_network_get_info;
     syscall_table[SYSCALL_NETWORK_GET_STATUS] = sys_network_get_status;
     syscall_table[SYSCALL_NETWORK_SCAN] = sys_network_scan;
+    syscall_table[SYSCALL_NETWORK_SOCKET_LIST] = sys_network_socket_list;
     syscall_table[SYSCALL_NETWORK_CONNECT_WIFI] = sys_network_connect_wifi;
     syscall_table[SYSCALL_NETWORK_DISCONNECT] = sys_network_disconnect;
     syscall_table[SYSCALL_NETWORK_CONNECT_ETHERNET] = sys_network_connect_ethernet;

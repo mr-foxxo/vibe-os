@@ -53,6 +53,8 @@ int vibe_app_audio_mixer_read(mixer_ctrl_t *control);
 int vibe_app_audio_mixer_write(const mixer_ctrl_t *control);
 int vibe_app_network_get_info(struct mk_network_info *info);
 int vibe_app_network_get_status(struct mk_network_status *status);
+int vibe_app_network_socket_list(uint32_t index,
+                                 struct mk_network_socket_list_entry *entry);
 int vibe_app_network_scan(uint32_t index, struct mk_network_scan_info *info);
 int vibe_app_network_connect_wifi(const struct mk_network_connect_request *request);
 int vibe_app_network_connect_ethernet(const char *if_name);

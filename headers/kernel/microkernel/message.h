@@ -92,7 +92,11 @@ enum mk_message_type {
      * `netmgrd status` exactly that way (key-cons trace, gate 19_ns9:
      * shell received `netmgrd ` + Enter, argc=1). Additive message type;
      * KEY_READ (69) is unchanged for every existing caller. */
-    MK_MSG_INPUT_KEY_READ_WAIT = 109
+    MK_MSG_INPUT_KEY_READ_WAIT = 109,
+
+    /* Live socket-table export (closure item 1.5): index -> entry, like the
+     * SCAN pattern. Additive; no existing message or struct is touched. */
+    MK_MSG_NET_SOCKET_LIST = 110
 };
 
 struct mk_message {

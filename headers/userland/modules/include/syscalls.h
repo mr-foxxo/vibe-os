@@ -16,6 +16,7 @@ struct mk_network_info;
 struct mk_network_status;
 struct mk_network_scan_info;
 struct mk_network_connect_request;
+struct mk_network_socket_list_entry;
 struct mk_network_ethernet_config;
 typedef struct mixer_ctrl mixer_ctrl_t;
 
@@ -98,6 +99,7 @@ int sys_audio_mixer_write(const mixer_ctrl_t *control);
 int sys_audio_play_asset(const char *path);
 int sys_network_get_info(struct mk_network_info *info);
 int sys_network_get_status(struct mk_network_status *status);
+int sys_network_socket_list(uint32_t index, struct mk_network_socket_list_entry *entry);
 int sys_network_scan(uint32_t index, struct mk_network_scan_info *info);
 int sys_network_connect_wifi(const struct mk_network_connect_request *request);
 int sys_network_connect_ethernet(const char *if_name);

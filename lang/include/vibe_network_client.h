@@ -107,6 +107,33 @@ struct mk_network_status {
     char gateway[MK_NETWORK_ADDR_MAX];
     char dns_server[MK_NETWORK_ADDR_MAX];
 };
+/* Socket-list export (closure item 1.5). These mirror the kernel-side
+ * definitions in headers/kernel/microkernel/network.h exactly — the two
+ * headers are the ABI boundary (same pattern as mk_network_info/status). */
+#define MK_NETWORK_LIST_PROTO_TCP 1u
+#define MK_NETWORK_LIST_PROTO_UDP 2u
+#define MK_NETWORK_LIST_PROTO_ICMP 3u
+#define MK_NETWORK_LIST_PROTO_UNIX 4u
+#define MK_NETWORK_LIST_STATE_BOUND 1u
+#define MK_NETWORK_LIST_STATE_CONNECTING 2u
+#define MK_NETWORK_LIST_STATE_ESTABLISHED 3u
+#define MK_NETWORK_LIST_STATE_LISTEN 4u
+#define MK_NETWORK_LIST_STATE_LOOPBACK_CONNECTED 5u
+
+struct mk_network_socket_list_request {
+    uint32_t index;
+};
+
+struct mk_network_socket_list_entry {
+    uint32_t proto;
+    uint32_t state;
+    uint32_t recv_ready;
+    uint32_t local_port;
+    uint32_t remote_ipv4;
+    uint32_t remote_port;
+    uint32_t owner_pid;
+};
+
 
 struct mk_network_scan_info {
     uint32_t index;

@@ -331,6 +331,22 @@ static int network_service_handle_request(const struct mk_message *request,
         service_prepare_reply(reply, request, source_pid);
         return service_set_payload(reply, &status, sizeof(status));
     }
+    case MK_MSG_NET_SOCKET_LIST: {
+        struct mk_network_socket_list_request list_request;
+        struct mk_network_socket_list_entry entry;
+
+        if (request->payload_size != sizeof(list_request)) {
+            return -1;
+        }
+        memcpy(&list_request, request->payload, sizeof(list_request));
+        memset(&entry, 0, sizeof(entry));
+        if (sys_network_socket_list(list_request.index, &entry) != 0) {
+            service_prepare_reply(reply, request, source_pid);
+            return service_set_payload(reply, 0, 0u);
+        }
+        service_prepare_reply(reply, request, source_pid);
+        return service_set_payload(reply, &entry, sizeof(entry));
+    }
     case MK_MSG_NET_SCAN: {
         struct mk_network_scan_request scan_request;
         struct mk_network_scan_info info;

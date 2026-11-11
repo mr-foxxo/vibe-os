@@ -225,7 +225,10 @@ enum syscall_id {
     /* Additive ABI (bug #19 item 0.12, 01/11): blocking key read.
      * a = timeout ticks (0 = indefinite); returns key (>0) or -1.
      * SYSCALL_INPUT_KEY (5) is unchanged for every existing caller. */
-    SYSCALL_INPUT_KEY_WAIT = 231
+    SYSCALL_INPUT_KEY_WAIT = 231,
+    /* Live socket-table export (item 1.5). Additive; the existing network
+     * syscalls and structs are byte-for-byte untouched. */
+    SYSCALL_NETWORK_SOCKET_LIST = 232
 };
 
 enum userland_builtin_target {

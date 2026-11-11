@@ -737,6 +737,10 @@ int sys_network_get_status(struct mk_network_status *status) {
     return syscall5(SYSCALL_NETWORK_GET_STATUS, (int)(uintptr_t)status, 0, 0, 0, 0);
 }
 
+int sys_network_socket_list(uint32_t index, struct mk_network_socket_list_entry *entry) {
+    return syscall5(SYSCALL_NETWORK_SOCKET_LIST, (int)index, (int)(uintptr_t)entry, 0, 0, 0);
+}
+
 int sys_network_scan(uint32_t index, struct mk_network_scan_info *info) {
     return syscall5(SYSCALL_NETWORK_SCAN, (int)index, (int)(uintptr_t)info, 0, 0, 0);
 }

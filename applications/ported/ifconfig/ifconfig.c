@@ -51,7 +51,20 @@ static void ifconfig_print_active(const struct mk_network_status *status) {
     }
 
     if_name = status->active_if[0] != '\0' ? status->active_if : "em0";
-    printf("%s: flags=8843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST>\n", if_name);
+    /* Item 1.5: flags derived from the real link state instead of the
+     * historical constant 8843 (which claimed RUNNING even when down). */
+    {
+        unsigned int flags = 0x1u /* IFF_UP */ | 0x2u /* IFF_BROADCAST */ |
+                             0x80u /* IFF_MULTICAST */;
+        if (status->link_state == MK_NETWORK_LINK_CONNECTED) {
+            flags |= 0x40u; /* IFF_RUNNING */
+        }
+        printf("%s: flags=%x<UP,BROADCAST%s%s,MULTICAST>\n",
+               if_name,
+               flags,
+               (flags & 0x40u) ? ",RUNNING" : "",
+               (status->active_kind == MK_NETWORK_IF_LOOPBACK) ? ",LOOPBACK" : "");
+    }
     printf("        media: %s\n", ifconfig_kind_name(status->active_kind));
     if (status->current_ssid[0] != '\0') {
         printf("        ssid %s signal %u%%\n",
@@ -68,6 +81,9 @@ static void ifconfig_print_active(const struct mk_network_status *status) {
         printf("        dns %s\n", status->dns_server);
     }
     printf("        status: %s\n", ifconfig_link_state_name(status->link_state));
+    printf("        tx-frames: %u  rx-frames: %u\n",
+           (unsigned)status->backend_tx_frames,
+           (unsigned)status->backend_rx_frames);
 }
 
 static void ifconfig_usage(void) {
