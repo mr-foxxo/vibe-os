@@ -859,6 +859,8 @@ IMAGE := $(BUILD_DIR)/boot.img
 # Symbol impl: kernel/stackguard.c; a guard hit panics with the offender's
 # return address (nm-resolvable). DOOM/vendored CFLAGS keep -fno-stack-protector.
 CFLAGS := -std=gnu17 -m32 $(CPU_ARCH_CFLAGS) -Os -ffreestanding -fno-pic -fno-pie -fstack-protector -mstack-protector-guard=global -fno-builtin -fcf-protection=none -nostdlib -Wall -Wextra -Werror -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -I. -idirafter headers -Iuserland -Ilang/include -Ilang/vendor/quickjs-ng -Ilang/vendor/mruby/include -Ilang/vendor/micropython
+# Bare-metal cross-compilers may ship without libc headers.
+CFLAGS += -idirafter headers/freestanding
 CFLAGS += -I$(APP_CATALOG_GENERATED_DIR)
 CFLAGS += -MMD -MP
 LUA_CFLAGS := -Iuserland/lua/include -Iuserland/lua/vendor/lua-5.4.6/src
@@ -1924,9 +1926,9 @@ $(BOOT_POLICY_MANIFEST): $(KERNEL_BIN) $(STAGE2_BIN) $(DATA_IMAGE)
 	@mkdir -p $(dir $@)
 	@printf "# vibeOS USB boot/loading strategy\nbios_disk_transport=edd-int13\nboot_partition_fs=fat32\nstage2_path=/STAGE2.BIN\nkernel_path=/KERNEL.BIN\nruntime_storage_probe=ahci-then-ata\ndata_volume_resolution=mbr-data-partition-with-raw-layout-fallback\nusb_scope=phase4-relies-on-bios-mass-storage-before-native-usb-service\n" > $@
 
-$(IMAGE): $(MBR_BIN) $(BOOT_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(DATA_IMAGE) $(BOOT_VOLUME_MANIFEST) $(BOOT_POLICY_MANIFEST) $(BOOTLOADER_BG_BIN) $(VIBE_BOOTLOADER_AUDIO_RAW)
+$(IMAGE): $(MBR_BIN) $(BOOT_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(DATA_IMAGE) $(BOOT_VOLUME_MANIFEST) $(BOOT_POLICY_MANIFEST) $(BOOTLOADER_BG_BIN) $(VIBE_BOOTLOADER_AUDIO_RAW) tools/build_partitioned_image.py
 	$(PYTHON) tools/build_partitioned_image.py \
-		--image $@ \
+		--image $@.tmp \
 		--mkfs-fat $(MKFS_FAT_TOOL) \
 		--mcopy $(MCOPY_TOOL) \
 		--mmd $(MMD_TOOL) \
@@ -1950,6 +1952,7 @@ $(IMAGE): $(MBR_BIN) $(BOOT_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(DATA_IMAGE) $(BOO
 		--boot-file "$(BOOT_VOLUME_MANIFEST)::/LAYOUT.TXT" \
 		--boot-file "$(BOOT_POLICY_MANIFEST)::/BOOTPOL.TXT" \
 		--boot-file "$(DATA_IMAGE_MANIFEST)::/DATAINFO.TXT"
+	@mv -f $@.tmp $@
 	@echo "Imagem gerada: $(IMAGE)"
 
 run: $(IMAGE)
