@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+#define DOOM_ZONE_DEFAULT_MIB 8
+
 int doom_port_should_quit(void);
 void doom_port_request_quit(const char *reason, int code);
 void doom_port_abort_run(const char *reason, int code) __attribute__((noreturn));

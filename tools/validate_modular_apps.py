@@ -1222,9 +1222,20 @@ def scenario_open_terminal(session: QemuSession, timeout: float = 45.0) -> None:
 
 
 def scenario_doom(session: QemuSession) -> None:
-    scenario_open_terminal(session)
-    run_command(session, "doom", timeout=8.0, marker="")
-    session.wait_for_all(["desktop: open-new w=1 t=16 i=0"], timeout=20.0)
+    window_marker = "desktop: open-new w=0 t=18 i=0"
+    session.reset_mouse_to_center()
+    session.move_mouse_to(*start_button_center(session))
+    for attempt in range(3):
+        session.send_key("esc", pause=0.2)
+        session.left_click()
+        session.type_text("doom", pause=0.15)
+        session.send_key("ret", pause=0.15)
+        try:
+            session.wait_for_log(window_marker, timeout=5.0)
+            break
+        except RuntimeError:
+            if attempt == 2 or session.proc.poll() is not None:
+                raise
     time.sleep(0.8)
     session.send_key("ret", pause=0.15)
     session.wait_for_all(
@@ -1232,8 +1243,9 @@ def scenario_doom(session: QemuSession) -> None:
             "doom: key enter",
             "fs: asset file /DOOM/DOOM.WAD",
             "doom: port run begin",
+            "doom: first frame",
         ],
-        timeout=20.0,
+        timeout=60.0,
     )
 
 
@@ -1704,14 +1716,14 @@ SCENARIOS = [
     ),
     Scenario(
         name="doom-assets-app",
-        description="Desktop autostart opens a terminal, launches DOOM and reaches the real WAD runtime",
+        description="Start menu launches DOOM, loads the WAD, and presents the first frame",
         command=None,
         must_have=[
-            "desktop: open-new w=0 t=1 i=0",
-            "desktop: open-new w=1 t=16 i=0",
+            "desktop: open-new w=0 t=18 i=0",
             "doom: key enter",
             "fs: asset file /DOOM/DOOM.WAD",
             "doom: port run begin",
+            "doom: first frame",
         ],
         boot_markers=[
             *AUTODESKTOP_BOOT_MARKERS,

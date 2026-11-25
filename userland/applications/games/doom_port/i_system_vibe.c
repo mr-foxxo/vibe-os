@@ -16,7 +16,7 @@
 #include <userland/applications/games/DOOM/linuxdoom-1.10/i_video.h>
 #include <userland/applications/games/DOOM/linuxdoom-1.10/m_misc.h>
 
-int mb_used = 8;
+int mb_used = DOOM_ZONE_DEFAULT_MIB;
 extern boolean demorecording;
 
 void I_Tactile(int on, int off, int total) {
@@ -35,8 +35,14 @@ int I_GetHeapSize(void) {
 }
 
 byte *I_ZoneBase(int *size) {
-    *size = mb_used * 1024 * 1024;
-    return (byte *)malloc(*size);
+    int zone_size = I_GetHeapSize();
+    byte *zone = malloc(zone_size);
+
+    if (zone == 0) {
+        doom_port_abort_run("DOOM: unable to allocate zone memory", 1);
+    }
+    *size = zone_size;
+    return zone;
 }
 
 int I_GetTime(void) {
@@ -86,6 +92,9 @@ void I_Error(char *error, ...) {
     va_start(argptr, error);
     vsnprintf(msg, sizeof(msg), error ? error : "Erro desconhecido", argptr);
     va_end(argptr);
+    sys_write_debug("doom: fatal: ");
+    sys_write_debug(msg);
+    sys_write_debug("\n");
 
     if (demorecording) {
         G_CheckDemoStatus();

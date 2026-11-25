@@ -15,6 +15,7 @@ static int g_off_y = 0;
 static int g_dst_w = SCREENWIDTH;
 static int g_dst_h = SCREENHEIGHT;
 static int g_inited = 0;
+static int g_first_frame = 0;
 static int g_mouse_ready = 0;
 static int g_mouse_prev_x = 0;
 static int g_mouse_prev_y = 0;
@@ -145,7 +146,8 @@ void I_StartTic(void) {
         }
     }
 
-    while ((key = sys_poll_key()) != 0) {
+    /* The VibeOS key queue returns -1 when it is empty. */
+    while ((key = sys_poll_key()) >= 0) {
         int mapped = map_key(key);
         if (mapped < 0 || mapped >= (int)(sizeof(g_key_hold) / sizeof(g_key_hold[0]))) {
             continue;
@@ -189,6 +191,7 @@ void I_InitGraphics(void) {
     }
 
     memset(g_key_hold, 0, sizeof(g_key_hold));
+    g_first_frame = 0;
     g_mouse_ready = 0;
     g_mouse_prev_x = 0;
     g_mouse_prev_y = 0;
@@ -208,6 +211,10 @@ void I_FinishUpdate(void) {
     byte *src = screens[0];
     doom_video_refresh_layout();
     sys_gfx_blit8_stretch_present(src, SCREENWIDTH, SCREENHEIGHT, 0, 0, g_dst_w, g_dst_h);
+    if (!g_first_frame) {
+        g_first_frame = 1;
+        sys_write_debug("doom: first frame\n");
+    }
 }
 
 void I_ReadScreen(byte *scr) {
