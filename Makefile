@@ -2441,26 +2441,17 @@ glibc-core:
 	@echo "Building glibc-core (810 core functions)..."
 	$(MAKE) -f Build.glibc.mk glibc-build
 
-# Build language apps as standalone build/bin executables
-# Apps link glibc.a statically (or can load glibc.so dynamically at runtime)
-apps: glibc-core | $(APP_BIN_DIR) $(APP_LIB_DIR)
-	@echo "Building language runtime apps to $(APP_BIN_DIR)..."
-	@mkdir -p $(APP_BIN_DIR) $(APP_LIB_DIR)
-	@echo "$(HELLO_APP_BIN) -> $(APP_BIN_DIR)/hello"
-	@cp $(HELLO_APP_BIN) $(APP_BIN_DIR)/hello || echo "WARNING: hello app not found"
-	@if [ -f "$(JS_APP_BIN)" ]; then cp $(JS_APP_BIN) $(APP_BIN_DIR)/js; else echo "WARNING: js app not found"; fi
+# Build and stage language apps using the normal VibeOS app toolchain.
+.PHONY: apps app-hello app-js
+apps: app-hello app-js
 	@if [ -f "$(RUBY_APP_BIN)" ]; then cp $(RUBY_APP_BIN) $(APP_BIN_DIR)/ruby; else echo "WARNING: ruby app not found"; fi
 	@if [ -f "$(PYTHON_APP_BIN)" ]; then cp $(PYTHON_APP_BIN) $(APP_BIN_DIR)/python; else echo "WARNING: python app not found"; fi
 	@if [ -f "$(JAVA_APP_BIN)" ]; then cp $(JAVA_APP_BIN) $(APP_BIN_DIR)/java; else echo "WARNING: java app not found"; fi
 	@if [ -f "$(JAVAC_APP_BIN)" ]; then cp $(JAVAC_APP_BIN) $(APP_BIN_DIR)/javac; else echo "WARNING: javac app not found"; fi
-	@if [ -f "build/libglibc-full.a" ]; then cp build/libglibc-full.a $(APP_LIB_DIR)/libglibc.a; else cp build/libglibc-core.a $(APP_LIB_DIR)/libglibc.a; fi || true
 	@echo "Apps built to $(APP_BIN_DIR)"
 
 $(APP_BIN_DIR):
 	mkdir -p $(APP_BIN_DIR)
-
-$(APP_LIB_DIR):
-	mkdir -p $(APP_LIB_DIR)
 
 glibc-clean:
 	@echo "Cleaning glibc build..."

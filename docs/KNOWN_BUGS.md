@@ -703,3 +703,10 @@ exige evidencia executada; o estado corrente da fila de trabalho vive em
 - **Observado:** o compilador `i686-elf-gcc` sem libc falhava nos headers C, e o `newfs_msdos` rejeitava os argumentos para formatar a partição FAT32 em um arquivo regular.
 - **Correção:** o build passou a encontrar os headers de fallback do VibeOS e as declarações que faltavam. O formatador recebe o nome do volume e a geometria com as opções do macOS. Os READMEs indicam como usar o Python do Homebrew com Pillow.
 - **Validação:** build limpo em macOS arm64 com `gmake -j10`; `gmake run` chegou ao desktop (`build/macos-qemu-serial.log`); `gmake validate-phase6` passou 6/6 (`build/phase6-validation.md`). A checagem estática da ABI passou com `i686-elf-gcc -ffreestanding`.
+
+### [x] 26. `make apps` disparava o build experimental da glibc no macOS
+
+- **Observação:** `make apps` emitia erros de compilação da glibc e podia anunciar sucesso com um arquivo parcial. Em uma árvore sem apps compilados, o alvo também podia terminar sem `hello` e `js`.
+- **Causa raiz:** o alvo dependia de `glibc-core`, embora os apps usem o SDK do VibeOS, e tentava copiar `hello.app` e `js.app` sem declará-los como pré-requisitos.
+- **Correção:** `make apps` usa `app-hello` e `app-js`, continua copiando os quatro apps opcionais quando presentes e deixa a compilação experimental da glibc nos alvos próprios.
+- **Validação:** `make -j4 apps BUILD_DIR=<diretório vazio>` no macOS arm64 produziu `bin/hello` e `bin/js`, idênticos aos binários em `lang/`, e dispensou a compilação da glibc. No diretório padrão, os seis apps copiados coincidiram com os respectivos binários. O build completo gerou `build/boot.img` e chegou ao desktop no QEMU (`build/make-apps-boot-serial.log`). Hello e `js` no AppFS da imagem coincidiram com os arquivos em `build/bin/` (`build/make-apps-appfs-check.log`). O dry run de compilação dos apps e da imagem foi idêntico ao da revisão anterior. As verificações interativas adicionais tiveram timeout na checagem de marcadores no desktop e no terminal, e na seleção do modo rescue para lançar os apps (`build/make-apps-qemu-validation.md`, `build/make-apps-language-smoke.md`).
