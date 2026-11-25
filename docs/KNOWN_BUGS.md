@@ -724,3 +724,11 @@ exige evidencia executada; o estado corrente da fila de trabalho vive em
 - **Causa:** o Doom usa `KEY_RCTRL` para disparar. O VibeOS usa Ctrl como modificador de tradução e só publica o resultado da tecla combinada na fila existente.
 - **Correção:** o port mapeia F para a ação de disparo e mostra a tecla na janela de lançamento.
 - **Validação:** `make -j6` e os gates `validate-doom-800x600` e `validate-doom-1024x768` passaram (`build/doom-keyboard-800x600.md`, `build/doom-keyboard-1024x768.md`). No perfil local de QEMU com CoreAudio e resolução 800×600, quatro acionamentos de F reduziram a munição de 50 para 46 (`build/doom-fire-before.png`, `build/doom-fire-after.png`, `build/doom-fire-serial.log`).
+
+### [x] 29. Menu do Doom recebia teclas antigas e perdia Esc em PS/2
+
+- **Observação:** no perfil QEMU `max` com 8 vCPUs, o menu podia aparecer antes de qualquer tecla dentro do jogo. Uma sonda separada mostrou que Esc sozinho deixava o menu fechado por mais de seis segundos.
+- **Causas:** o desktop lê o fluxo agregado de entrada, mas o Doom mudava para as filas legadas no início do jogo e consumia cópias das teclas e do mouse do launcher. A tradução PS/2 descartava o scancode `0x01` de Esc. USB já entregava o código `27`.
+- **Correção:** o Doom continua lendo o mesmo fluxo de eventos usado pelo desktop. A tradução comum mapeia Esc para `27` em PS/2 e USB.
+- **Validação:** `make -j6` passou no macOS arm64. Com CoreAudio em 800×600, uma pressão de Esc abriu o menu e três pressões de seta para baixo avançaram uma linha por vez, com respostas visíveis entre 80 e 150 ms nos perfis `max`/8 vCPUs e `core2duo`/1 vCPU. A seleção permaneceu estável por dois segundos após a última tecla (`build/doom-latency-max8-esc-fixed-checked-menu.png`, `build/doom-latency-core1-esc-fixed-checked-menu.png`).
+- **Regressão:** os cenários Doom de 800×600 e 1024×768 confirmaram o evento Esc no desktop e o primeiro quadro do jogo (`build/doom-latency-800x600-final.md`, `build/doom-latency-1024x768.md`). O perfil de 1 vCPU também entrou no primeiro mapa e disparou com F (`build/doom-latency-final-gameplay-after-fire.png`). `make validate-phase6` passou nos seis perfis (`build/doom-input-phase6.md`).

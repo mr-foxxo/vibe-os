@@ -1223,6 +1223,7 @@ def scenario_open_terminal(session: QemuSession, timeout: float = 45.0) -> None:
 
 def scenario_doom(session: QemuSession) -> None:
     window_marker = "desktop: open-new w=0 t=18 i=0"
+    send_shortcut_until_log(session, "esc", "desktop: key 27", timeout_per_attempt=2.0)
     session.reset_mouse_to_center()
     session.move_mouse_to(*start_button_center(session))
     for attempt in range(3):
@@ -1236,8 +1237,7 @@ def scenario_doom(session: QemuSession) -> None:
         except RuntimeError:
             if attempt == 2 or session.proc.poll() is not None:
                 raise
-    time.sleep(0.8)
-    session.send_key("ret", pause=0.15)
+    send_shortcut_until_log(session, "ret", "doom: key enter", settle=0.8, timeout_per_attempt=2.0)
     session.wait_for_all(
         [
             "doom: key enter",
@@ -1719,6 +1719,7 @@ SCENARIOS = [
         description="Start menu launches DOOM, loads the WAD, and presents the first frame",
         command=None,
         must_have=[
+            "desktop: key 27",
             "desktop: open-new w=0 t=18 i=0",
             "doom: key enter",
             "fs: asset file /DOOM/DOOM.WAD",
