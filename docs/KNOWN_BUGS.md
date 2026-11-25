@@ -717,3 +717,10 @@ exige evidencia executada; o estado corrente da fila de trabalho vive em
 - **Causas:** a leitura de teclado retorna `-1` quando a fila está vazia, mas o laço do Doom só parava em zero. `M_LoadDefaults()` sobrescrevia os 8 MiB configurados pelo port com o valor de 2 MiB da tabela UNIX.
 - **Correção:** a consulta de teclas encerra no retorno negativo e a tabela de configuração usa o mesmo valor de 8 MiB que o port. O gate abre o Doom pelo menu Iniciar e espera o primeiro quadro.
 - **Validação:** `make -j6` passou no macOS arm64. `make validate-doom-800x600` e `make validate-doom-1024x768` chegaram ao primeiro quadro (`build/doom-800x600-final.md`, `build/doom-1024x768-final.md`). O perfil local de `make run` com `max`, 8 vCPUs e 8 GiB abriu o jogo em 800×600 e respondeu ao teclado (`build/doom-run-profile-serial.log`).
+
+### [x] 28. Doom não disparava pelo teclado com o controle padrão
+
+- **Observação:** Esc, Enter, setas e WASD funcionaram em QEMU. Pressionar Ctrl sozinho manteve a munição em 50.
+- **Causa:** o Doom usa `KEY_RCTRL` para disparar. O VibeOS usa Ctrl como modificador de tradução e só publica o resultado da tecla combinada na fila existente.
+- **Correção:** o port mapeia F para a ação de disparo e mostra a tecla na janela de lançamento.
+- **Validação:** `make -j6` e os gates `validate-doom-800x600` e `validate-doom-1024x768` passaram (`build/doom-keyboard-800x600.md`, `build/doom-keyboard-1024x768.md`). No perfil local de QEMU com CoreAudio e resolução 800×600, quatro acionamentos de F reduziram a munição de 50 para 46 (`build/doom-fire-before.png`, `build/doom-fire-after.png`, `build/doom-fire-serial.log`).

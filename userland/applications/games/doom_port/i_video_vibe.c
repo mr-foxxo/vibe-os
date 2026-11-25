@@ -104,6 +104,7 @@ static int map_key(int key) {
     if (key == 's' || key == 'S') return KEY_DOWNARROW;
     if (key == 'a' || key == 'A') return ',';
     if (key == 'd' || key == 'D') return '.';
+    if (key == 'f' || key == 'F') return KEY_RCTRL;
     return key;
 }
 
