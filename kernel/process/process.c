@@ -362,6 +362,7 @@ process_t *process_create_with_stack(void (*entry)(void),
     p->wait_channel = 0;
     p->wait_deadline = 0u;
     p->wait_result = TASK_WAIT_RESULT_NONE;
+    p->wait_result_pending = 0u;
     p->wait_event_kind = TASK_WAIT_EVENT_NONE;
     p->wait_event_class = TASK_WAIT_CLASS_NONE;
     p->wait_owner_service = 0u;

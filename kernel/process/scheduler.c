@@ -2971,11 +2971,12 @@ kernel_trap_frame_t *scheduler_schedule_frame(kernel_trap_frame_t *frame, int pr
             current->wake_boost_budget -= 1u;
         }
         if (current->wait_result != TASK_WAIT_RESULT_NONE &&
+            current->wait_result_pending == 0u &&
             !scheduler_keep_wait_boost(current)) {
             /*
-             * Wakeup priority should buy the task its first resumed slice, not
-             * permanently bias every later reschedule after the wait was
-             * already consumed in userland/kernel code.
+             * A resumed waiter can be preempted before reading its result.
+             * Keep the completion until the waiter returns, even after its
+             * scheduling boost has expired.
              */
             current->wait_result = TASK_WAIT_RESULT_NONE;
             current->wait_event_kind = TASK_WAIT_EVENT_NONE;
@@ -3397,6 +3398,7 @@ void scheduler_terminate_task(process_t *task) {
     task->wait_channel = 0;
     task->wait_deadline = 0u;
     task->wait_result = TASK_WAIT_RESULT_NONE;
+    task->wait_result_pending = 0u;
     task->wait_event_kind = TASK_WAIT_EVENT_NONE;
     task->wait_event_class = TASK_WAIT_CLASS_NONE;
     task->wait_owner_service = 0u;

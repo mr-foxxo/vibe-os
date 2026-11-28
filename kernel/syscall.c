@@ -2466,6 +2466,7 @@ static uint32_t sys_fork(uint32_t a, uint32_t b, uint32_t c,
     child->wait_channel = 0;
     child->wait_deadline = 0u;
     child->wait_result = TASK_WAIT_RESULT_NONE;
+    child->wait_result_pending = 0u;
     child->wait_event_kind = TASK_WAIT_EVENT_NONE;
     child->wait_event_class = TASK_WAIT_CLASS_NONE;
     child->wait_owner_service = 0u;
@@ -3842,6 +3843,7 @@ static uint32_t sys_thread_create(uint32_t entry_ptr, uint32_t arg_ptr, uint32_t
     thread->wait_channel = 0;
     thread->wait_deadline = 0u;
     thread->wait_result = TASK_WAIT_RESULT_NONE;
+    thread->wait_result_pending = 0u;
     thread->wait_event_kind = TASK_WAIT_EVENT_NONE;
     thread->wait_event_class = TASK_WAIT_CLASS_NONE;
     thread->wait_owner_service = 0u;

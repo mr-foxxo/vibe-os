@@ -110,6 +110,7 @@ typedef struct process {
     const void *wait_channel;
     uint32_t wait_deadline;
     uint32_t wait_result;
+    uint32_t wait_result_pending; /* wait function has not returned yet */
     uint32_t wait_event_kind;
     uint32_t wait_event_class;
     uint32_t wait_owner_service;

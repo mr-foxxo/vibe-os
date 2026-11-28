@@ -6,20 +6,6 @@ exige evidencia executada; o estado corrente da fila de trabalho vive em
 
 ## Abertos
 
-- **QEMU on WSL can stall while the desktop loads persistent storage.** The
-  BIOS, kernel, and init storage smoke complete, but a later desktop storage
-  request times out with work still queued (`svc=2 type=16`). The pre-macOS
-  run had `cliQ=1`, and the clean build with the header fix had `hostQ=1`.
-  Reproduced on `6620d2ac6` and on a clean build of the pre-macOS revision
-  `02254c6ff` with the socket-list forward declaration needed to compile it.
-  The older Core 2 Duo profile also reproduces the timeout. Serial evidence
-  is in `build/boot-compare-baseline-old.log` and `build/boot-compare-fixed-new.log`.
-  The clean image passed all six `validate-phase6` profiles at 3072 MiB
-  (`build/phase6-fixed-validation.md`). The desktop-specific
-  `startx-autoboot-desktop` scenario timed out before the session was ready
-  (`build/boot-fixed-startx-validation.md`). The cause of the missed IPC wakeup
-  remains open.
-
 - **WSL QEMU network validation stops at file export and terminal input.**
   With the socket-list build fix, `validate-network-surface` booted the rescue
   shell and passed `netmgrd status`. The next command reported `netmgrd: failed
@@ -517,6 +503,28 @@ exige evidencia executada; o estado corrente da fila de trabalho vive em
 - POSIX/Compat: camada BSD integrada (libc, pthreads, socket); X11/X-Like em andamento
 
 ## Bugs corrigidos
+
+### [x] QEMU desktop boot can lose a completed storage wakeup
+
+- **Observed:** Init passed the storage smoke test, then desktop startup
+  timed out on `svc=2 type=16` with the request or reply still queued. The
+  issue also reproduced on the pre-macOS Core 2 Duo profile.
+- **Cause:** A woken task could be preempted inside `yield()` before the wait
+  function read its result. Once the wake priority boost had been consumed,
+  the scheduler cleared `SIGNALED` during switch-out. The trace shows client
+  PID 11 resuming with `NONE` and reblocking before a timeout with `cliQ=1`
+  (`build/wsl-wake-probe.log`). The same sequence affected the storage worker.
+- **Fix:** Keep the result until the wait function returns. Scheduling boosts
+  still expire under the existing rules.
+- **Verification:** WSL `make -j6` rebuilt `build/boot.img`. The default
+  QEMU profile reached `desktop: visual ready` in
+  `build/wsl-wake-fixed-default-visual.log`. The older Core 2 Duo profile
+  reached `desktop: session ready` and all six Phase 6 profiles passed
+  (`build/wsl-wake-fix-phase6.md`).
+- **Experimental SMP:** BSP-only fallback passes. The two- and four-core
+  experimental runs fail the shell marker checks on the pre-macOS baseline
+  and with the fix (`build/wsl-wake-baseline-smp.md`,
+  `build/wsl-wake-fix-smp.md`).
 
 ### [x] WSL build: socket-list struct hidden by the network event guard
 

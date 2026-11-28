@@ -184,6 +184,11 @@ int kernel_waitable_try_wait(kernel_waitable_t *waitable) {
     return ready;
 }
 
+static int kernel_waitable_finish_wait(process_t *task, int result) {
+    task->wait_result_pending = 0u;
+    return result;
+}
+
 int kernel_waitable_wait_timeout(kernel_waitable_t *waitable, uint32_t timeout_ticks) {
     process_t *current;
     uint32_t flags;
@@ -208,6 +213,7 @@ int kernel_waitable_wait_timeout(kernel_waitable_t *waitable, uint32_t timeout_t
      * wait, and legacy callers that block without clearing cannot livelock
      * on a stale SIGNALED.
      */
+    current->wait_result_pending = 1u;
     current->wait_result = TASK_WAIT_RESULT_NONE;
 
     for (;;) {
@@ -217,7 +223,7 @@ int kernel_waitable_wait_timeout(kernel_waitable_t *waitable, uint32_t timeout_t
             waitable->signal_count += 1u;
             current->wait_result = TASK_WAIT_RESULT_SIGNALED;
             spinlock_unlock_irqrestore(&waitable->lock, flags);
-            return TASK_WAIT_RESULT_SIGNALED;
+            return kernel_waitable_finish_wait(current, TASK_WAIT_RESULT_SIGNALED);
         }
 
         /*
@@ -260,7 +266,7 @@ int kernel_waitable_wait_timeout(kernel_waitable_t *waitable, uint32_t timeout_t
                  */
                 continue;
             }
-            return -1;
+            return kernel_waitable_finish_wait(current, -1);
         }
 
         /*
@@ -272,15 +278,15 @@ int kernel_waitable_wait_timeout(kernel_waitable_t *waitable, uint32_t timeout_t
          */
         if (current->wait_result == TASK_WAIT_RESULT_SIGNALED) {
             waitable->wake_count += 1u;
-            return TASK_WAIT_RESULT_SIGNALED;
+            return kernel_waitable_finish_wait(current, TASK_WAIT_RESULT_SIGNALED);
         }
         if (current->wait_result == TASK_WAIT_RESULT_TIMED_OUT) {
             waitable->timeout_count += 1u;
-            return TASK_WAIT_RESULT_TIMED_OUT;
+            return kernel_waitable_finish_wait(current, TASK_WAIT_RESULT_TIMED_OUT);
         }
         if (current->wait_result == TASK_WAIT_RESULT_CANCELED) {
             waitable->cancel_count += 1u;
-            return TASK_WAIT_RESULT_CANCELED;
+            return kernel_waitable_finish_wait(current, TASK_WAIT_RESULT_CANCELED);
         }
 
         /*
@@ -302,7 +308,7 @@ int kernel_waitable_wait_timeout(kernel_waitable_t *waitable, uint32_t timeout_t
             waitable->wake_count += 1u;
             if (scheduler_complete_wait(current,
                                         TASK_WAIT_RESULT_SIGNALED) == 0) {
-                return TASK_WAIT_RESULT_SIGNALED;
+                return kernel_waitable_finish_wait(current, TASK_WAIT_RESULT_SIGNALED);
             }
             /* State flipped under us; the loop-top pending check
              * re-consumes on the next pass. */
@@ -314,15 +320,15 @@ int kernel_waitable_wait_timeout(kernel_waitable_t *waitable, uint32_t timeout_t
 
         if (current->wait_result == TASK_WAIT_RESULT_SIGNALED) {
             waitable->wake_count += 1u;
-            return TASK_WAIT_RESULT_SIGNALED;
+            return kernel_waitable_finish_wait(current, TASK_WAIT_RESULT_SIGNALED);
         }
         if (current->wait_result == TASK_WAIT_RESULT_TIMED_OUT) {
             waitable->timeout_count += 1u;
-            return TASK_WAIT_RESULT_TIMED_OUT;
+            return kernel_waitable_finish_wait(current, TASK_WAIT_RESULT_TIMED_OUT);
         }
         if (current->wait_result == TASK_WAIT_RESULT_CANCELED) {
             waitable->cancel_count += 1u;
-            return TASK_WAIT_RESULT_CANCELED;
+            return kernel_waitable_finish_wait(current, TASK_WAIT_RESULT_CANCELED);
         }
     }
 }
