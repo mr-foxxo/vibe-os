@@ -8,33 +8,35 @@ Builds: Lean kernel (179K) + hello + js apps + boot.img
 
 ## Language Apps
 
-### Copy Already Built Apps to /bin
+### Build or Stage Individual Apps
 ```bash
-make app-hello    # → /bin/hello (3.1K)
-make app-js       # → /bin/js (3.4K)
-make app-ruby     # → Shows how to build mruby first
-make app-python   # → Shows how to build micropython first
+make app-hello    # Builds and copies to build/bin/hello
+make app-js       # Builds and copies to build/bin/js
+make app-ruby     # Copies an existing build/lang/ruby.app
+make app-python   # Copies an existing build/lang/python.app
 ```
 
-### Copy All Built Apps at Once
+### Build and Stage Language Apps
 ```bash
 make apps
 ```
-Copies hello + js to /bin, and libglibc.a to /lib
+Builds Hello and the `js` command using the VibeOS app toolchain and copies them to `build/bin/`. Ruby, Python, Java, and Javac are copied when their `.app` files already exist. The optional glibc build is separate. Use `make run` to build and boot the image with its AppFS apps. The bundled `js`, `ruby`, and `python` commands report `ENOSYS` because their engines are still pending.
 
 ## Libraries
 
-### GlibC (Optional)
+### Experimental glibc Build
 ```bash
-make glibc-core   # Build core glibc (810 functions, ~18KB)
-make glibc        # Build full glibc (7529 functions, ~27KB)
-make glibc-clean  # Remove glibc build artifacts
+make glibc-core                             # Attempt the core subset
+make -f Build.glibc.mk glibc-full-build       # Attempt the full archive
+make glibc-clean                            # Remove glibc build artifacts
 ```
+
+The experimental glibc recipes can report success after compiler errors. See [known bug 26](../KNOWN_BUGS.md#x-26-make-apps-disparava-o-build-experimental-da-glibc-no-macos).
 
 ## Cleanup
 ```bash
 make clean        # Remove all build artifacts
-make apps-clean   # Remove /bin and /lib directories
+make apps-clean   # Remove staged apps and language app build artifacts
 ```
 
 ## Testing
@@ -129,12 +131,10 @@ gdb build/kernel.elf
 
 ```
 vibe-os/
-├── bin/
-│   ├── hello         (3.1 KB) - Hello world executable
-│   └── js            (3.4 KB) - JavaScript runtime
-├── lib/
-│   └── libglibc.a    (27 KB)  - Shared C library
 ├── build/
+│   ├── bin/          - Staged language apps from make apps
+│   │   ├── hello
+│   │   └── js
 │   ├── boot.img      (1.4 MB) - Bootable image
 │   ├── data-partition.img - Raw legacy data/AppFS volume
 │   ├── kernel.bin    (179 KB) - Lean kernel
@@ -164,30 +164,10 @@ At Runtime:
 │  /bin/js        │
 │  /bin/ruby      │ (when built)
 │  /bin/python    │ (when built)
-├─────────────────┤
-│  /lib/libglibc.a│ (27 KB shared)
 └─────────────────┘
 ```
 
-## For Future Builds
-
-### Ruby (MRuby)
-```bash
-cd lang/vendor/mruby
-./minirake
-cd ../../../
-make app-ruby
-```
-
-### Python (MicroPython)
-```bash
-cd lang/vendor/micropython
-make
-cd ../../../
-make app-python
-```
-
-See [BUILD_LANGS.md](BUILD_LANGS.md) for detailed setup.
+See [BUILD_LANGS.md](BUILD_LANGS.md) for language app targets and runtime support.
 
 ## Troubleshooting
 

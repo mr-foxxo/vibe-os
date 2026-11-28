@@ -34,6 +34,7 @@ rcsid[] = "$Id: m_misc.c,v 1.6 1997/02/03 22:45:10 b1 Exp $";
 #include <unistd.h>
 
 #include <ctype.h>
+#include <userland/applications/games/doom_port/doom_port.h>
 
 
 #include "doomdef.h"
@@ -255,7 +256,7 @@ default_t	defaults[] =
 // UNIX hack, to be removed. 
 #ifdef SNDSERV
     {"sndserver", (int *) &sndserver_filename, (int) "sndserver"},
-    {"mb_used", &mb_used, 2},
+    {"mb_used", &mb_used, DOOM_ZONE_DEFAULT_MIB},
 #endif
     
 #endif

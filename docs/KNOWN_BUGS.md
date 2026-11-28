@@ -697,3 +697,38 @@ exige evidencia executada; o estado corrente da fila de trabalho vive em
 - **Hipotese/Causa provavel:** (a) os witnesses `shell: command ` (userland/modules/shell.c:408) e `terminal: command start/done` (userland/applications/terminal.c) existem apenas no caminho LEGADO do terminal (busybox in-process, `terminal_execute_command`); com ksh vivo (`ksh_pid>=0`) o input digitado e roteado ao stdin do filho (`desktop.c` ~10653-10665) e NENHUM witness de dispatch sai; (b) o app executado via execve do ksh (pid 16) terminou sem emitir `audiosvc: export ok` via write_debug — argv/exit do exec do ksh ainda nao auditado (a app roda mas pode estar perdendo argv). As duas faces userland (witness de roteamento + exec-argv) precisam de um dono.
 - **Proxima sonda nomeada:** imprimir no roteamento de input do desktop (`terminal_send_input` quando `ksh_pid>=0`) um witness curto `terminal: typed ksh rc-pid=<n>` por linha; e auditar o execve do ksh para o app `audiosvc` (`host: argv` ausente para pid16 sugere exec direto sem o bootstrap host). Acao: campanha P8 (userland/ksh) — enquanto isso, as provas de audio/capture usam o gate deterministico de boot `--require-capture-smoke` (nao digita nada), que e o canalo honesto atual.
 - **Impacto:** nenhum no kernel; os gates `validate-audio-hda-*`/`validate-audio-stack*` interativos seguem vermelhos APENOS neste canal (baseline ja vermelha antes de hoje por #22/#23 — hoje restou so esta causa, um adiantamento real).
+
+### [x] 25. Build no macOS com a toolchain Homebrew falhava antes de gerar a imagem
+
+- **Observado:** o compilador `i686-elf-gcc` sem libc falhava nos headers C, e o `newfs_msdos` rejeitava os argumentos para formatar a partição FAT32 em um arquivo regular.
+- **Correção:** o build passou a encontrar os headers de fallback do VibeOS e as declarações que faltavam. O formatador recebe o nome do volume e a geometria com as opções do macOS. Os READMEs indicam como usar o Python do Homebrew com Pillow.
+- **Validação:** build limpo em macOS arm64 com `gmake -j10`; `gmake run` chegou ao desktop (`build/macos-qemu-serial.log`); `gmake validate-phase6` passou 6/6 (`build/phase6-validation.md`). A checagem estática da ABI passou com `i686-elf-gcc -ffreestanding`.
+
+### [x] 26. `make apps` disparava o build experimental da glibc no macOS
+
+- **Observação:** `make apps` emitia erros de compilação da glibc e podia anunciar sucesso com um arquivo parcial. Em uma árvore sem apps compilados, o alvo também podia terminar sem `hello` e `js`.
+- **Causa raiz:** o alvo dependia de `glibc-core`, embora os apps usem o SDK do VibeOS, e tentava copiar `hello.app` e `js.app` sem declará-los como pré-requisitos.
+- **Correção:** `make apps` usa `app-hello` e `app-js`, continua copiando os quatro apps opcionais quando presentes e deixa a compilação experimental da glibc nos alvos próprios.
+- **Validação:** `make -j4 apps BUILD_DIR=<diretório vazio>` no macOS arm64 produziu `bin/hello` e `bin/js`, idênticos aos binários em `lang/`, e dispensou a compilação da glibc. No diretório padrão, os seis apps copiados coincidiram com os respectivos binários. O build completo gerou `build/boot.img` e chegou ao desktop no QEMU (`build/make-apps-boot-serial.log`). Hello e `js` no AppFS da imagem coincidiram com os arquivos em `build/bin/` (`build/make-apps-appfs-check.log`). O dry run de compilação dos apps e da imagem foi idêntico ao da revisão anterior. As verificações interativas adicionais tiveram timeout na checagem de marcadores no desktop e no terminal, e na seleção do modo rescue para lançar os apps (`build/make-apps-qemu-validation.md`, `build/make-apps-language-smoke.md`).
+
+### [x] 27. Doom travava antes do primeiro quadro
+
+- **Observação:** após carregar o IWAD, o Doom continuava pedindo teclas enquanto a VM ainda emitia ticks. Ao corrigir a leitura do teclado, a inicialização alcançou o primeiro desenho e retornou `Z_Malloc: failed on allocation of 68192 bytes`.
+- **Causas:** a leitura de teclado retorna `-1` quando a fila está vazia, mas o laço do Doom só parava em zero. `M_LoadDefaults()` sobrescrevia os 8 MiB configurados pelo port com o valor de 2 MiB da tabela UNIX.
+- **Correção:** a consulta de teclas encerra no retorno negativo e a tabela de configuração usa o mesmo valor de 8 MiB que o port. O gate abre o Doom pelo menu Iniciar e espera o primeiro quadro.
+- **Validação:** `make -j6` passou no macOS arm64. `make validate-doom-800x600` e `make validate-doom-1024x768` chegaram ao primeiro quadro (`build/doom-800x600-final.md`, `build/doom-1024x768-final.md`). O perfil local de `make run` com `max`, 8 vCPUs e 8 GiB abriu o jogo em 800×600 e respondeu ao teclado (`build/doom-run-profile-serial.log`).
+
+### [x] 28. Doom não disparava pelo teclado com o controle padrão
+
+- **Observação:** Esc, Enter, setas e WASD funcionaram em QEMU. Pressionar Ctrl sozinho manteve a munição em 50.
+- **Causa:** o Doom usa `KEY_RCTRL` para disparar. O VibeOS usa Ctrl como modificador de tradução e só publica o resultado da tecla combinada na fila existente.
+- **Correção:** o port mapeia F para a ação de disparo e mostra a tecla na janela de lançamento.
+- **Validação:** `make -j6` e os gates `validate-doom-800x600` e `validate-doom-1024x768` passaram (`build/doom-keyboard-800x600.md`, `build/doom-keyboard-1024x768.md`). No perfil local de QEMU com CoreAudio e resolução 800×600, quatro acionamentos de F reduziram a munição de 50 para 46 (`build/doom-fire-before.png`, `build/doom-fire-after.png`, `build/doom-fire-serial.log`).
+
+### [x] 29. Menu do Doom recebia teclas antigas e perdia Esc em PS/2
+
+- **Observação:** no perfil QEMU `max` com 8 vCPUs, o menu podia aparecer antes de qualquer tecla dentro do jogo. Uma sonda separada mostrou que Esc sozinho deixava o menu fechado por mais de seis segundos.
+- **Causas:** o desktop lê o fluxo agregado de entrada, mas o Doom mudava para as filas legadas no início do jogo e consumia cópias das teclas e do mouse do launcher. A tradução PS/2 descartava o scancode `0x01` de Esc. USB já entregava o código `27`.
+- **Correção:** o Doom continua lendo o mesmo fluxo de eventos usado pelo desktop. A tradução comum mapeia Esc para `27` em PS/2 e USB.
+- **Validação:** `make -j6` passou no macOS arm64. Com CoreAudio em 800×600, uma pressão de Esc abriu o menu e três pressões de seta para baixo avançaram uma linha por vez, com respostas visíveis entre 80 e 150 ms nos perfis `max`/8 vCPUs e `core2duo`/1 vCPU. A seleção permaneceu estável por dois segundos após a última tecla (`build/doom-latency-max8-esc-fixed-checked-menu.png`, `build/doom-latency-core1-esc-fixed-checked-menu.png`).
+- **Regressão:** os cenários Doom de 800×600 e 1024×768 confirmaram o evento Esc no desktop e o primeiro quadro do jogo (`build/doom-latency-800x600-final.md`, `build/doom-latency-1024x768.md`). O perfil de 1 vCPU também entrou no primeiro mapa e disparou com F (`build/doom-latency-final-gameplay-after-fire.png`). `make validate-phase6` passou nos seis perfis (`build/doom-input-phase6.md`).

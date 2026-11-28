@@ -118,6 +118,15 @@ Toolchain:
 - recomendado: `i686-elf-*`
 - fallback suportado em Linux: toolchain host GNU 32-bit (`gcc`, `ld`, `objcopy`, `nm`, `ar`, `ranlib`)
 
+No macOS, coloque o Homebrew primeiro no PATH para usar o Python com Pillow. A imagem pode ser formatada pelo `newfs_msdos` do sistema. Em Apple Silicon, o QEMU emula o guest x86 de 32 bits.
+
+```bash
+brew install make nasm qemu i686-elf-gcc pillow
+export PATH="$(brew --prefix)/bin:$PATH"
+gmake -j"$(sysctl -n hw.logicalcpu)"
+gmake run
+```
+
 Build principal:
 
 ```bash

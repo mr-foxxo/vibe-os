@@ -172,11 +172,16 @@ sudo apt install -y build-essential make python3 nasm qemu-system-x86 dosfstools
 
 ### macOS
 
-Homebrew example:
+Install the build tools with Homebrew. Put Homebrew first on your PATH so the asset builders use its Python with Pillow.
 
 ```bash
-brew install nasm qemu dosfstools i686-elf-gcc
+brew install make nasm qemu i686-elf-gcc pillow
+export PATH="$(brew --prefix)/bin:$PATH"
+gmake -j"$(sysctl -n hw.logicalcpu)"
+gmake run
 ```
+
+The image builder can use macOS's built-in `newfs_msdos`. On Apple Silicon, QEMU emulates the 32-bit x86 guest.
 
 ### Main command
 

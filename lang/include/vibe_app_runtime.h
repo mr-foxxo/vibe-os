@@ -10,6 +10,7 @@
 #include <lang/include/vibe_network_client.h>
 
 struct mk_network_ethernet_config;
+struct mk_network_socket_list_entry;
 struct mk_audio_event;
 
 const struct vibe_app_context *vibe_app_get_context(void);

@@ -84,7 +84,7 @@ endif
 ifeq ($(strip $(QEMU)),)
 QEMU := qemu-system-i386
 endif
-QEMU_MEMORY_MB ?= 3072
+QEMU_MEMORY_MB ?= 8192
 # per-scenario timeout for QEMU validation matrices; slow/TCG-only hosts can raise it:
 # Raised 20->60 (2026-10-19, measured): scenarios stop EARLY once all markers
 # are seen, so the cap only bites broken boots. On this 2-core TCG host the
@@ -100,8 +100,8 @@ QEMU_AUDIO_CAPTURE_WAV ?= build/qemu-audio.wav
 QEMU_IMAGE_OPTS ?= format=raw,file=$(IMAGE),snapshot=on
 QEMU_NET_OPTS ?= -netdev user,id=net0 -device virtio-net-pci,netdev=net0
 QEMU_RUN_MACHINE ?= pc
-QEMU_RUN_CPU ?= core2duo
-QEMU_RUN_SMP ?= 1,sockets=1,cores=1,threads=1,maxcpus=1
+QEMU_RUN_CPU ?= max
+QEMU_RUN_SMP ?= 8,sockets=1,cores=8,threads=1
 QEMU_RUN_VGA ?= std
 QEMU_RUN_GPU_OPTS ?=
 QEMU_RUN_VIDEO_OPTS ?= -vga $(QEMU_RUN_VGA) $(QEMU_RUN_GPU_OPTS)
@@ -859,6 +859,8 @@ IMAGE := $(BUILD_DIR)/boot.img
 # Symbol impl: kernel/stackguard.c; a guard hit panics with the offender's
 # return address (nm-resolvable). DOOM/vendored CFLAGS keep -fno-stack-protector.
 CFLAGS := -std=gnu17 -m32 $(CPU_ARCH_CFLAGS) -Os -ffreestanding -fno-pic -fno-pie -fstack-protector -mstack-protector-guard=global -fno-builtin -fcf-protection=none -nostdlib -Wall -Wextra -Werror -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -I. -idirafter headers -Iuserland -Ilang/include -Ilang/vendor/quickjs-ng -Ilang/vendor/mruby/include -Ilang/vendor/micropython
+# Bare-metal cross-compilers may ship without libc headers.
+CFLAGS += -idirafter headers/freestanding
 CFLAGS += -I$(APP_CATALOG_GENERATED_DIR)
 CFLAGS += -MMD -MP
 LUA_CFLAGS := -Iuserland/lua/include -Iuserland/lua/vendor/lua-5.4.6/src
@@ -1924,9 +1926,9 @@ $(BOOT_POLICY_MANIFEST): $(KERNEL_BIN) $(STAGE2_BIN) $(DATA_IMAGE)
 	@mkdir -p $(dir $@)
 	@printf "# vibeOS USB boot/loading strategy\nbios_disk_transport=edd-int13\nboot_partition_fs=fat32\nstage2_path=/STAGE2.BIN\nkernel_path=/KERNEL.BIN\nruntime_storage_probe=ahci-then-ata\ndata_volume_resolution=mbr-data-partition-with-raw-layout-fallback\nusb_scope=phase4-relies-on-bios-mass-storage-before-native-usb-service\n" > $@
 
-$(IMAGE): $(MBR_BIN) $(BOOT_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(DATA_IMAGE) $(BOOT_VOLUME_MANIFEST) $(BOOT_POLICY_MANIFEST) $(BOOTLOADER_BG_BIN) $(VIBE_BOOTLOADER_AUDIO_RAW)
+$(IMAGE): $(MBR_BIN) $(BOOT_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(DATA_IMAGE) $(BOOT_VOLUME_MANIFEST) $(BOOT_POLICY_MANIFEST) $(BOOTLOADER_BG_BIN) $(VIBE_BOOTLOADER_AUDIO_RAW) tools/build_partitioned_image.py
 	$(PYTHON) tools/build_partitioned_image.py \
-		--image $@ \
+		--image $@.tmp \
 		--mkfs-fat $(MKFS_FAT_TOOL) \
 		--mcopy $(MCOPY_TOOL) \
 		--mmd $(MMD_TOOL) \
@@ -1950,6 +1952,7 @@ $(IMAGE): $(MBR_BIN) $(BOOT_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(DATA_IMAGE) $(BOO
 		--boot-file "$(BOOT_VOLUME_MANIFEST)::/LAYOUT.TXT" \
 		--boot-file "$(BOOT_POLICY_MANIFEST)::/BOOTPOL.TXT" \
 		--boot-file "$(DATA_IMAGE_MANIFEST)::/DATAINFO.TXT"
+	@mv -f $@.tmp $@
 	@echo "Imagem gerada: $(IMAGE)"
 
 run: $(IMAGE)
@@ -2438,26 +2441,17 @@ glibc-core:
 	@echo "Building glibc-core (810 core functions)..."
 	$(MAKE) -f Build.glibc.mk glibc-build
 
-# Build language apps as standalone build/bin executables
-# Apps link glibc.a statically (or can load glibc.so dynamically at runtime)
-apps: glibc-core | $(APP_BIN_DIR) $(APP_LIB_DIR)
-	@echo "Building language runtime apps to $(APP_BIN_DIR)..."
-	@mkdir -p $(APP_BIN_DIR) $(APP_LIB_DIR)
-	@echo "$(HELLO_APP_BIN) -> $(APP_BIN_DIR)/hello"
-	@cp $(HELLO_APP_BIN) $(APP_BIN_DIR)/hello || echo "WARNING: hello app not found"
-	@if [ -f "$(JS_APP_BIN)" ]; then cp $(JS_APP_BIN) $(APP_BIN_DIR)/js; else echo "WARNING: js app not found"; fi
+# Build and stage language apps using the normal VibeOS app toolchain.
+.PHONY: apps app-hello app-js
+apps: app-hello app-js
 	@if [ -f "$(RUBY_APP_BIN)" ]; then cp $(RUBY_APP_BIN) $(APP_BIN_DIR)/ruby; else echo "WARNING: ruby app not found"; fi
 	@if [ -f "$(PYTHON_APP_BIN)" ]; then cp $(PYTHON_APP_BIN) $(APP_BIN_DIR)/python; else echo "WARNING: python app not found"; fi
 	@if [ -f "$(JAVA_APP_BIN)" ]; then cp $(JAVA_APP_BIN) $(APP_BIN_DIR)/java; else echo "WARNING: java app not found"; fi
 	@if [ -f "$(JAVAC_APP_BIN)" ]; then cp $(JAVAC_APP_BIN) $(APP_BIN_DIR)/javac; else echo "WARNING: javac app not found"; fi
-	@if [ -f "build/libglibc-full.a" ]; then cp build/libglibc-full.a $(APP_LIB_DIR)/libglibc.a; else cp build/libglibc-core.a $(APP_LIB_DIR)/libglibc.a; fi || true
 	@echo "Apps built to $(APP_BIN_DIR)"
 
 $(APP_BIN_DIR):
 	mkdir -p $(APP_BIN_DIR)
-
-$(APP_LIB_DIR):
-	mkdir -p $(APP_LIB_DIR)
 
 glibc-clean:
 	@echo "Cleaning glibc build..."

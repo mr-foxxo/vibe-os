@@ -15,10 +15,7 @@ static int g_off_y = 0;
 static int g_dst_w = SCREENWIDTH;
 static int g_dst_h = SCREENHEIGHT;
 static int g_inited = 0;
-static int g_mouse_ready = 0;
-static int g_mouse_prev_x = 0;
-static int g_mouse_prev_y = 0;
-static uint8_t g_mouse_prev_buttons = 0;
+static int g_first_frame = 0;
 static uint8_t g_key_hold[512];
 static uint32_t g_present_deadline_ticks = 0u;
 static uint32_t g_present_tick_remainder = 0u;
@@ -103,6 +100,7 @@ static int map_key(int key) {
     if (key == 's' || key == 'S') return KEY_DOWNARROW;
     if (key == 'a' || key == 'A') return ',';
     if (key == 'd' || key == 'D') return '.';
+    if (key == 'f' || key == 'F') return KEY_RCTRL;
     return key;
 }
 
@@ -119,7 +117,6 @@ static void post_key_event(int type, int key) {
 void I_ShutdownGraphics(void) {
     doom_port_restore_palette();
     g_inited = 0;
-    g_mouse_ready = 0;
     doom_video_reset_pacing();
 }
 
@@ -128,11 +125,10 @@ void I_StartFrame(void) {
 }
 
 void I_StartTic(void) {
-    struct mouse_state m;
-    int key;
+    struct input_event event;
     int mouse_dx = 0;
     int mouse_dy = 0;
-    uint8_t mouse_buttons = g_mouse_prev_buttons;
+    uint8_t mouse_buttons = 0;
     int mouse_changed = 0;
 
     for (int i = 0; i < (int)(sizeof(g_key_hold) / sizeof(g_key_hold[0])); ++i) {
@@ -145,35 +141,27 @@ void I_StartTic(void) {
         }
     }
 
-    while ((key = sys_poll_key()) != 0) {
-        int mapped = map_key(key);
-        if (mapped < 0 || mapped >= (int)(sizeof(g_key_hold) / sizeof(g_key_hold[0]))) {
-            continue;
+    /* Continue the desktop's event stream when Doom takes over the display. */
+    while (sys_next_input_event(&event) > 0) {
+        if (event.type == INPUT_EVENT_KEY) {
+            int mapped = map_key(event.value);
+
+            if (mapped <= 0 || mapped >= (int)sizeof(g_key_hold)) {
+                continue;
+            }
+            if (g_key_hold[mapped] == 0) {
+                post_key_event(ev_keydown, mapped);
+            }
+            g_key_hold[mapped] = DOOM_KEY_HOLD_TICS;
+        } else if (event.type == INPUT_EVENT_MOUSE) {
+            mouse_dx += event.mouse.dx;
+            mouse_dy += event.mouse.dy;
+            mouse_buttons = event.mouse.buttons & 0x07u;
+            mouse_changed = 1;
         }
-        if (g_key_hold[mapped] == 0) {
-            post_key_event(ev_keydown, mapped);
-        }
-        g_key_hold[mapped] = DOOM_KEY_HOLD_TICS;
     }
 
-    while (sys_poll_mouse(&m)) {
-        if (!g_mouse_ready) {
-            g_mouse_prev_x = m.x;
-            g_mouse_prev_y = m.y;
-            g_mouse_prev_buttons = m.buttons & 0x07u;
-            g_mouse_ready = 1;
-        }
-
-        mouse_dx += m.dx;
-        mouse_dy += m.dy;
-        mouse_buttons = m.buttons & 0x07u;
-        mouse_changed = 1;
-        g_mouse_prev_x = m.x;
-        g_mouse_prev_y = m.y;
-        g_mouse_prev_buttons = mouse_buttons;
-    }
-
-    if (g_mouse_ready && mouse_changed) {
+    if (mouse_changed) {
         event_t ev;
         ev.type = ev_mouse;
         ev.data1 = mouse_buttons;
@@ -189,10 +177,7 @@ void I_InitGraphics(void) {
     }
 
     memset(g_key_hold, 0, sizeof(g_key_hold));
-    g_mouse_ready = 0;
-    g_mouse_prev_x = 0;
-    g_mouse_prev_y = 0;
-    g_mouse_prev_buttons = 0;
+    g_first_frame = 0;
 
     doom_port_capture_palette();
     doom_video_refresh_layout();
@@ -208,6 +193,10 @@ void I_FinishUpdate(void) {
     byte *src = screens[0];
     doom_video_refresh_layout();
     sys_gfx_blit8_stretch_present(src, SCREENWIDTH, SCREENHEIGHT, 0, 0, g_dst_w, g_dst_h);
+    if (!g_first_frame) {
+        g_first_frame = 1;
+        sys_write_debug("doom: first frame\n");
+    }
 }
 
 void I_ReadScreen(byte *scr) {

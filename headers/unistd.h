@@ -12,6 +12,8 @@ int access(const char *path, int mode);
 int close(int fd);
 int dup(int fd);
 int dup2(int fd, int newfd);
+int pipe(int fds[2]);
+pid_t fork(void);
 unsigned int sleep(unsigned int seconds);
 int usleep(unsigned int usec);
 unsigned int alarm(unsigned int seconds);

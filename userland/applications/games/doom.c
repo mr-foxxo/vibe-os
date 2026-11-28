@@ -107,7 +107,7 @@ void doom_draw_window(struct doom_state *s, int active,
 
     sys_text(body.x + 8, body.y + 8, t->text, "Port completo linuxdoom-1.10");
     sys_text(body.x + 8, body.y + 22, t->text, "Engine original + camada I_* para VibeOS");
-    sys_text(body.x + 8, body.y + 36, t->text, "Teclado/mouse, render e loop reais");
+    sys_text(body.x + 8, body.y + 36, t->text, "Setas/WASD: mover  F: atirar");
     sys_text(body.x + 8, body.y + 56, t->text, s->status);
     sys_text(body.x + 8, body.y + 76, t->text,
              doom_port_debug_line(0)[0] ? doom_port_debug_line(0) : "Checagem do WAD agora so acontece no Enter");

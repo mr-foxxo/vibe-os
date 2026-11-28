@@ -154,6 +154,9 @@ static int kernel_keyboard_translate_set1_scancode(uint8_t scancode,
     if (scancode == 0u) {
         return 0;
     }
+    if (scancode == 0x01u) {
+        return '\x1b';
+    }
     return kernel_keyboard_apply_ctrl(shift ? g_current_keymap->shift_map[scancode] :
                                               g_current_keymap->map[scancode],
                                       ctrl);
@@ -182,7 +185,7 @@ int kernel_keyboard_translate_hid_usage(uint8_t usage, uint8_t modifiers) {
     case 0x28u:
         return '\n';
     case 0x29u:
-        return 27;
+        return kernel_keyboard_translate_set1_scancode(0x01u, 0u, shift, ctrl);
     case 0x2Au:
         return '\b';
     case 0x2Bu:
