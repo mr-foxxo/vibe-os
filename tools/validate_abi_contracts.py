@@ -44,6 +44,7 @@ STATIC_CHECK_SOURCE = r"""
 #include <sys/termios.h>
 #include <sys/ioctl.h>
 #include <kernel/microkernel/launch.h>
+#include <kernel/microkernel/network.h>
 #include <include/userland_api.h>
 #include <lang/include/vibe_app_runtime.h>
 

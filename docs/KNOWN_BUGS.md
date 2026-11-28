@@ -6,6 +6,20 @@ exige evidencia executada; o estado corrente da fila de trabalho vive em
 
 ## Abertos
 
+- **QEMU on WSL can stall while the desktop loads persistent storage.** The
+  BIOS, kernel, and init storage smoke complete, but a later desktop storage
+  request times out with work still queued (`svc=2 type=16`). The pre-macOS
+  run had `cliQ=1`, and the clean build with the header fix had `hostQ=1`.
+  Reproduced on `6620d2ac6` and on a clean build of the pre-macOS revision
+  `02254c6ff` with the socket-list forward declaration needed to compile it.
+  The older Core 2 Duo profile also reproduces the timeout. Serial evidence
+  is in `build/boot-compare-baseline-old.log` and `build/boot-compare-fixed-new.log`.
+  The clean image passed all six `validate-phase6` profiles at 3072 MiB
+  (`build/phase6-fixed-validation.md`). The desktop-specific
+  `startx-autoboot-desktop` scenario timed out before the session was ready
+  (`build/boot-fixed-startx-validation.md`). The cause of the missed IPC wakeup
+  remains open.
+
 - **WSL QEMU network validation stops at file export and terminal input.**
   With the socket-list build fix, `validate-network-surface` booted the rescue
   shell and passed `netmgrd status`. The next command reported `netmgrd: failed
@@ -510,13 +524,14 @@ exige evidencia executada; o estado corrente da fila de trabalho vive em
   `-Werror` because the runtime prototype introduced
   `struct mk_network_socket_list_entry` at parameter-list scope.
 - **Cause and fix:** `userland_api.h` set the shared network event guard before
-  the SDK header was included. The SDK now uses that guard only for the shared
-  event declarations, so the socket-list types are visible in either include order.
-- **Verification:** The failing target now compiles under WSL. Both public-header
-  include orders compile with `-Werror` and preserve the 28-byte entry and
-  4-byte request layouts. `tools/validate_abi_contracts.py` passes and `make -j4`
-  produces `build/boot.img`. GCC emits a byte-identical `select.o` compared with
-  the previous source compiled with a socket-list forward declaration.
+  the SDK header was included. The runtime header declares the socket-list struct
+  tag at file scope, as introduced in `0195e34dc`. The SDK guard also protects
+  `tty.c`, which gets its network definitions from the kernel header.
+- **Clean-build follow-up:** Narrowing the guard in `6620d2ac6` caused duplicate
+  network definitions in `tty.c`. Restoring the guard fixes that regression.
+  Both `select.o` and `tty.o` compile with `-Werror` on WSL, and the static ABI
+  validator exercises the kernel header followed by the runtime header. A clean
+  `make -j8` in WSL produced `build/boot.img`.
 
 ### [x] 17. USB mass-storage: pipeline de enumeracao/execucao MORTO NO MEIO (duas funcoes `unused`, probe_extra sem USB) — CORRIGIDO (20/10)
 
