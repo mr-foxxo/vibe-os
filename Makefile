@@ -84,7 +84,7 @@ endif
 ifeq ($(strip $(QEMU)),)
 QEMU := qemu-system-i386
 endif
-QEMU_MEMORY_MB ?= 3072
+QEMU_MEMORY_MB ?= 8192
 # per-scenario timeout for QEMU validation matrices; slow/TCG-only hosts can raise it:
 # Raised 20->60 (2026-10-19, measured): scenarios stop EARLY once all markers
 # are seen, so the cap only bites broken boots. On this 2-core TCG host the
@@ -100,8 +100,8 @@ QEMU_AUDIO_CAPTURE_WAV ?= build/qemu-audio.wav
 QEMU_IMAGE_OPTS ?= format=raw,file=$(IMAGE),snapshot=on
 QEMU_NET_OPTS ?= -netdev user,id=net0 -device virtio-net-pci,netdev=net0
 QEMU_RUN_MACHINE ?= pc
-QEMU_RUN_CPU ?= core2duo
-QEMU_RUN_SMP ?= 1,sockets=1,cores=1,threads=1,maxcpus=1
+QEMU_RUN_CPU ?= max
+QEMU_RUN_SMP ?= 8,sockets=1,cores=8,threads=1
 QEMU_RUN_VGA ?= std
 QEMU_RUN_GPU_OPTS ?=
 QEMU_RUN_VIDEO_OPTS ?= -vga $(QEMU_RUN_VGA) $(QEMU_RUN_GPU_OPTS)
