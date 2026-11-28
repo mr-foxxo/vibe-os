@@ -6,10 +6,6 @@
 #include <include/userland_api.h>
 #include <poll.h>
 #include <sys/select.h>
-struct mk_network_info;
-struct mk_network_status;
-struct mk_network_scan_info;
-struct mk_network_connect_request;
 #include <lang/include/vibe_app_runtime.h>
 
 static int g_compat_network_events_subscribed = 0;

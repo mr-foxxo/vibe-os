@@ -45,7 +45,7 @@ STATIC_CHECK_SOURCE = r"""
 #include <sys/ioctl.h>
 #include <kernel/microkernel/launch.h>
 #include <include/userland_api.h>
-#include <lang/include/vibe_app.h>
+#include <lang/include/vibe_app_runtime.h>
 
 _Static_assert(VIBE_APP_ABI_VERSION == 1u, "unexpected vibe app abi version");
 _Static_assert(MK_LAUNCH_ABI_VERSION == 2u, "unexpected launch abi version");
@@ -56,6 +56,8 @@ _Static_assert(sizeof(struct vibe_app_header_legacy) == 40u, "legacy app header 
 _Static_assert(sizeof(struct vibe_app_header) == 44u, "current app header changed");
 _Static_assert(sizeof(struct stat) <= sizeof(struct stat_compat), "legacy stat should stay smaller");
 _Static_assert(sizeof(struct sockaddr_storage) == 128u, "sockaddr_storage layout drifted");
+_Static_assert(sizeof(struct mk_network_socket_list_entry) == 28u, "socket list entry layout drifted");
+_Static_assert(sizeof(struct mk_network_socket_list_request) == 4u, "socket list request layout drifted");
 _Static_assert(sizeof(struct winsize) == 8u, "winsize layout drifted");
 _Static_assert(offsetof(struct mk_launch_descriptor, entry) > offsetof(struct mk_launch_descriptor, argv_data),
                "launch descriptor layout drifted");

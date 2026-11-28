@@ -6,6 +6,15 @@ exige evidencia executada; o estado corrente da fila de trabalho vive em
 
 ## Abertos
 
+- **WSL QEMU network validation stops at file export and terminal input.**
+  With the socket-list build fix, `validate-network-surface` booted the rescue
+  shell and passed `netmgrd status`. The next command reported `netmgrd: failed
+  to write /runtime/netmgrd-surface.txt`. The run was stopped while waiting
+  for the export success marker (serial log `build/socket-list-network-surface-serial.log`).
+  `validate-network-terminal-surface` opened the desktop terminal and timed out
+  waiting for `terminal: command done vibefetch` before reaching the network
+  commands (`build/network-terminal-validation.md`). Root causes unverified.
+
 - **[latent, avoided] SMP bring-up: `g_smp_cpu_stage` pode ficar OBSOLETO por corrida de escrita.**
   O BSP grava `SIPI2_SENT(4)` no slot i APOS enviar o SIPI, sem barreira contra o AP, que ja
   escreve `AP_ENTER(5)/AP_LAPIC(6)/AP_MARKED(7)/AP_SCHED(8)` no MESMO slot; com retry entao, o
@@ -494,6 +503,20 @@ exige evidencia executada; o estado corrente da fila de trabalho vive em
 - POSIX/Compat: camada BSD integrada (libc, pthreads, socket); X11/X-Like em andamento
 
 ## Bugs corrigidos
+
+### [x] WSL build: socket-list struct hidden by the network event guard
+
+- **Observed:** `make -B build/compat/src/posix/select.o` failed under GCC with
+  `-Werror` because the runtime prototype introduced
+  `struct mk_network_socket_list_entry` at parameter-list scope.
+- **Cause and fix:** `userland_api.h` set the shared network event guard before
+  the SDK header was included. The SDK now uses that guard only for the shared
+  event declarations, so the socket-list types are visible in either include order.
+- **Verification:** The failing target now compiles under WSL. Both public-header
+  include orders compile with `-Werror` and preserve the 28-byte entry and
+  4-byte request layouts. `tools/validate_abi_contracts.py` passes and `make -j4`
+  produces `build/boot.img`. GCC emits a byte-identical `select.o` compared with
+  the previous source compiled with a socket-list forward declaration.
 
 ### [x] 17. USB mass-storage: pipeline de enumeracao/execucao MORTO NO MEIO (duas funcoes `unused`, probe_extra sem USB) — CORRIGIDO (20/10)
 
